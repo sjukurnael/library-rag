@@ -1,0 +1,19 @@
+# Secrets -- never commit these.
+credentials.json
+token.json
+.env
+
+cache.json
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# macOS
+.DS_Store
+
+# Phase 1: ingestion pipeline
+data/

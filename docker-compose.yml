@@ -1,0 +1,23 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: library-rag-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: library
+    ports:
+      # 5434, not 5432, so this doesn't clash with any local Postgres
+      # (this machine already has a native Postgres on 5433).
+      - "5434:5432"
+    volumes:
+      - library_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d library"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  library_pgdata:
