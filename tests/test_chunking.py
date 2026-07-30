@@ -80,6 +80,40 @@ def test_top_level_sections_are_never_merged_together():
     assert trails == ["Chapter 1", "Chapter 2"]
 
 
+def test_a_small_run_does_not_absorb_an_oversized_section():
+    """A run under MIN_CHUNK_CHARS must not swallow a section that is itself big.
+
+    Doing so pushes the merged body past CHUNK_SIZE_CHARS, the recursive splitter
+    cuts it, and the absorbed section's inline heading gets stranded as a
+    content-free chunk -- the same orphan bug the binding is meant to prevent.
+    """
+    tiny = "Short note. " * 40                                # ~480, under MIN
+    huge = "A long discussion of the covenant text. " * 90    # ~3600, over CHUNK_SIZE
+    md = f"<!-- page: 1 -->\n\n# Chapter 1\n\n## Section A\n\n{tiny}\n\n## Section B\n\n{huge}\n"
+
+    chunks = chunking.chunk_markdown(md)
+
+    # The big section keeps its own precise trail rather than collapsing to the parent.
+    assert any(c["heading_trail"] == "Chapter 1 > Section B" for c in chunks)
+    # And no chunk is a stranded inline heading.
+    for c in chunks:
+        prose = c["content"].split("\n\n", 1)[1]
+        assert len(prose.strip()) > 60, f"stranded heading chunk: {prose!r}"
+
+
+def test_merged_bodies_stay_under_chunk_size():
+    # Absorbing only sub-MIN sections bounds a merged body at < 2 * MIN, so a
+    # merge can never itself force a re-split.
+    part = "A brief note on the passage. " * 16               # ~460, under MIN
+    md = "<!-- page: 1 -->\n\n# Chapter 1\n\n" + "\n\n".join(
+        f"## Section {i}\n\n{part}" for i in range(6)
+    )
+    for c in chunking.chunk_markdown(md):
+        prose = c["content"].split("\n\n", 1)[1]
+        assert len(prose) < 2 * config.MIN_CHUNK_CHARS
+        assert len(prose) < config.CHUNK_SIZE_CHARS
+
+
 def test_no_chunk_is_heading_only():
     # A section past CHUNK_SIZE_CHARS used to split right after its heading,
     # emitting a chunk whose whole body was "# Romans".

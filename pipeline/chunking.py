@@ -120,6 +120,14 @@ def _merge_small_sections(sections: list) -> list:
     the shared parent, and each absorbed section's own heading is re-inserted as
     a body line so no structure is lost.
 
+    Only sections SHORTER than MIN_CHUNK_CHARS are absorbed. A section already
+    big enough to stand alone keeps its own precise trail, and -- more
+    importantly -- this bounds a merged body at under 2 * MIN_CHUNK_CHARS, well
+    below CHUNK_SIZE_CHARS. Without that bound a small run could swallow an
+    oversized section, push the merged body past CHUNK_SIZE_CHARS, and get its
+    inline heading stranded as a content-free chunk by the recursive splitter --
+    reintroducing the very bug the inline-heading binding avoids.
+
     The parent must be non-empty, so top-level sections are never merged with
     each other -- fusing two chapters into one chunk would be worse than a short
     chunk. Junk sections are passed through untouched (the caller still needs
@@ -154,7 +162,13 @@ def _merge_small_sections(sections: list) -> list:
             continue
 
         parent, _, own = trail.rpartition(" > ")
-        if run and run_len < config.MIN_CHUNK_CHARS and parent and parent == run_parent:
+        if (
+            run
+            and run_len < config.MIN_CHUNK_CHARS
+            and len(content) < config.MIN_CHUNK_CHARS
+            and parent
+            and parent == run_parent
+        ):
             run.append((own, content))
             run_len += len(content)
             continue
