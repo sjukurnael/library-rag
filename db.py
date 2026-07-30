@@ -12,7 +12,6 @@ and flips it to 'done' in a SINGLE transaction, so a book is never left
 half-indexed.
 """
 import contextlib
-from typing import Optional
 
 import psycopg
 from pgvector import HalfVector
@@ -26,7 +25,7 @@ TERMINAL_STATUSES = ("done", "failed", "needs_ocr")
 
 
 @contextlib.contextmanager
-def get_conn(database_url: Optional[str] = None):
+def get_conn(database_url: str | None = None):
     conn = psycopg.connect(database_url or config.DATABASE_URL, autocommit=False)
     try:
         register_vector(conn)
@@ -41,8 +40,8 @@ def upsert_book(
     conn,
     drive_file_id: str,
     title: str,
-    md5: Optional[str],
-    size_bytes: Optional[int],
+    md5: str | None,
+    size_bytes: int | None,
 ) -> None:
     """Idempotent on drive_file_id. On conflict, refresh title/md5/size ONLY
     when one of them actually changed -- so re-running --discover never bumps
@@ -120,7 +119,7 @@ def claim_next_book(conn):
 # ------------------------------------------------------------ book state --
 
 def set_status(
-    conn, book_id: int, status: str, error: Optional[str] = None
+    conn, book_id: int, status: str, error: str | None = None
 ) -> None:
     conn.execute(
         "UPDATE books SET status = %s, error = %s, updated_at = now() WHERE id = %s",
@@ -232,7 +231,7 @@ def build_hnsw_index(conn) -> None:
     conn.commit()
 
 
-def search(conn, query_embedding, k: int, book_id: Optional[int] = None):
+def search(conn, query_embedding, k: int, book_id: int | None = None):
     params = [HalfVector(query_embedding)]
     where = ""
     if book_id is not None:

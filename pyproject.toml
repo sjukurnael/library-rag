@@ -26,7 +26,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
-    "ruff>=0.6",
+    # Pinned exactly. A linter's rule set grows between releases, so an open
+    # range means a commit that changes nothing can turn CI red the day ruff
+    # ships a new default rule (UP045 did exactly that). Bump deliberately.
+    "ruff==0.15.22",
 ]
 
 # Flat top-level scripts + the two subpackages. Listing py-modules explicitly so

@@ -15,7 +15,6 @@ instead of the whole section's span. Each returned chunk carries an `ordinal`
 (0..n-1 across the whole book, in reading order).
 """
 import re
-from typing import Optional
 
 from langchain_text_splitters import (
     MarkdownHeaderTextSplitter,
@@ -29,7 +28,7 @@ PAGE_MARKER_RE = re.compile(r"<!--\s*page:\s*(\d+)\s*-->")
 HEADING_LINE_RE = re.compile(r"^\s{0,3}#{1,6}[^\n]*$", re.MULTILINE)
 
 
-def chunk_markdown(markdown: str, dropped: Optional[list] = None) -> list:
+def chunk_markdown(markdown: str, dropped: list | None = None) -> list:
     """Return a list of {ordinal, heading_trail, page_start, page_end, content}
     dicts. content already has the heading trail prepended; ordinal is a dense
     0-based sequence over the whole document in reading order.
