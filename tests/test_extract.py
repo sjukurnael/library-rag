@@ -15,12 +15,21 @@ from pipeline import chunking, embed, extract
 
 
 def _make_text_pdf(dest, pages=3):
+    """A digital-native PDF whose text is wrapped inside the page body.
+
+    insert_textbox, not insert_text: the latter lays one unwrapped line that
+    runs off the right edge, and pymupdf4llm's layout model discards text
+    outside the page body -- yielding an empty extraction. Real books wrap
+    their text, so the textbox is the honest fixture. (The off-page case is
+    real but rare; the zero-chunk guard in ingest.py is what catches it.)
+    """
     doc = fitz.open()
     for _ in range(pages):
         page = doc.new_page()
-        page.insert_text(
-            (72, 100),
+        page.insert_textbox(
+            fitz.Rect(72, 90, 520, 700),
             "Inductive Bible study: observation, interpretation, application. " * 4,
+            fontsize=11,
         )
     doc.save(str(dest))
     doc.close()
@@ -129,6 +138,28 @@ def test_extraction_output_is_chunkable_end_to_end(tmp_path):
     for c in chunks:
         body = c["content"].split("\n\n", 1)[-1]
         assert "#" not in body, f"heading markup leaked into embedded text: {body[:80]!r}"
+
+
+def test_a_book_that_extracts_to_nothing_is_failed_not_done(conn, fake_voyage, monkeypatch):
+    """Zero chunks must never read as success.
+
+    'done' retires a book from the queue permanently, so an empty extraction
+    would drop it from the corpus while every status count still looked clean.
+    """
+    monkeypatch.setattr(embed, "count_tokens", lambda t: max(1, len(t.split())))
+    monkeypatch.setattr(
+        extract, "extract",
+        lambda *a, **k: extract.ExtractionResult("", 2, True, "pymupdf4llm"),
+    )
+    db.upsert_book(conn, "empty", "Empty Book", None, None)
+
+    _drain_worker(conn, lambda file_id, dest: Path(dest).write_bytes(b"%PDF-1.4"), fake_voyage)
+
+    status, error = conn.execute(
+        "SELECT status, error FROM books WHERE drive_file_id = 'empty'"
+    ).fetchone()
+    assert status == "failed", f"empty extraction was marked {status!r}"
+    assert error and "no chunks" in error
 
 
 def _drain_worker(conn, download_file, voyage_client):

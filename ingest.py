@@ -65,8 +65,15 @@ def _chunk_embed_and_finish(conn, book_id: int, markdown: str, voyage_client) ->
     if dropped:
         print(f"  dropped {len(dropped)} junk section(s): {', '.join(dropped)}")
     if not chunks:
-        print(f"  WARNING: no chunks produced for book {book_id}")
-        db.set_status(conn, book_id, "done")
+        # 'failed', never 'done'. A book with no chunks contributes nothing to
+        # search, and marking it done retires it from the queue forever -- the
+        # corpus quietly loses a book and every status count still reads clean.
+        # Real trigger seen: pymupdf4llm's layout model discards text drawn
+        # outside the page body, so a malformed PDF extracts to an empty string
+        # and every stage downstream reports success.
+        msg = "extraction produced no chunks (empty or unparseable markdown)"
+        print(f"  WARNING: {msg} for book {book_id}")
+        db.set_status(conn, book_id, "failed", msg)
         return 0, 0
 
     total_tokens = 0
