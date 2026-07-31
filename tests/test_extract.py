@@ -2,14 +2,16 @@
 worker-level guarantee that a corrupt PDF is recorded as failed and does not
 stop the run. PDFs are built with PyMuPDF at test time -- no fixtures on disk,
 no network."""
+import re
 from pathlib import Path
 
 import fitz
 import pytest
 
+import config
 import db
 import ingest
-from pipeline import embed, extract
+from pipeline import chunking, embed, extract
 
 
 def _make_text_pdf(dest, pages=3):
@@ -58,6 +60,75 @@ def test_image_pdf_probes_false_and_needs_ocr(tmp_path):
 
     with pytest.raises(extract.NeedsOCRError):
         extract.extract(pdf, book_id=2, ocr_client=None)
+
+
+def _make_uniform_font_pdf(dest, pages=3):
+    """A PDF whose every glyph is the same size and font -- what a scanned page
+    looks like after OCR writes a synthetic text layer. Structure is visible
+    only from position and whitespace, never from font metadata."""
+    body = (
+        "Inductive study proceeds by observation, interpretation, and application. "
+        "The reader asks what the text says before asking what it means. "
+    ) * 5
+    doc = fitz.open()
+    for lesson in range(1, pages + 1):
+        page = doc.new_page()
+        page.insert_text((72, 90), f"Lesson {lesson}", fontsize=11, fontname="helv")
+        page.insert_text((72, 130), "I. BACKGROUND", fontsize=11, fontname="helv")
+        page.insert_textbox(fitz.Rect(72, 150, 520, 380), body, fontsize=11)
+        page.insert_text((72, 410), "II. ANALYSIS", fontsize=11, fontname="helv")
+        page.insert_textbox(fitz.Rect(72, 430, 520, 700), body, fontsize=11)
+    doc.save(str(dest))
+    doc.close()
+
+
+def test_uniform_font_pdf_still_yields_headings(tmp_path):
+    """Guards pymupdf4llm.use_layout(True) in pipeline/extract.py.
+
+    The classic font-statistics path infers heading levels from a document-wide
+    size histogram, so a uniform-font page (an OCR'd text layer) flattens it to
+    zero headings -- and 77% of a real Jensen guide got wrapped in ``` fences,
+    which MarkdownHeaderTextSplitter correctly refuses to split on. Chunking
+    then saw 2 sections in 120 pages. The layout model segments visually and is
+    unaffected.
+
+    Measured on this fixture: use_layout(True) -> 6 headings, (False) -> 0.
+    """
+    pdf = tmp_path / "uniform.pdf"
+    _make_uniform_font_pdf(pdf)
+
+    result = extract.extract(pdf, book_id=1)
+
+    headings = re.findall(r"^#{1,6} .*$", result.markdown, re.MULTILINE)
+    assert headings, (
+        "no markdown headings from a uniform-font PDF -- pipeline/extract.py has "
+        "probably reverted to use_layout(False); see the comment there"
+    )
+    assert any("BACKGROUND" in h for h in headings)
+    # Fenced content is invisible to the header splitter, so it must stay rare.
+    assert "```" not in result.markdown
+
+
+def test_extraction_output_is_chunkable_end_to_end(tmp_path):
+    """Extraction and chunking must agree: whatever heading levels the extractor
+    emits, config.MARKDOWN_HEADERS has to register them, or they stay in the
+    body and reach the embedding model as literal '######'."""
+    pdf = tmp_path / "uniform.pdf"
+    _make_uniform_font_pdf(pdf)
+    result = extract.extract(pdf, book_id=1)
+
+    emitted = {len(m) for m in re.findall(r"^(#{1,6}) ", result.markdown, re.MULTILINE)}
+    registered = {len(prefix) for prefix, _ in config.MARKDOWN_HEADERS}
+    assert emitted <= registered, (
+        f"extractor emits h{sorted(emitted)} but config registers h{sorted(registered)}"
+    )
+
+    chunks = chunking.chunk_markdown(result.markdown)
+    assert chunks
+    assert any(c["heading_trail"] for c in chunks), "no chunk carries a heading trail"
+    for c in chunks:
+        body = c["content"].split("\n\n", 1)[-1]
+        assert "#" not in body, f"heading markup leaked into embedded text: {body[:80]!r}"
 
 
 def _drain_worker(conn, download_file, voyage_client):

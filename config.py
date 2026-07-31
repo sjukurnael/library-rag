@@ -58,7 +58,17 @@ TEXT_LAYER_MIN_PAGE_RATIO = 0.5
 # ---- Chunking ----
 CHUNK_SIZE_CHARS = 3200
 CHUNK_OVERLAP_CHARS = 400
-MARKDOWN_HEADERS = [("#", "h1"), ("##", "h2"), ("###", "h3"), ("####", "h4")]
+# Through h6, not h4. pymupdf4llm maps a document's font sizes onto heading
+# levels, and on the scanned Jensen guides almost everything lands at h6 (127 of
+# 142 headings in 1 Samuel, 173 of 186 in 1 Corinthians). Stopping at h4 left
+# those invisible to MarkdownHeaderTextSplitter, so they stayed in the body and
+# went into the embeddings as literal "######". Registering them here took
+# 1 Samuel from 57 chunks (median 2915, 50 carrying leaked markup) to 121
+# chunks (median 1123, none leaking).
+MARKDOWN_HEADERS = [
+    ("#", "h1"), ("##", "h2"), ("###", "h3"),
+    ("####", "h4"), ("#####", "h5"), ("######", "h6"),
+]
 # Sections shorter than this are merged with adjacent siblings (same parent
 # heading) before chunking. Study guides are full of dense `###` subheadings
 # with two lines each; without merging, every one becomes its own ~40-char

@@ -17,3 +17,7 @@ venv/
 
 # Phase 1: ingestion pipeline
 data/
+
+# Loose PDFs dropped in the repo root for ad-hoc testing (data/ is already
+# ignored; these are 20 MB+ and must never enter git history).
+*.pdf

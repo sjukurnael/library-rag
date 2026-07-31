@@ -25,13 +25,36 @@ import pymupdf4llm
 
 import config
 
-# pymupdf4llm >= 1.28 defaults to an ML layout model (pymupdf.layout / onnxruntime)
-# when it's importable. That model silently drops text on some pages and is slow.
-# use_layout(False) selects the classic, deterministic path: document-wide
-# font-statistics heading detection (IdentifyHeaders), no ML inference.
-pymupdf4llm.use_layout(False)
+# Set explicitly rather than relying on the library default, because this one
+# flag decides whether the whole pipeline sees any document structure at all.
+#
+# The layout model (pymupdf_layout / onnxruntime, a hard dependency of
+# pymupdf4llm >= 1.28) segments each page visually -- title, heading, paragraph,
+# table -- and reflows text into real paragraphs. The classic path instead reads
+# font metadata and infers heading levels from a document-wide size histogram.
+#
+# That histogram approach collapses on this corpus. Measured 2026-07-30 over 5
+# books (3 Jensen guides + 2 doctrine books):
+#
+#   headings found   classic -> layout    chunks    median chunk chars
+#   holy_spirit (436p)    20 -> 527        329->584     3158 -> 1385
+#   biblical_doc (248p)  140 -> 549        194->330     2388 ->  932
+#   jensen 1 Samuel (120p) 3 -> 142         54->121     2924 -> 1123
+#
+# On the Jensen guides -- scanned paper with an OCR'd text layer, so font
+# metadata is synthetic and uniform -- the classic path found 3 headings in 120
+# pages and wrapped 77% of the book in ``` code fences (indented/monospaced runs
+# read as "preformatted"). MarkdownHeaderTextSplitter correctly ignores headings
+# inside fences, so chunking saw 2 sections in a whole book and fell back to
+# slicing at CHUNK_SIZE_CHARS.
+#
+# A previous comment here justified use_layout(False) by claiming the layout
+# model "silently drops text on some pages and is slow". Neither reproduced:
+# it yields MORE text on 4 of 5 books (+7.7% on 1 Corinthians, -0.15% on the one
+# exception) and is 27% faster (407 vs 554 ms/page on a 100-page guide).
+pymupdf4llm.use_layout(True)
 
-EXTRACTOR_VERSION = "2.0"
+EXTRACTOR_VERSION = "3.0"  # bumped: layout model changes extraction output
 
 
 class NeedsOCRError(RuntimeError):
