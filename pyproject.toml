@@ -27,6 +27,11 @@ dependencies = [
     "voyageai>=0.3.0",
     "tiktoken>=0.8.0",
     "mistralai>=1.2.0",
+    # The local web UI (api.py + static/). Not needed by the pipeline itself,
+    # but declared here rather than as an extra so a plain `pip install -e .`
+    # gives a working `uvicorn api:app`.
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
 ]
 
 [project.optional-dependencies]

@@ -45,7 +45,17 @@ def upsert_book(
 ) -> None:
     """Idempotent on drive_file_id. On conflict, refresh title/md5/size ONLY
     when one of them actually changed -- so re-running --discover never bumps
-    updated_at or disturbs the status of a book already in flight or done."""
+    updated_at or disturbs a book already in flight or done.
+
+    A CHANGED md5 is different from a changed title: it means the file's bytes
+    are not the ones we ingested, so whatever is in `chunks` describes a
+    document that no longer exists. Those books are reset to 'discovered' and
+    re-enter the queue. Previously the new md5 was recorded and the book left
+    'done', which quietly guaranteed the index disagreed with Drive -- the
+    failure is invisible because every status count still reads clean.
+
+    A title-only change (a rename in Drive) is metadata and does not reprocess.
+    """
     conn.execute(
         """
         INSERT INTO books (drive_file_id, title, md5, size_bytes)
@@ -54,7 +64,26 @@ def upsert_book(
             SET title = EXCLUDED.title,
                 md5 = EXCLUDED.md5,
                 size_bytes = EXCLUDED.size_bytes,
-                updated_at = now()
+                updated_at = now(),
+                status = CASE
+                    WHEN books.md5 IS DISTINCT FROM EXCLUDED.md5
+                         AND EXCLUDED.md5 IS NOT NULL
+                         AND books.md5 IS NOT NULL
+                    THEN 'discovered'::doc_status
+                    ELSE books.status
+                END,
+                claimed_at = CASE
+                    WHEN books.md5 IS DISTINCT FROM EXCLUDED.md5
+                         AND EXCLUDED.md5 IS NOT NULL
+                         AND books.md5 IS NOT NULL
+                    THEN NULL ELSE books.claimed_at
+                END,
+                attempts = CASE
+                    WHEN books.md5 IS DISTINCT FROM EXCLUDED.md5
+                         AND EXCLUDED.md5 IS NOT NULL
+                         AND books.md5 IS NOT NULL
+                    THEN 0 ELSE books.attempts
+                END
             WHERE books.title IS DISTINCT FROM EXCLUDED.title
                OR books.md5 IS DISTINCT FROM EXCLUDED.md5
                OR books.size_bytes IS DISTINCT FROM EXCLUDED.size_bytes
@@ -114,6 +143,23 @@ def claim_next_book(conn):
             row = cur.fetchone()
     conn.commit()
     return row
+
+
+def touch_claim(conn, book_id: int) -> None:
+    """Refresh claimed_at -- the worker's heartbeat, called between pipeline
+    stages.
+
+    claimed_at is a lease, not a lock: nothing is held during the minutes a book
+    takes to download, extract and embed, and other workers stay off it only
+    because the claim looks recent. Without a heartbeat that lease expires on a
+    fixed timer, so it cannot tell "the worker died" from "this book is just
+    slow" -- a long OCR job gets stolen mid-flight and processed twice. Touching
+    it as each stage completes makes "still alive" and "still holding it" the
+    same signal, which is what lets CLAIM_STALE_MINUTES stay short enough to
+    recover a genuinely dead worker quickly.
+    """
+    conn.execute("UPDATE books SET claimed_at = now() WHERE id = %s", (book_id,))
+    conn.commit()
 
 
 def fetch_book_by_drive_id(conn, drive_file_id: str):

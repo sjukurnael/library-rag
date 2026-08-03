@@ -36,7 +36,13 @@ DATABASE_URL = os.environ.get(
 # assumed to belong to a dead worker and is re-claimable (the reaper clause of
 # claim_next_book). MAX_ATTEMPTS caps retries: a book claimed for the Nth time
 # with attempts already >= MAX_ATTEMPTS is marked failed instead of processed.
-CLAIM_STALE_MINUTES = 30
+#
+# 5, not 30, because ingest.py now heartbeats (db.touch_claim) at every stage
+# boundary. Without a heartbeat this had to exceed the slowest possible book --
+# a long OCR job -- or a live worker's book would be stolen mid-flight. With
+# one, the only thing that must fit inside the window is the longest single
+# stage, so a dead worker's book is recovered in minutes instead of half an hour.
+CLAIM_STALE_MINUTES = 5
 MAX_ATTEMPTS = 3
 
 # ---- Drive ----

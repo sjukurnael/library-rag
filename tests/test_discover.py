@@ -1,4 +1,5 @@
 """discover(): idempotent upsert, updates only on real change, PDF-only."""
+import db
 import ingest
 
 
@@ -55,3 +56,41 @@ def test_discover_updates_on_md5_change(conn):
     ).fetchone()
     assert row[0] == "zzz"
     assert row[1] == 999
+
+
+def test_a_done_book_whose_bytes_changed_is_requeued(conn):
+    """A new md5 means the indexed chunks describe a document that no longer
+    exists. Leaving the book 'done' guarantees the index disagrees with Drive,
+    and nothing in any status count reveals it."""
+    ingest.discover(conn, "folder", _fake_listing([PDF_A]))
+    conn.execute(
+        "UPDATE books SET status='done', attempts=2, claimed_at=now() "
+        "WHERE drive_file_id='a'"
+    )
+    conn.commit()
+
+    ingest.discover(conn, "folder", _fake_listing([{**PDF_A, "md5Checksum": "zzz"}]))
+
+    status, attempts, claimed = conn.execute(
+        "SELECT status, attempts, claimed_at FROM books WHERE drive_file_id='a'"
+    ).fetchone()
+    assert status == "discovered", f"edited book left as {status!r}"
+    assert attempts == 0, "retry budget not reset for a genuinely new document"
+    assert claimed is None
+    assert db.claim_next_book(conn) is not None, "requeued book is not claimable"
+
+
+def test_a_rename_alone_does_not_reprocess(conn):
+    """A title change is metadata. Re-ingesting a 400-page book because someone
+    renamed it in Drive would be a costly false positive."""
+    ingest.discover(conn, "folder", _fake_listing([PDF_A]))
+    conn.execute("UPDATE books SET status='done' WHERE drive_file_id='a'")
+    conn.commit()
+
+    ingest.discover(conn, "folder", _fake_listing([{**PDF_A, "name": "Romans (2nd ed).pdf"}]))
+
+    status, title = conn.execute(
+        "SELECT status, title FROM books WHERE drive_file_id='a'"
+    ).fetchone()
+    assert status == "done", "a rename should not requeue the book"
+    assert title == "Romans (2nd ed).pdf", "the new title should still be recorded"

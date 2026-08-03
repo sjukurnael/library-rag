@@ -27,6 +27,56 @@ PAGE_MARKER_RE = re.compile(r"<!--\s*page:\s*(\d+)\s*-->")
 # A whole markdown heading line, used to detect pieces that carry no prose.
 HEADING_LINE_RE = re.compile(r"^\s{0,3}#{1,6}[^\n]*$", re.MULTILINE)
 
+# pymupdf4llm wraps text it found INSIDE an image region in these markers. On
+# this corpus that is map and diagram labels: real words, but scattered in
+# whatever order the OCR walked the page, so the spatial relationship that made
+# them meaningful is gone. 19% of chunks carried one. Dropped whole rather than
+# guessed at -- the extractor tells us exactly where they are.
+PICTURE_TEXT_RE = re.compile(
+    r"<!--\s*Start of picture text\s*-->.*?<!--\s*End of picture text\s*-->",
+    re.DOTALL | re.IGNORECASE,
+)
+# Markdown has no syntax for superscripts or in-region line breaks, so
+# pymupdf4llm emits HTML for them. Left alone they reach the embedding model as
+# literal "<sup>" and "<br>" tokens.
+HTML_TAG_RE = re.compile(r"<(/?)(br|sup|sub|b|i|em|strong)\s*/?>", re.IGNORECASE)
+# Emphasis markers around a heading. These are cosmetic in the body but poison
+# in a heading trail: the trail is prepended into embedded content, shown as the
+# citation, and matched against config.JUNK_HEADINGS -- and "**Contents**" does
+# not equal "contents", so the table of contents slipped through the filter.
+EMPHASIS_RE = re.compile(r"(\*\*|__|\*|_|`)")
+# Paired bold only, non-greedy, kept on one line so it cannot swallow a
+# paragraph when a stray "**" is left unclosed.
+BOLD_MARKER_RE = re.compile(r"\*\*([^*\n]+?)\*\*|__([^_\n]+?)__")
+
+
+def clean_extracted(markdown: str) -> str:
+    """Strip extraction artefacts that must never reach the embedding model.
+
+    Done here rather than in pipeline/extract.py on purpose. Markdown is the
+    permanent asset (ingest.py --rechunk rebuilds Postgres from it with no Drive
+    or OCR calls), so it should stay a faithful record of what the PDF held.
+    What we embed is a policy decision, and policy belongs on the chunking side
+    -- exactly as `<!-- page: N -->` is emitted by extract.py and interpreted
+    here. Keeping it this way means changing the policy costs a --rechunk
+    instead of a full re-extraction.
+    """
+    markdown = PICTURE_TEXT_RE.sub("", markdown)
+    markdown = HTML_TAG_RE.sub(" ", markdown)
+    # Paired ** / __ only. Single "*" is left alone because it also starts a
+    # bullet and multiplies numbers; the double form is unambiguous. On this
+    # corpus most of it is not emphasis at all but bolded running page
+    # furniture -- "**|   7**", "**8   |**" -- one per page, 293 of 327 chunks
+    # in one book. The words survive; only the markup goes.
+    # \1 or \2 depending on which alternative matched -- a bare r"\1" silently
+    # deletes __underscore__ text, since that capture lands in group 2.
+    return BOLD_MARKER_RE.sub(lambda m: m.group(1) or m.group(2), markdown)
+
+
+def _clean_heading(text: str) -> str:
+    """A heading with emphasis markers and collapsed whitespace removed."""
+    return " ".join(EMPHASIS_RE.sub("", text).split()).strip()
+
 
 def chunk_markdown(markdown: str, dropped: list | None = None) -> list:
     """Return a list of {ordinal, heading_trail, page_start, page_end, content}
@@ -49,9 +99,13 @@ def chunk_markdown(markdown: str, dropped: list | None = None) -> list:
         headers_to_split_on=config.MARKDOWN_HEADERS, strip_headers=True
     )
 
+    markdown = clean_extracted(markdown)
+
     sections = []
     for section in header_splitter.split_text(markdown):
-        trail = " > ".join(v for v in section.metadata.values() if v)
+        trail = " > ".join(
+            c for c in (_clean_heading(v) for v in section.metadata.values() if v) if c
+        )
         if trail and _is_junk(trail):
             # Junk sections are dropped, but their page markers still advance
             # the counter so later chunks keep the right page numbers.

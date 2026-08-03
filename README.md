@@ -20,7 +20,8 @@ library-rag/
 ├── agent/                # the exploration agent
 │   ├── loop.py           #   system prompt + hand-written tool-use loop
 │   ├── tools.py          #   list_folder (cached Drive listing) + estimate_pipeline
-│   └── assumptions.py    #   every estimation constant, each with a rationale comment
+│   ├── assumptions.py    #   every estimation constant, each with a rationale comment
+│   └── research.py       #   Phase 1: the retrieval agent's own search loop
 ├── drive/                # Drive access, shared by both phases
 │   └── client.py         #   OAuth, paginated listing, download, retries
 ├── config.py              # Phase 1: every ingestion tunable (paths, models, chunk sizes)
@@ -30,7 +31,9 @@ library-rag/
 ├── migrate.py              #   tiny forward-only migration runner (schema_migrations)
 ├── docker-compose.yml      #   pgvector/pgvector:pg17, port 5434, healthcheck
 ├── ingest.py               #   the worker: Drive PDF -> markdown -> chunks -> embeddings
-├── search.py               #   retrieval smoke test CLI
+├── search.py               #   retrieval smoke test CLI + the deterministic control
+├── api.py                  #   FastAPI: serves the UI, /api/books, /api/research (SSE)
+├── static/index.html       #   the UI: one question box, clickable inline citations
 ├── report.py               #   calibration report: measured vs. assumptions.py
 ├── pipeline/               #   ingest.py's internals
 │   ├── extract.py         #     PyMuPDF / Mistral OCR -> markdown + manifest
@@ -224,6 +227,11 @@ whole batch. A scanned book with no `MISTRAL_API_KEY` set is marked
   finishes (not before — building it against an empty/partial table is wasted
   work).
 - `--status` — print a counts-by-status table.
+- `--local a.pdf b.pdf` — ingest PDFs already on disk instead of from Drive.
+  Reuses `process_book` unchanged by swapping the downloader for a file copy,
+  so extraction, chunking, embedding and the atomic commit are the same code
+  the Drive path runs. Books are keyed `local:<filename>`, so re-running is
+  idempotent exactly like `--discover`.
 
 ### Recovery
 
@@ -232,8 +240,15 @@ whole batch. A scanned book with no `MISTRAL_API_KEY` set is marked
 - Re-running on a fully `done` book is a no-op — enumeration is idempotent on
   `drive_file_id`, and `done`/`failed`/`needs_ocr` books are never re-claimed.
 - A book killed mid-processing keeps its `claimed_at`; the next run's claim
-  query treats a claim older than 30 minutes as stale and re-claims it (→
-  `failed` once it has exceeded 3 attempts).
+  query treats a claim older than `CLAIM_STALE_MINUTES` (5) as stale and
+  re-claims it (→ `failed` once it has exceeded 3 attempts). `claimed_at` is a
+  **lease, not a lock** — no row is locked during the minutes a book takes, so
+  `process_book` heartbeats (`db.touch_claim`) at each stage boundary. That is
+  what lets the window be 5 minutes rather than longer than the slowest
+  possible book.
+- A book whose bytes change in Drive (new md5) is reset to `discovered` by the
+  next `--discover` and reprocessed. A rename alone is metadata and does not
+  reprocess.
 - Re-processing a book always starts by wiping its old chunks and stale local
   PDF/markdown, and commits all of a book's chunks **and** its `done` status in
   a single transaction — so a restart never leaves a half-indexed book.
@@ -262,6 +277,44 @@ full suite against a pgvector service container.
   WHERE status='needs_ocr';` (via `make db-psql`) and re-run `ingest.py`.
 - **`search.py` returns nothing** — confirm at least one `done` book
   (`python ingest.py --status`) and that `ingest.py --index` has run.
+
+---
+
+## Ask it questions (web UI)
+
+```bash
+make db-up                                   # Postgres must be running
+./.venv/bin/uvicorn api:app --reload --port 8000
+open http://localhost:8000
+```
+
+One question box. Every question goes through `agent/research.py`: the model
+runs its own search loop and decides how many searches the question warrants —
+one for a plain factual question, more for a comparative or multi-part one.
+
+There is deliberately no separate "one search, top-k" mode in the UI. That is
+just this with the decision hardcoded, and hardcoding it caps a comparative
+question at whatever a single embedding of the user's phrasing happens to
+reach. Asked *"how do these books differ on baptism in the Holy Spirit"*, the
+one-shot path returned 8 passages from a single book and correctly reported it
+could not answer; the agent noticed the same gap, called `list_books`, scoped
+follow-up searches per book, and produced a real comparison.
+
+`search.py` remains the deterministic control — same question, same vector,
+same passages — which is what you need to tell whether a chunking or embedding
+change actually helped. The agent varies run to run: better product, worse
+measuring instrument.
+
+Citations in the answer are clickable and open the exact passage with its book,
+section, page range and position (`passage 173 of 330`).
+
+Endpoints: `GET /`, `GET /api/books`, `POST /api/research` (server-sent events,
+so the search trace streams rather than the page sitting silent).
+
+**Cost, measured per question:** ~$0.10, of which Claude is essentially all of
+it and Voyage is $0.0000002. Split across the two Claude calls, choosing the
+query costs $0.0095 and writing the answer from ten retrieved passages costs
+$0.0964 — so `k`, not the number of searches, is the real cost lever.
 
 ---
 

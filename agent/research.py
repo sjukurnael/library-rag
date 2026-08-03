@@ -232,13 +232,25 @@ class _Session:
         }
 
 
-def run(question: str, conn, voyage, *, max_iterations: int = MAX_ITERATIONS):
-    """Yield events: {"type": "search"|"results"|"thinking"|"answer"|"done", ...}."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise RuntimeError("ANTHROPIC_API_KEY is not set")
+def run(
+    question: str,
+    conn,
+    voyage,
+    *,
+    client=None,
+    max_iterations: int = MAX_ITERATIONS,
+):
+    """Yield events: {"type": "search"|"results"|"thinking"|"answer"|"done", ...}.
 
+    `client` is injectable for the same reason conn/voyage/download_file are
+    everywhere else in this codebase: tests drive the loop with a scripted fake
+    and no network. Left None it builds a real Anthropic client.
+    """
     session = _Session(conn, voyage)
-    client = Anthropic()
+    if client is None:
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise RuntimeError("ANTHROPIC_API_KEY is not set")
+        client = Anthropic()
     messages = [{"role": "user", "content": question}]
 
     for iteration in range(1, max_iterations + 1):

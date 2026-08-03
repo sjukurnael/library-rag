@@ -84,6 +84,7 @@ def _chunk_embed_and_finish(conn, book_id: int, markdown: str, voyage_client) ->
         total_tokens += c["token_count"]
 
     db.mark_chunked(conn, book_id)
+    db.touch_claim(conn, book_id)
 
     texts = [c["content"] for c in chunks]
     embeddings, _ = embed_mod.embed_documents(texts, voyage_client)
@@ -122,6 +123,7 @@ def process_book(conn, book, *, download_file, ocr_client, voyage_client) -> Non
                 f"md5 mismatch after download: Drive={book['md5']} local={local_md5}"
             )
     db.mark_downloaded(conn, book_id)
+    db.touch_claim(conn, book_id)
     download_s = time.time() - t_download
 
     # -- extract --
@@ -134,6 +136,7 @@ def process_book(conn, book, *, download_file, ocr_client, voyage_client) -> Non
         return
     extract_mod.write_outputs(book_id, drive_file_id, pdf_path, result)
     db.mark_extracted(conn, book_id, result.page_count, result.has_text_layer)
+    db.touch_claim(conn, book_id)
     extract_s = time.time() - t_extract
 
     # -- chunk + embed + store --

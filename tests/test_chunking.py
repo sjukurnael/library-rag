@@ -141,6 +141,61 @@ def test_heading_is_not_duplicated_in_content():
         assert "#" not in c["content"].split("\n\n", 1)[1]
 
 
+def test_picture_text_blocks_are_dropped():
+    """pymupdf4llm labels text it found inside an image. On this corpus that is
+    map labels -- real words, scattered order, spatial meaning gone. 19% of
+    chunks carried one before this."""
+    md = (
+        "<!-- page: 1 -->\n\n# Colosse\n\n"
+        "<!-- Start of picture text -->\n"
+        "Ephesus<br>Hierapolis<br>} / LYCUS<br>Laodicea VALLEY<br>Colosse\n"
+        "<!-- End of picture text -->\n\n"
+        "The inhabitants of Colosse were mainly Greeks and Phrygians.\n"
+    )
+    chunks = chunking.chunk_markdown(md)
+    assert chunks
+    joined = " ".join(c["content"] for c in chunks)
+    assert "picture text" not in joined
+    assert "LYCUS" not in joined, "map label survived"
+    assert "Greeks and Phrygians" in joined, "real prose was destroyed with it"
+
+
+def test_html_tags_never_reach_the_embedding():
+    # Markdown cannot express superscripts or in-region breaks, so pymupdf4llm
+    # emits HTML. Left alone it embeds as literal "<sup>" tokens.
+    md = "<!-- page: 1 -->\n\n# Romans\n\nAt verses 1, 7,<sup>22.</sup><br>Then follows.\n"
+    for c in chunking.chunk_markdown(md):
+        assert "<sup>" not in c["content"]
+        assert "<br>" not in c["content"]
+        assert "22." in c["content"], "the superscripted text itself must survive"
+
+
+def test_bold_markers_are_stripped_but_words_survive():
+    # Most ** on this corpus is bolded running page furniture ("**|   7**"),
+    # not emphasis. Single "*" is left alone -- it also starts bullets.
+    assert chunking.clean_extracted("**|   7**") == "|   7"
+    assert chunking.clean_extracted("a **bold** b") == "a bold b"
+    assert chunking.clean_extracted("__und__") == "und", "group-2 capture dropped"
+    assert chunking.clean_extracted("* bullet") == "* bullet"
+    assert chunking.clean_extracted("3 * 4 * 5") == "3 * 4 * 5"
+    assert chunking.clean_extracted("**unclosed") == "**unclosed"
+
+
+def test_junk_filter_survives_emphasised_headings():
+    """`**Contents**` is not `contents`, so a bolded table of contents used to
+    walk straight past the filter and into the index."""
+    md = (
+        "<!-- page: 1 -->\n\n## **Contents**\n\nChapter 1 .... 3\nChapter 2 .... 40\n\n"
+        "## **Chapter 1**\n\nReal prose about the covenant that should be kept.\n"
+    )
+    dropped = []
+    chunks = chunking.chunk_markdown(md, dropped=dropped)
+    assert dropped == ["Contents"], f"bolded junk heading not caught: {dropped}"
+    trails = [c["heading_trail"] for c in chunks]
+    assert trails == ["Chapter 1"], trails
+    assert "**" not in chunks[0]["content"]
+
+
 def test_ordinals_are_dense_and_overlap_on_split():
     # One section long enough to force RecursiveCharacterTextSplitter to split.
     body = "Inductive Bible study rewards patient observation. " * 200  # ~10k chars

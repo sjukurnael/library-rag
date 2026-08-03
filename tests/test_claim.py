@@ -54,6 +54,32 @@ def test_fresh_and_stale_claims(conn):
     assert reclaimed["attempts"] == 2
 
 
+def test_heartbeat_keeps_a_slow_book_from_being_stolen(conn):
+    """claimed_at is a lease, not a lock. Without a heartbeat it expires on a
+    fixed timer, so a book slower than the window is taken from a live worker
+    and processed twice."""
+    _seed(conn, 1)
+    mine = db.claim_next_book(conn)
+
+    # Simulate a long stage: the claim ages past the stale window.
+    conn.execute(
+        "UPDATE books SET claimed_at = now() - interval '6 minutes' WHERE id = %s",
+        (mine["id"],),
+    )
+    conn.commit()
+    assert db.claim_next_book(conn) is not None, "stale claim should be reclaimable"
+
+    # Now do it again, but heartbeat before the window elapses.
+    conn.execute(
+        "UPDATE books SET claimed_at = now() - interval '4 minutes', attempts = 1 "
+        "WHERE id = %s",
+        (mine["id"],),
+    )
+    conn.commit()
+    db.touch_claim(conn, mine["id"])
+    assert db.claim_next_book(conn) is None, "heartbeat did not protect the claim"
+
+
 def test_attempts_over_cap_are_failed(conn):
     _seed(conn, 1)
     # Already at the cap, and stale so it would otherwise be claimed.
