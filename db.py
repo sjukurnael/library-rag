@@ -286,14 +286,63 @@ def build_hnsw_index(conn) -> None:
     conn.commit()
 
 
-def search(conn, query_embedding, k: int, book_id: int | None = None) -> list:
-    """Nearest chunks as dicts, closest first.
+SEARCH_MODES = ("hybrid", "dense", "lexical")
+
+# Columns every mode returns, so callers never branch on how a row was found.
+# `ordinal` and `total_chunks` are carried so a citation can say where in the
+# book a passage sits, not just which page.
+_CHUNK_COLUMNS = """
+    c.id AS chunk_id, c.book_id, c.ordinal, c.heading_trail,
+    c.page_start, c.page_end, c.content, c.token_count,
+    b.title, b.page_count,
+    (SELECT count(*) FROM chunks x WHERE x.book_id = c.book_id) AS total_chunks
+"""
+
+
+def search(
+    conn,
+    query_embedding,
+    k: int,
+    book_id: int | None = None,
+    *,
+    query_text: str | None = None,
+    mode: str | None = None,
+    tsquery_mode: str | None = None,
+    lexical_weight: float | None = None,
+) -> list:
+    """Retrieve the k best chunks as dicts, best first.
+
+    mode:
+      "hybrid"  -- RRF over the dense and lexical legs (see config.RRF_K).
+      "dense"   -- cosine over the embedding only.
+      "lexical" -- Postgres full-text over the `tsv` column only.
+
+    Defaults to "hybrid" when query_text is supplied and "dense" when it is not,
+    so a caller that only has a vector keeps working unchanged. "dense" and
+    "lexical" exist mainly so evaluate.py can score the legs against the fusion
+    -- a hybrid that is not measurably better than its own dense leg is just a
+    slower dense search, and the only way to know is to be able to run both.
 
     dict rows rather than tuples: every caller wants a different subset of the
     columns, and positional unpacking means adding one column here silently
-    breaks all of them at once. `ordinal` and `total_chunks` are carried so a
-    citation can say where in the book a passage sits, not just which page.
+    breaks all of them at once.
     """
+    # config.SEARCH_MODE, not a literal: which mode ships is a measured
+    # decision recorded there, and it should be changeable in one place.
+    mode = mode or (config.SEARCH_MODE if query_text else "dense")
+    if mode not in SEARCH_MODES:
+        raise ValueError(f"unknown search mode {mode!r}; expected one of {SEARCH_MODES}")
+    if mode in ("hybrid", "lexical") and not query_text:
+        raise ValueError(f"mode={mode!r} needs query_text")
+    if mode == "dense":
+        return _search_dense(conn, query_embedding, k, book_id)
+    return _search_fused(
+        conn, query_embedding, query_text, k, book_id, mode, tsquery_mode,
+        lexical_weight,
+    )
+
+
+def _search_dense(conn, query_embedding, k: int, book_id: int | None) -> list:
     params = [HalfVector(query_embedding)]
     where = ""
     if book_id is not None:
@@ -303,11 +352,7 @@ def search(conn, query_embedding, k: int, book_id: int | None = None) -> list:
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             f"""
-            SELECT c.id AS chunk_id, c.book_id, c.ordinal, c.heading_trail,
-                   c.page_start, c.page_end, c.content, c.token_count,
-                   b.title, b.page_count,
-                   (SELECT count(*) FROM chunks x WHERE x.book_id = c.book_id)
-                       AS total_chunks,
+            SELECT {_CHUNK_COLUMNS},
                    c.embedding <=> %s::halfvec AS distance
             FROM chunks c JOIN books b ON b.id = c.book_id
             {where}
@@ -315,6 +360,108 @@ def search(conn, query_embedding, k: int, book_id: int | None = None) -> list:
             LIMIT %s
             """,
             params,
+        )
+        return cur.fetchall()
+
+
+def _search_fused(
+    conn, query_embedding, query_text, k, book_id, mode, tsquery_mode=None,
+    lexical_weight=None,
+) -> list:
+    """Both legs, fused by Reciprocal Rank Fusion.
+
+    One SQL statement for both fused modes, with the unwanted leg's candidate
+    pool set to 0 rather than a second near-identical query. Two queries that
+    must stay in lockstep on filtering, page columns and book scoping are two
+    queries that will eventually disagree about one of them.
+
+    row_number() is taken OUTSIDE each leg's LIMIT so the ranks are the ranks
+    within the candidate pool, which is what RRF is defined over.
+
+    `distance` is recomputed in the final SELECT for every fused row, including
+    rows only the lexical leg found. It costs one vector op per surviving
+    candidate (at most 2 * HYBRID_CANDIDATES) and it means `distance` is never
+    NULL -- agent/research.py's weak-match cutoff reads it on every row, and a
+    lexical-only hit with no distance would silently read as a strong match.
+    """
+    dense_pool = 0 if mode == "lexical" else config.HYBRID_CANDIDATES
+    lexical_pool = config.HYBRID_CANDIDATES
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            WITH dense AS (
+                SELECT d.id, row_number() OVER (ORDER BY d.distance, d.id) AS rank
+                FROM (
+                    SELECT c.id, c.embedding <=> %(vec)s::halfvec AS distance
+                    FROM chunks c
+                    WHERE (%(book_id)s::bigint IS NULL
+                           OR c.book_id = %(book_id)s::bigint)
+                    ORDER BY 2
+                    LIMIT %(dense_pool)s
+                ) d
+            ),
+            q AS (
+                SELECT CASE WHEN %(tsquery_mode)s = 'or' THEN
+                    -- Stem and drop stopwords with Postgres's own english
+                    -- config (to_tsvector), then OR the surviving lexemes.
+                    -- quote_literal each one: raw lexemes can contain '/', '@'
+                    -- or ':' (URLs, emails, "3:16") and would fail the cast.
+                    -- NULLIF('') covers an all-stopword query -- `tsv @@ NULL`
+                    -- is NULL, so the leg returns nothing instead of erroring.
+                    NULLIF(array_to_string(ARRAY(
+                        SELECT quote_literal(l)
+                        FROM unnest(tsvector_to_array(
+                            to_tsvector('english', %(text)s))) l
+                    ), ' | '), '')::tsquery
+                ELSE
+                    websearch_to_tsquery('english', %(text)s)
+                END AS query
+            ),
+            lexical AS (
+                SELECT l.id, row_number() OVER (ORDER BY l.score DESC, l.id) AS rank
+                FROM (
+                    SELECT c.id, ts_rank_cd(c.tsv, q.query) AS score
+                    FROM chunks c, q
+                    WHERE c.tsv @@ q.query
+                      AND (%(book_id)s::bigint IS NULL
+                           OR c.book_id = %(book_id)s::bigint)
+                    ORDER BY 2 DESC
+                    LIMIT %(lexical_pool)s
+                ) l
+            ),
+            fused AS (
+                SELECT COALESCE(d.id, l.id) AS id,
+                       COALESCE(%(w_dense)s / (%(rrf_k)s + d.rank), 0)
+                         + COALESCE(%(w_lexical)s / (%(rrf_k)s + l.rank), 0)
+                         AS rrf_score,
+                       d.rank AS dense_rank,
+                       l.rank AS lexical_rank
+                FROM dense d FULL OUTER JOIN lexical l ON l.id = d.id
+            )
+            SELECT {_CHUNK_COLUMNS},
+                   c.embedding <=> %(vec)s::halfvec AS distance,
+                   f.rrf_score, f.dense_rank, f.lexical_rank
+            FROM fused f
+            JOIN chunks c ON c.id = f.id
+            JOIN books b ON b.id = c.book_id
+            ORDER BY f.rrf_score DESC, distance
+            LIMIT %(k)s
+            """,
+            {
+                "vec": HalfVector(query_embedding),
+                "text": query_text,
+                "book_id": book_id,
+                "dense_pool": dense_pool,
+                "lexical_pool": lexical_pool,
+                "tsquery_mode": tsquery_mode or config.LEXICAL_TSQUERY,
+                "rrf_k": config.RRF_K,
+                "w_dense": 1.0,
+                "w_lexical": (
+                    config.RRF_LEXICAL_WEIGHT if lexical_weight is None
+                    else lexical_weight
+                ),
+                "k": k,
+            },
         )
         return cur.fetchall()
 

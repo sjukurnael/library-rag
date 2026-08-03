@@ -10,7 +10,9 @@ Nothing here touches the Voyage / Drive / Mistral APIs -- embedders and Drive
 listings are injected as deterministic fakes.
 """
 import hashlib
+import math
 import random
+import re
 import uuid
 
 import psycopg
@@ -109,6 +111,27 @@ def deterministic_vector(text: str, dim: int = None) -> list:
     seed = int(hashlib.sha256(text.encode("utf-8")).hexdigest(), 16) % (2**32)
     rng = random.Random(seed)
     return [rng.uniform(-1.0, 1.0) for _ in range(dim)]
+
+
+def lexical_vector(text: str, dim: int = None) -> list:
+    """A hashed bag-of-words vector: hash each lowercased word to a dimension,
+    count it, then L2-normalise so cosine is well behaved.
+
+    deterministic_vector is seeded by the WHOLE string, so two texts about the
+    same subject are as far apart as two unrelated ones -- fine for "did this
+    row round-trip", useless for "did retrieval return the right passage". This
+    one has the single property an evaluation needs: texts sharing words are
+    close, texts sharing none are far. It is a crude embedder, not a good one,
+    and that is deliberate -- tests/test_eval.py measures whether the HARNESS
+    and the SQL rank correctly, and a real model would put network calls and
+    non-determinism inside the thing being measured.
+    """
+    dim = dim or config.EMBED_DIM
+    vec = [0.0] * dim
+    for word in re.findall(r"[a-z0-9]+", text.lower()):
+        vec[int(hashlib.md5(word.encode()).hexdigest(), 16) % dim] += 1.0
+    norm = math.sqrt(sum(v * v for v in vec))
+    return [v / norm for v in vec] if norm else vec
 
 
 class _FakeEmbedResult:

@@ -26,6 +26,15 @@ def main():
     parser.add_argument(
         "--book", type=int, default=None, help="Restrict search to one books.id."
     )
+    parser.add_argument(
+        "--mode",
+        choices=db.SEARCH_MODES,
+        default=config.SEARCH_MODE,
+        help=f"Retrieval mode (default {config.SEARCH_MODE}, the mode the app "
+        "ships). dense/lexical run one leg alone, which is how you see what the "
+        "fusion is actually contributing. Defaulting to anything other than what "
+        "api.py uses would make this tool lie about the thing it exists to debug.",
+    )
     args = parser.parse_args()
 
     print(f"Embedding query with {config.EMBED_MODEL} ...")
@@ -33,7 +42,10 @@ def main():
     query_embedding = embed_mod.embed_query(args.query, voyage_client)
 
     with db.get_conn() as conn:
-        rows = db.search(conn, query_embedding, args.k, args.book)
+        rows = db.search(
+            conn, query_embedding, args.k, args.book,
+            query_text=args.query, mode=args.mode,
+        )
 
     if not rows:
         print("No results. Is the DB populated? Did ingest.py run?")
@@ -49,7 +61,16 @@ def main():
         else:
             page_label = f"pp.{page_start}-{page_end}"
 
-        print(f"#{rank}  distance={r['distance']:.4f}  {r['title']}  ({page_label})")
+        # Which leg found it, when the fused modes ran: "dense 3 / lexical -"
+        # reads as "the embedding ranked this 3rd, full text never saw it".
+        legs = ""
+        if "dense_rank" in r:
+            legs = (
+                f"  [dense {r['dense_rank'] or '-'} / lexical {r['lexical_rank'] or '-'}]"
+            )
+        print(
+            f"#{rank}  distance={r['distance']:.4f}  {r['title']}  ({page_label}){legs}"
+        )
         if r["heading_trail"]:
             print(f"    {r['heading_trail']}")
         print(f"    passage {r['ordinal'] + 1} of {r['total_chunks']}")

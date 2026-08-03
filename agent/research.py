@@ -169,7 +169,12 @@ class _Session:
         k = max(1, min(int(k or DEFAULT_K), MAX_K))
 
         vec = embed_mod.embed_query(query, self.voyage)
-        rows = db.search(self.conn, vec, k, book_id)
+        # query_text as well as the vector: retrieval is hybrid (dense + full
+        # text, fused by RRF -- see config.RRF_K). The agent reformulates into
+        # the corpus's own vocabulary, which is exactly when the lexical leg
+        # earns its keep, and it quotes proper names and references that a
+        # 1024-dim embedding barely encodes.
+        rows = db.search(self.conn, vec, k, book_id, query_text=query)
 
         hits = []
         for r in rows:

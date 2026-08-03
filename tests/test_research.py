@@ -91,7 +91,7 @@ def fake_search(monkeypatch):
     """Route db.search to a queue of canned result sets."""
     queued = []
 
-    def _search(_conn, _vec, k, book_id=None):
+    def _search(_conn, _vec, k, book_id=None, **kw):
         return queued.pop(0) if queued else []
 
     monkeypatch.setattr(research.db, "search", _search)
@@ -225,8 +225,9 @@ def test_list_books_is_offered_and_reported(fake_search):
 def test_book_id_is_passed_through_to_retrieval(monkeypatch):
     seen = {}
 
-    def _search(_conn, _vec, k, book_id=None):
+    def _search(_conn, _vec, k, book_id=None, **kw):
         seen["k"], seen["book_id"] = k, book_id
+        seen["query_text"] = kw.get("query_text")
         return [_row(101)]
 
     monkeypatch.setattr(research.db, "search", _search)
@@ -236,7 +237,10 @@ def test_book_id_is_passed_through_to_retrieval(monkeypatch):
         [_text("ok")],
     ])
 
-    assert seen == {"k": 3, "book_id": 7}
+    assert seen == {"k": 3, "book_id": 7, "query_text": "scoped"}, (
+        "the raw query text must reach retrieval, not just its embedding -- "
+        "the lexical leg of the hybrid search has nothing to match without it"
+    )
     assert events[0]["book_id"] == 7
 
 
@@ -244,7 +248,7 @@ def test_k_is_clamped_to_the_allowed_range(monkeypatch):
     seen = []
     monkeypatch.setattr(
         research.db, "search",
-        lambda _c, _v, k, book_id=None: (seen.append(k), [_row(101)])[1],
+        lambda _c, _v, k, book_id=None, **kw: (seen.append(k), [_row(101)])[1],
     )
     monkeypatch.setattr(research.embed_mod, "embed_query", lambda t, c: [0.0] * 8)
     _run([

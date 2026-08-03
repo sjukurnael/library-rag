@@ -265,6 +265,53 @@ DB-backed tests create/drop a throwaway `library_test` database from
 (the pure-function tests still run). CI (`.github/workflows/ci.yml`) runs the
 full suite against a pgvector service container.
 
+### Retrieval quality
+
+The rest of the suite asserts that functions do what they say. None of it can
+tell you whether retrieval is any *good* — chunk size, the embedding model, the
+fusion and its constants all trade quality against each other silently, and the
+only symptom of getting one wrong is that answers quietly get worse.
+
+```bash
+python -m evaluate                  # score the shipping config
+python -m evaluate --compare        # every mode side by side
+python -m evaluate --show-misses    # what came back instead
+python -m evaluate --questions eval/questions_paraphrase.json
+```
+
+Ground truth lives in `eval/questions.json` as (book, page span) — never chunk
+ids, which do not survive a re-chunk. Two sets of the same 22 questions: one
+phrased in the books' own vocabulary, one phrased the way a user would ask.
+Metrics are hit-rate@k (what matters — everything retrieved is handed to the
+model at once) and MRR (a tiebreaker when hit-rate ties).
+
+**Both a dense and a hybrid (dense + Postgres full-text, fused by Reciprocal
+Rank Fusion) path are implemented. Dense is what ships, because that is what the
+measurement supported:**
+
+|              | book-voice hit@8 | MRR | user-voice hit@8 | MRR |
+|--------------|---|---|---|---|
+| **dense**    | **100.0%** | **0.865** | **77.3%** | **0.641** |
+| hybrid/and   | 100.0% | 0.888 | 77.3% | 0.633 |
+| hybrid/or    | 100.0% | 0.867 | 72.7% | 0.531 |
+| lexical/and  | 63.6% | 0.614 | 9.1% | 0.091 |
+| lexical/or   | 63.6% | 0.286 | 36.4% | 0.161 |
+
+Hit-rate is *identical* between dense and hybrid on both sets — fusion only
+reshuffles ranks inside a result set that already held the right passage, and
+the MRR deltas point in opposite directions on the two sets (+0.023 / −0.008),
+which is noise at n=22. At 1,423 chunks the dense leg is under no pressure, and
+Postgres full-text has no IDF, so its ranking cannot tell that *Philemon* is
+rarer than *ask*. `config.SEARCH_MODE` records the full reasoning and what would
+change the answer. The lexical path stays because it makes re-running this at
+100K chunks a one-flag experiment rather than a rewrite.
+
+`tests/test_eval.py` runs the same scoring functions over a small synthetic
+corpus with a deterministic bag-of-words embedder, so the harness is gated in CI
+with no network and no API key — including a test that deliberately breaks
+retrieval and asserts the harness goes red, because a gate that cannot fail is
+decoration.
+
 ### Troubleshooting
 
 - **`db-up` hangs / connection refused** — Docker Desktop isn't running.

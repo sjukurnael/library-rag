@@ -42,3 +42,11 @@ jobs:
 
       - name: Test
         run: pytest -v
+
+      # Called out as its own step because it answers a different question from
+      # the rest of the suite. Everything above asserts that a function does what
+      # it says; this asserts that retrieval still puts the right passage in
+      # front of the model. A chunking or fusion change can leave every other
+      # test green and quietly make answers worse.
+      - name: Retrieval quality gate
+        run: pytest tests/test_eval.py -v

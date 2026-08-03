@@ -46,7 +46,7 @@ dev = [
 # Flat top-level scripts + the two subpackages. Listing py-modules explicitly so
 # `pip install -e .` exposes `import config`, `import db`, `python -m migrate`, etc.
 [tool.setuptools]
-py-modules = ["config", "db", "ingest", "search", "report", "migrate", "explore"]
+py-modules = ["config", "db", "ingest", "search", "evaluate", "report", "migrate", "explore"]
 
 [tool.setuptools.packages.find]
 include = ["agent*", "drive*", "pipeline*"]

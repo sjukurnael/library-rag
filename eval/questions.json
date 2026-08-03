@@ -1,0 +1,142 @@
+{
+  "_README": [
+    "Curated retrieval ground truth. Each question was written FROM a passage",
+    "that is actually in the index -- the passage was read first, then a question",
+    "it genuinely answers was written for it. Questions invented first and",
+    "ground-truthed later encode what you hoped the corpus said.",
+    "",
+    "Ground truth is (book, page range), never chunk_id. Chunk ids do not survive",
+    "a re-chunk or a re-ingest, so an id-keyed eval set silently rots into all",
+    "misses the first time extraction changes -- which is exactly when you most",
+    "need the harness to still mean something. Book title + page span is stable",
+    "across everything except the book itself changing.",
+    "",
+    "'book' matches case-insensitively as a substring of books.title.",
+    "'pages' is an inclusive [start, end] span; a retrieved chunk is a hit when",
+    "its own [page_start, page_end] OVERLAPS the span (not equals -- chunk",
+    "boundaries move).",
+    "",
+    "This is a deliberately STRICT metric. A chunk that answers the question well",
+    "from a different page counts as a miss, so absolute hit-rate understates",
+    "real quality. That is fine: the harness exists to detect regressions between",
+    "two runs over the same corpus, not to publish an absolute score.",
+    "",
+    "The mix is intentional -- roughly a third of these turn on a rare literal",
+    "token (Epaphras, Belshazzar, 'husbandman', 'nephews'), which is where the",
+    "lexical leg should earn its place, and the rest are paraphrases, where it",
+    "should not. A set of only one kind cannot tell you whether hybrid helps."
+  ],
+  "k": 8,
+  "questions": [
+    {
+      "id": "colosse-founder",
+      "question": "Who may have founded the church at Colosse?",
+      "expect": [{"book": "Colossians", "pages": [9, 10]}]
+    },
+    {
+      "id": "psalms-hebrew-bible-position",
+      "question": "Where does the scroll of Psalms appear in the Hebrew Scriptures?",
+      "expect": [{"book": "Psalms", "pages": [7, 9]}]
+    },
+    {
+      "id": "psalms-divine-names-book-two",
+      "question": "How does the use of the divine name differ between Book I and Book II of the Psalms?",
+      "expect": [{"book": "Psalms", "pages": [61, 61]}]
+    },
+    {
+      "id": "psalm-14-title",
+      "question": "What is the title and occasion of Psalm 14?",
+      "expect": [{"book": "Psalms", "pages": [33, 34]}]
+    },
+    {
+      "id": "sabbath-saturday-to-sunday",
+      "question": "Who changed the Sabbath day from Saturday to Sunday?",
+      "expect": [{"book": "essential-biblical-doctrines", "pages": [163, 164]}]
+    },
+    {
+      "id": "stingy-offerings",
+      "question": "What are the consequences for those who are stingy with their offerings?",
+      "expect": [{"book": "essential-biblical-doctrines", "pages": [207, 209]}]
+    },
+    {
+      "id": "providence-over-creatures",
+      "question": "What is God's providential guardianship over his creatures?",
+      "expect": [{"book": "essential-biblical-doctrines", "pages": [43, 44]}]
+    },
+    {
+      "id": "promise-to-abraham",
+      "question": "What did God promise Abraham about the Savior coming from his seed?",
+      "expect": [{"book": "essential-biblical-doctrines", "pages": [88, 88]}]
+    },
+    {
+      "id": "holy-communion-preparation",
+      "question": "How should the congregation prepare themselves before partaking in Holy Communion?",
+      "expect": [{"book": "essential-biblical-doctrines", "pages": [127, 129]}]
+    },
+    {
+      "id": "john-the-baptist-role",
+      "question": "What was the role of John the Baptist in preparing the way for Jesus?",
+      "expect": [{"book": "holy_spirit", "pages": [285, 286]}]
+    },
+    {
+      "id": "hosea-latter-rain",
+      "question": "What does Hosea's prophecy say about the latter and former rain?",
+      "expect": [{"book": "holy_spirit", "pages": [144, 145]}]
+    },
+    {
+      "id": "tongues-temporary-sign",
+      "question": "Is speaking in tongues a temporary sign that has ceased?",
+      "expect": [{"book": "holy_spirit", "pages": [220, 221]}]
+    },
+    {
+      "id": "commissioned-workers",
+      "question": "Why must church workers be commissioned and empowered by the Holy Spirit?",
+      "expect": [{"book": "holy_spirit", "pages": [75, 75]}]
+    },
+    {
+      "id": "seek-first-kingdom",
+      "question": "What does it mean to seek first the kingdom of God?",
+      "expect": [{"book": "holy_spirit", "pages": [356, 357]}]
+    },
+    {
+      "id": "nephews-1-tim-5-4",
+      "question": "What does the word nephews mean in 1 Timothy 5:4?",
+      "expect": [{"book": "Timothy", "pages": [54, 55]}]
+    },
+    {
+      "id": "husbandman-2-tim-2-6",
+      "question": "What does husbandman mean in 2 Timothy 2:6?",
+      "expect": [{"book": "Timothy", "pages": [92, 92]}]
+    },
+    {
+      "id": "study-guide-bible-version",
+      "question": "Which Bible version does this study guide use as its basic text?",
+      "expect": [{"book": "Timothy", "pages": [6, 7]}]
+    },
+    {
+      "id": "author-of-first-john",
+      "question": "What evidence supports the apostle John as the author of the first epistle?",
+      "expect": [{"book": "John", "pages": [18, 19]}]
+    },
+    {
+      "id": "unction-anointing",
+      "question": "What does the unction or anointing of the Holy Spirit mean for a believer?",
+      "expect": [{"book": "John", "pages": [59, 59]}]
+    },
+    {
+      "id": "rudiments-of-the-world",
+      "question": "What does the phrase rudiments of the world mean in Colossians 2:8?",
+      "expect": [{"book": "Colossians", "pages": [41, 42]}]
+    },
+    {
+      "id": "mortify-your-members",
+      "question": "What does Paul mean by mortify your members which are upon the earth?",
+      "expect": [{"book": "Colossians", "pages": [48, 49]}]
+    },
+    {
+      "id": "redemption-through-blood",
+      "question": "What is meant by redemption through his blood?",
+      "expect": [{"book": "Colossians", "pages": [33, 35]}]
+    }
+  ]
+}

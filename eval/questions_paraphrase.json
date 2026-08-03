@@ -1,0 +1,299 @@
+{
+  "_README": [
+    "Same ground truth as questions.json, asked the way a USER would ask.",
+    "questions.json was written by reading a passage and then writing a",
+    "question for it, which hands the dense leg the book's own vocabulary.",
+    "This set deliberately withholds it -- 'Colossae' not 'Colosse',",
+    "'grandkids' not 'grandchildren' -- which is the phrasing gap hybrid",
+    "retrieval is supposed to exist for."
+  ],
+  "k": 8,
+  "questions": [
+    {
+      "id": "colosse-founder",
+      "question": "Who started the church in Colossae?",
+      "expect": [
+        {
+          "book": "Colossians",
+          "pages": [
+            9,
+            10
+          ]
+        }
+      ]
+    },
+    {
+      "id": "psalms-hebrew-bible-position",
+      "question": "Where do the Psalms sit in the Jewish Bible?",
+      "expect": [
+        {
+          "book": "Psalms",
+          "pages": [
+            7,
+            9
+          ]
+        }
+      ]
+    },
+    {
+      "id": "psalms-divine-names-book-two",
+      "question": "Why does the second section of Psalms use Elohim more?",
+      "expect": [
+        {
+          "book": "Psalms",
+          "pages": [
+            61,
+            61
+          ]
+        }
+      ]
+    },
+    {
+      "id": "psalm-14-title",
+      "question": "Which psalm is about the fool who says there is no God?",
+      "expect": [
+        {
+          "book": "Psalms",
+          "pages": [
+            33,
+            34
+          ]
+        }
+      ]
+    },
+    {
+      "id": "sabbath-saturday-to-sunday",
+      "question": "Why do churches worship on Sunday instead of Saturday?",
+      "expect": [
+        {
+          "book": "essential-biblical-doctrines",
+          "pages": [
+            163,
+            164
+          ]
+        }
+      ]
+    },
+    {
+      "id": "stingy-offerings",
+      "question": "What happens to people who don't give money to the church?",
+      "expect": [
+        {
+          "book": "essential-biblical-doctrines",
+          "pages": [
+            207,
+            209
+          ]
+        }
+      ]
+    },
+    {
+      "id": "providence-over-creatures",
+      "question": "How does God take care of everything he made?",
+      "expect": [
+        {
+          "book": "essential-biblical-doctrines",
+          "pages": [
+            43,
+            44
+          ]
+        }
+      ]
+    },
+    {
+      "id": "promise-to-abraham",
+      "question": "What did God tell Abraham about blessing all nations?",
+      "expect": [
+        {
+          "book": "essential-biblical-doctrines",
+          "pages": [
+            88,
+            88
+          ]
+        }
+      ]
+    },
+    {
+      "id": "holy-communion-preparation",
+      "question": "How should I get ready for communion?",
+      "expect": [
+        {
+          "book": "essential-biblical-doctrines",
+          "pages": [
+            127,
+            129
+          ]
+        }
+      ]
+    },
+    {
+      "id": "john-the-baptist-role",
+      "question": "What did John the Baptist do before Jesus started his ministry?",
+      "expect": [
+        {
+          "book": "holy_spirit",
+          "pages": [
+            285,
+            286
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosea-latter-rain",
+      "question": "What does the Bible say about the early and late rains?",
+      "expect": [
+        {
+          "book": "holy_spirit",
+          "pages": [
+            144,
+            145
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tongues-temporary-sign",
+      "question": "Did speaking in tongues stop after the apostles died?",
+      "expect": [
+        {
+          "book": "holy_spirit",
+          "pages": [
+            220,
+            221
+          ]
+        }
+      ]
+    },
+    {
+      "id": "commissioned-workers",
+      "question": "Can just anyone become a church minister?",
+      "expect": [
+        {
+          "book": "holy_spirit",
+          "pages": [
+            75,
+            75
+          ]
+        }
+      ]
+    },
+    {
+      "id": "seek-first-kingdom",
+      "question": "What should Christians prioritise in life?",
+      "expect": [
+        {
+          "book": "holy_spirit",
+          "pages": [
+            356,
+            357
+          ]
+        }
+      ]
+    },
+    {
+      "id": "nephews-1-tim-5-4",
+      "question": "Why does the King James say nephews when it means grandkids?",
+      "expect": [
+        {
+          "book": "Timothy",
+          "pages": [
+            54,
+            55
+          ]
+        }
+      ]
+    },
+    {
+      "id": "husbandman-2-tim-2-6",
+      "question": "What is the old-fashioned word for farmer in 2 Timothy?",
+      "expect": [
+        {
+          "book": "Timothy",
+          "pages": [
+            92,
+            92
+          ]
+        }
+      ]
+    },
+    {
+      "id": "study-guide-bible-version",
+      "question": "Which translation is this book based on?",
+      "expect": [
+        {
+          "book": "Timothy",
+          "pages": [
+            6,
+            7
+          ]
+        }
+      ]
+    },
+    {
+      "id": "author-of-first-john",
+      "question": "How do we know who wrote 1 John?",
+      "expect": [
+        {
+          "book": "John",
+          "pages": [
+            18,
+            19
+          ]
+        }
+      ]
+    },
+    {
+      "id": "unction-anointing",
+      "question": "What is the anointing that believers receive?",
+      "expect": [
+        {
+          "book": "John",
+          "pages": [
+            59,
+            59
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rudiments-of-the-world",
+      "question": "What does basic principles of the world mean?",
+      "expect": [
+        {
+          "book": "Colossians",
+          "pages": [
+            41,
+            42
+          ]
+        }
+      ]
+    },
+    {
+      "id": "mortify-your-members",
+      "question": "What does it mean to put to death earthly desires?",
+      "expect": [
+        {
+          "book": "Colossians",
+          "pages": [
+            48,
+            49
+          ]
+        }
+      ]
+    },
+    {
+      "id": "redemption-through-blood",
+      "question": "Why did Jesus have to shed his blood?",
+      "expect": [
+        {
+          "book": "Colossians",
+          "pages": [
+            33,
+            35
+          ]
+        }
+      ]
+    }
+  ]
+}
