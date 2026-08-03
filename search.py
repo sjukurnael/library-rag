@@ -40,9 +40,8 @@ def main():
         return
 
     print(f"\nTop {len(rows)} results for: {args.query!r}\n")
-    for rank, (chunk_id, heading_trail, page_start, page_end, content, title, distance) in enumerate(
-        rows, start=1
-    ):
+    for rank, r in enumerate(rows, start=1):
+        page_start, page_end = r["page_start"], r["page_end"]
         if page_start is None:
             page_label = "p.?"
         elif page_start == page_end:
@@ -50,10 +49,11 @@ def main():
         else:
             page_label = f"pp.{page_start}-{page_end}"
 
-        print(f"#{rank}  distance={distance:.4f}  {title}  ({page_label})")
-        if heading_trail:
-            print(f"    {heading_trail}")
-        snippet = " ".join(content.strip().split())[:300]
+        print(f"#{rank}  distance={r['distance']:.4f}  {r['title']}  ({page_label})")
+        if r["heading_trail"]:
+            print(f"    {r['heading_trail']}")
+        print(f"    passage {r['ordinal'] + 1} of {r['total_chunks']}")
+        snippet = " ".join(r["content"].strip().split())[:300]
         print(f"    {snippet}...\n")
 
 

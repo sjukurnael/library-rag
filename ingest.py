@@ -11,6 +11,7 @@ safe to kill and restart mid-book.
                                      # only (no Drive or OCR calls -- markdown is the asset)
     python ingest.py --index        # build the HNSW index (run once, after ingestion)
     python ingest.py --status       # print a counts-by-status table
+    python ingest.py --local a.pdf b.pdf   # ingest PDFs already on disk
 
 The external services (Drive, Voyage, Mistral OCR) are built once at the top of
 a run and passed down, so nothing is a module-level client and tests inject
@@ -18,6 +19,7 @@ fakes.
 """
 import argparse
 import hashlib
+import shutil
 import time
 from functools import partial
 from pathlib import Path
@@ -192,6 +194,44 @@ def run_worker(limit) -> None:
         print(f"Done. Processed {processed} book(s) this run.")
 
 
+def run_local(paths: list) -> None:
+    """Ingest PDFs already on disk, bypassing Drive.
+
+    Reuses process_book unchanged by swapping the downloader for a file copy --
+    extraction, chunking, embedding, page ranges and the atomic
+    chunks+done commit are all the same code the Drive path runs. Books are
+    keyed on a `local:<filename>` drive_file_id so re-running is idempotent
+    exactly like --discover.
+    """
+    voyage_client = embed_mod.build_client()
+    ocr_client = extract_mod.build_ocr_client()
+
+    with db.get_conn() as conn:
+        for raw in paths:
+            src = Path(raw).expanduser().resolve()
+            if not src.exists():
+                print(f"SKIP -- no such file: {src}")
+                continue
+
+            key = f"local:{src.name}"
+            db.upsert_book(conn, key, src.name, _md5_file(src), src.stat().st_size)
+            row = db.fetch_book_by_drive_id(conn, key)
+
+            def copy_in(_drive_file_id, dest, _src=src):
+                shutil.copyfile(_src, dest)
+
+            try:
+                process_book(
+                    conn, row,
+                    download_file=copy_in,
+                    ocr_client=ocr_client,
+                    voyage_client=voyage_client,
+                )
+            except Exception as e:  # noqa: BLE001 -- one bad file must not stop the rest
+                db.set_status(conn, row["id"], "failed", str(e))
+                print(f"[{row['id']}] {src.name}: FAILED -- {e}")
+
+
 def run_rechunk() -> None:
     """Rebuild chunks+embeddings from local markdown only. No Drive or OCR
     calls -- this is the point of keeping markdown as the permanent asset."""
@@ -265,9 +305,15 @@ def main():
     parser.add_argument(
         "--status", action="store_true", help="Print a counts-by-status table."
     )
+    parser.add_argument(
+        "--local", nargs="+", metavar="PDF",
+        help="Ingest PDFs already on disk instead of from Drive.",
+    )
     args = parser.parse_args()
 
-    if args.status:
+    if args.local:
+        run_local(args.local)
+    elif args.status:
         run_status()
     elif args.index:
         run_index()

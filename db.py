@@ -116,6 +116,15 @@ def claim_next_book(conn):
     return row
 
 
+def fetch_book_by_drive_id(conn, drive_file_id: str):
+    """One book row as a dict, or None. Same shape claim_next_book returns, so
+    callers can hand it straight to process_book. Used by the --local path,
+    which addresses a book directly instead of taking it off the queue."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT * FROM books WHERE drive_file_id = %s", (drive_file_id,))
+        return cur.fetchone()
+
+
 # ------------------------------------------------------------ book state --
 
 def set_status(
@@ -231,25 +240,37 @@ def build_hnsw_index(conn) -> None:
     conn.commit()
 
 
-def search(conn, query_embedding, k: int, book_id: int | None = None):
+def search(conn, query_embedding, k: int, book_id: int | None = None) -> list:
+    """Nearest chunks as dicts, closest first.
+
+    dict rows rather than tuples: every caller wants a different subset of the
+    columns, and positional unpacking means adding one column here silently
+    breaks all of them at once. `ordinal` and `total_chunks` are carried so a
+    citation can say where in the book a passage sits, not just which page.
+    """
     params = [HalfVector(query_embedding)]
     where = ""
     if book_id is not None:
         where = "WHERE c.book_id = %s"
         params.append(book_id)
     params.append(k)
-    cur = conn.execute(
-        f"""
-        SELECT c.id, c.heading_trail, c.page_start, c.page_end, c.content,
-               b.title, c.embedding <=> %s::halfvec AS distance
-        FROM chunks c JOIN books b ON b.id = c.book_id
-        {where}
-        ORDER BY distance
-        LIMIT %s
-        """,
-        params,
-    )
-    return cur.fetchall()
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            SELECT c.id AS chunk_id, c.book_id, c.ordinal, c.heading_trail,
+                   c.page_start, c.page_end, c.content, c.token_count,
+                   b.title, b.page_count,
+                   (SELECT count(*) FROM chunks x WHERE x.book_id = c.book_id)
+                       AS total_chunks,
+                   c.embedding <=> %s::halfvec AS distance
+            FROM chunks c JOIN books b ON b.id = c.book_id
+            {where}
+            ORDER BY distance
+            LIMIT %s
+            """,
+            params,
+        )
+        return cur.fetchall()
 
 
 # ---------------------------------------------------------------- report --
