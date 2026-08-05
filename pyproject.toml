@@ -32,6 +32,10 @@ dependencies = [
     # gives a working `uvicorn api:app`.
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    # FastAPI parses multipart/form-data (the PDF upload endpoint) only when
+    # this is installed; without it the route raises at import time, not at
+    # request time, so it is a hard dependency rather than an extra.
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

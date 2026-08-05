@@ -135,6 +135,15 @@
     font-family: ui-sans-serif, system-ui, sans-serif; }
   .lib { margin-top: 8px; font-size: 13px; color: var(--muted); }
   .lib li { margin: 3px 0; }
+  .upload { display: flex; align-items: center; gap: 12px; margin-top: 14px;
+            padding-top: 14px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+  .uploadbtn { cursor: pointer; font-size: 13px; padding: 7px 14px; border-radius: 7px;
+               border: 1px solid var(--line); color: var(--dim); transition: .15s; }
+  .uploadbtn:hover { color: var(--ink); border-color: var(--accent); }
+  .uploadnote { font-size: 12.5px; color: var(--dim); }
+  .uploadnote.err { color: #d2544a; }
+  .lib.pending li { color: var(--dim); }
+  .lib.pending li.failed { color: #d2544a; }
   @keyframes pulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
   .loading { animation: pulse 1.4s ease-in-out infinite; }
 </style>
@@ -165,6 +174,14 @@
   <details class="card">
     <summary>What's in the index</summary>
     <ul class="lib" id="lib"></ul>
+    <ul class="lib pending" id="pending"></ul>
+    <div class="upload">
+      <label class="uploadbtn">
+        Add a book (PDF)
+        <input type="file" id="file" accept="application/pdf,.pdf" hidden>
+      </label>
+      <span class="uploadnote" id="uploadnote"></span>
+    </div>
   </details>
 </main>
 
@@ -179,12 +196,58 @@
 const $ = s => document.querySelector(s);
 const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-fetch('/api/books').then(r => r.json()).then(d => {
-  $('#libsummary').textContent =
-    `${d.books.length} books · ${d.total_chunks.toLocaleString()} chunks indexed`;
-  $('#lib').innerHTML = d.books.map(b =>
-    `<li>${esc(b.title)} — ${b.pages ?? '?'} pages, ${b.chunks} chunks</li>`).join('');
-}).catch(() => $('#libsummary').textContent = 'index unavailable');
+// Poll while anything is mid-pipeline. Ingestion takes minutes, so the upload
+// response only confirms the book was QUEUED -- this is what reports progress.
+let pollTimer = null;
+function loadBooks() {
+  return fetch('/api/books').then(r => r.json()).then(d => {
+    $('#libsummary').textContent =
+      `${d.books.length} books · ${d.total_chunks.toLocaleString()} chunks indexed`;
+    $('#lib').innerHTML = d.books.map(b =>
+      `<li>${esc(b.title)} — ${b.pages ?? '?'} pages, ${b.chunks} chunks</li>`).join('');
+
+    const pending = d.pending || [];
+    $('#pending').innerHTML = pending.map(b => {
+      const failed = b.status === 'failed';
+      const label = failed ? `failed — ${esc(b.error || 'unknown error')}`
+                           : `${esc(b.status)}…`;
+      return `<li class="${failed ? 'failed' : 'loading'}">${esc(b.title)} — ${label}</li>`;
+    }).join('');
+
+    // Only a book actually moving through the pipeline justifies polling; one
+    // sitting at 'failed' never changes on its own, and polling it forever
+    // would be a request loop with no possible outcome.
+    const working = pending.some(b => b.status !== 'failed');
+    clearTimeout(pollTimer);
+    if (working) pollTimer = setTimeout(loadBooks, 3000);
+  }).catch(() => $('#libsummary').textContent = 'index unavailable');
+}
+loadBooks();
+
+$('#file').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = '';                       // so re-picking the same file re-fires
+  const note = $('#uploadnote');
+  note.className = 'uploadnote';
+  note.textContent = `uploading ${file.name}…`;
+
+  const body = new FormData();
+  body.append('file', file);
+  try {
+    const r = await fetch('/api/books/upload', { method: 'POST', body });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || `upload failed (${r.status})`);
+    note.textContent = d.already_indexed
+      ? `${d.title} is already indexed — nothing to do.`
+      : `${d.title} queued. Indexing takes a few minutes.`;
+    $('details.card').open = true;
+    loadBooks();
+  } catch (err) {
+    note.className = 'uploadnote err';
+    note.textContent = err.message;
+  }
+});
 
 $('#ex').addEventListener('click', e => {
   if (e.target.tagName === 'BUTTON') { $('#q').value = e.target.textContent; $('#f').requestSubmit(); }

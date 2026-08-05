@@ -38,12 +38,13 @@ def get_conn(database_url: str | None = None):
 
 def upsert_book(
     conn,
-    drive_file_id: str,
+    source_id: str,
     title: str,
     md5: str | None,
     size_bytes: int | None,
+    source: str = "drive",
 ) -> None:
-    """Idempotent on drive_file_id. On conflict, refresh title/md5/size ONLY
+    """Idempotent on source_id. On conflict, refresh title/md5/size ONLY
     when one of them actually changed -- so re-running --discover never bumps
     updated_at or disturbs a book already in flight or done.
 
@@ -55,12 +56,18 @@ def upsert_book(
     failure is invisible because every status count still reads clean.
 
     A title-only change (a rename in Drive) is metadata and does not reprocess.
+
+    `source` is deliberately NOT in the DO UPDATE list. A book's source is fixed
+    at creation, and a conflicting insert claiming a different one means two
+    sources have produced the same source_id -- which cannot happen while Drive
+    ids and "upload:<md5>" live in disjoint namespaces. Silently rewriting it
+    would move the book's bytes somewhere the downloader will not look.
     """
     conn.execute(
         """
-        INSERT INTO books (drive_file_id, title, md5, size_bytes)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (drive_file_id) DO UPDATE
+        INSERT INTO books (source_id, source, title, md5, size_bytes)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (source_id) DO UPDATE
             SET title = EXCLUDED.title,
                 md5 = EXCLUDED.md5,
                 size_bytes = EXCLUDED.size_bytes,
@@ -88,14 +95,20 @@ def upsert_book(
                OR books.md5 IS DISTINCT FROM EXCLUDED.md5
                OR books.size_bytes IS DISTINCT FROM EXCLUDED.size_bytes
         """,
-        (drive_file_id, title, md5, size_bytes),
+        (source_id, source, title, md5, size_bytes),
     )
     conn.commit()
 
 
-def claim_next_book(conn):
+def claim_next_book(conn, source: str | None = None):
     """Atomically claim one processable book. Returns its row as a dict, or None
     if the queue is empty.
+
+    `source` restricts the claim to one kind of book. The web upload path uses
+    it: a user adding a PDF has asked for that PDF to be indexed, not for a
+    backlog of Drive books to start downloading behind it -- and a Drive book
+    claimed from inside the API process can block for minutes on OAuth that has
+    nobody to prompt. Left None (the CLI worker) it claims from every source.
 
     Processable = status not in (done, failed, needs_ocr) AND either never
     claimed or claimed longer than CLAIM_STALE_MINUTES ago (the reaper: a book
@@ -116,6 +129,7 @@ def claim_next_book(conn):
             WHERE id = (
                 SELECT id FROM books
                 WHERE status NOT IN ('done','failed','needs_ocr')
+                  AND (%(source)s::text IS NULL OR source = %(source)s::text)
                   AND (claimed_at IS NULL
                        OR claimed_at < now() - make_interval(mins => %(stale)s))
                 ORDER BY status DESC
@@ -124,7 +138,7 @@ def claim_next_book(conn):
             )
             RETURNING *
             """,
-            {"stale": config.CLAIM_STALE_MINUTES},
+            {"stale": config.CLAIM_STALE_MINUTES, "source": source},
         )
         row = cur.fetchone()
         if row is not None and row["attempts"] > config.MAX_ATTEMPTS:
@@ -162,12 +176,12 @@ def touch_claim(conn, book_id: int) -> None:
     conn.commit()
 
 
-def fetch_book_by_drive_id(conn, drive_file_id: str):
+def fetch_book_by_source_id(conn, source_id: str):
     """One book row as a dict, or None. Same shape claim_next_book returns, so
-    callers can hand it straight to process_book. Used by the --local path,
-    which addresses a book directly instead of taking it off the queue."""
+    callers can hand it straight to process_book. Used by the upload path, which
+    addresses a book directly instead of taking it off the queue."""
     with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute("SELECT * FROM books WHERE drive_file_id = %s", (drive_file_id,))
+        cur.execute("SELECT * FROM books WHERE source_id = %s", (source_id,))
         return cur.fetchone()
 
 

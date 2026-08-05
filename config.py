@@ -19,8 +19,25 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 PDF_DIR = DATA_DIR / "pdfs"
 MARKDOWN_DIR = DATA_DIR / "markdown"
+# Uploaded originals. This is to an uploaded book what Drive is to a Drive book:
+# the only copy of the bytes that exists, so it is NOT disposable the way
+# PDF_DIR is. PDF_DIR stays a per-book working cache keyed by book_id, and
+# process_book copies an upload into it exactly as it downloads a Drive file --
+# which is what lets both sources share the pipeline below the download step.
+UPLOAD_DIR = DATA_DIR / "uploads"
 PDF_DIR.mkdir(parents=True, exist_ok=True)
 MARKDOWN_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# ---- Upload limits ----
+# Enforced while streaming to disk, not after: reading an unbounded upload into
+# memory to measure it is the denial of service, and a Content-Length header is
+# a claim by the client, not a fact.
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "64")) * 1024 * 1024
+# Every PDF begins with this. Checked against the actual first bytes rather than
+# the filename or the browser-supplied Content-Type, both of which the client
+# chooses freely.
+PDF_MAGIC = b"%PDF-"
 
 # ---- Database ----
 # Port 5434 must match the host side of docker-compose.yml's "5434:5432"

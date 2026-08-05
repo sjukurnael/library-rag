@@ -10,7 +10,7 @@ from pipeline import chunking, embed
 
 def _seed_book(conn, status="chunked"):
     row = conn.execute(
-        "INSERT INTO books (drive_file_id, title, status) VALUES (%s, %s, %s) "
+        "INSERT INTO books (source_id, title, status) VALUES (%s, %s, %s) "
         "RETURNING id",
         ("x", "X", status),
     ).fetchone()

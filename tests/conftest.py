@@ -31,14 +31,20 @@ def _isolate_data_dirs(tmp_path, monkeypatch):
     """No test may write to the real data/ dirs. process_book / write_outputs
     key their filenames off book_id (config.PDF_DIR / f"{book_id}.pdf"), so a
     worker test whose book_id collides with a real book will otherwise overwrite
-    a genuinely-downloaded PDF and its markdown. Redirect both to a per-test
-    tmp dir for every test."""
+    a genuinely-downloaded PDF and its markdown. Redirect all three to a
+    per-test tmp dir for every test.
+
+    UPLOAD_DIR especially: it is content-addressed and holds the ONLY copy of an
+    uploaded book's bytes, so a test writing there is not overwriting a cache,
+    it is adding to the real library."""
     pdfs = tmp_path / "pdfs"
     markdown = tmp_path / "markdown"
-    pdfs.mkdir()
-    markdown.mkdir()
+    uploads = tmp_path / "uploads"
+    for d in (pdfs, markdown, uploads):
+        d.mkdir()
     monkeypatch.setattr(config, "PDF_DIR", pdfs)
     monkeypatch.setattr(config, "MARKDOWN_DIR", markdown)
+    monkeypatch.setattr(config, "UPLOAD_DIR", uploads)
 
 
 def _url_with_db(base_url: str, dbname: str) -> str:

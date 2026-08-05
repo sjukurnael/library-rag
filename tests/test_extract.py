@@ -156,7 +156,7 @@ def test_a_book_that_extracts_to_nothing_is_failed_not_done(conn, fake_voyage, m
     _drain_worker(conn, lambda file_id, dest: Path(dest).write_bytes(b"%PDF-1.4"), fake_voyage)
 
     status, error = conn.execute(
-        "SELECT status, error FROM books WHERE drive_file_id = 'empty'"
+        "SELECT status, error FROM books WHERE source_id = 'empty'"
     ).fetchone()
     assert status == "failed", f"empty extraction was marked {status!r}"
     assert error and "no chunks" in error
@@ -198,17 +198,17 @@ def test_corrupt_pdf_fails_and_worker_continues(conn, fake_voyage, monkeypatch):
 
     _drain_worker(conn, download, fake_voyage)
 
-    statuses = dict(conn.execute("SELECT drive_file_id, status FROM books").fetchall())
+    statuses = dict(conn.execute("SELECT source_id, status FROM books").fetchall())
     assert statuses["good"] == "done"      # the healthy book completed
     assert statuses["bad"] == "failed"     # the corrupt one is recorded, not fatal
 
     error = conn.execute(
-        "SELECT error FROM books WHERE drive_file_id = 'bad'"
+        "SELECT error FROM books WHERE source_id = 'bad'"
     ).fetchone()[0]
     assert error
 
     n_good = conn.execute(
         "SELECT COUNT(*) FROM chunks c JOIN books b ON b.id = c.book_id "
-        "WHERE b.drive_file_id = 'good'"
+        "WHERE b.source_id = 'good'"
     ).fetchone()[0]
     assert n_good > 0

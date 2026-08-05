@@ -39,14 +39,91 @@ PDF_MIME = "application/pdf"
 def discover(conn, folder_id: str, list_children) -> int:
     """Enumerate one Drive folder into `books`. `list_children` is a callable
     folder_id -> list[file resource dict]; the real one is bound to a Drive
-    service, tests pass a fake. Idempotent (upsert on drive_file_id)."""
+    service, tests pass a fake. Idempotent (upsert on source_id)."""
     children = list_children(folder_id)
     pdfs = [c for c in children if c.get("mimeType") == PDF_MIME]
     for f in pdfs:
         size_bytes = int(f["size"]) if f.get("size") is not None else None
-        db.upsert_book(conn, f["id"], f.get("name", ""), f.get("md5Checksum"), size_bytes)
+        db.upsert_book(
+            conn, f["id"], f.get("name", ""), f.get("md5Checksum"), size_bytes,
+            source="drive",
+        )
     print(f"Discovered {len(pdfs)} PDF(s) in folder {folder_id} (upserted, idempotent).")
     return len(pdfs)
+
+
+# --------------------------------------------------------------- sources --
+
+def upload_path(source_id: str) -> Path:
+    """Where an uploaded book's original bytes live.
+
+    source_id is "upload:<md5>", and the md5 IS the filename -- the upload
+    directory is content-addressed. Two consequences worth stating: the same
+    file uploaded twice occupies one file on disk, and a filename supplied by a
+    client never reaches the filesystem, so there is no path to traverse out of.
+    """
+    return config.UPLOAD_DIR / f"{source_id.split(':', 1)[1]}.pdf"
+
+
+def register_upload(conn, src: Path, title: str | None = None) -> dict:
+    """Take a PDF already on disk into the library and enqueue it.
+
+    Returns the book row. Does NOT process it: the row lands at status
+    'discovered', which is precisely what claim_next_book hands out, so an
+    upload joins the same queue a Drive book does and inherits the claim,
+    heartbeat, retry and failure handling already built around it. Any other
+    design would need a second copy of all of that.
+
+    Idempotent on content. Re-registering identical bytes upserts nothing and
+    leaves a finished book finished; different bytes are a different source_id
+    and therefore a different book.
+    """
+    md5 = _md5_file(src)
+    source_id = f"upload:{md5}"
+    dest = upload_path(source_id)
+    if not dest.exists():
+        shutil.copyfile(src, dest)
+    db.upsert_book(
+        conn, source_id, title or src.name, md5, dest.stat().st_size, source="upload"
+    )
+    return db.fetch_book_by_source_id(conn, source_id)
+
+
+def _lazy_drive_downloader():
+    """A Drive downloader that builds the API client on first use only.
+
+    Draining the queue must not require Google credentials when the queue holds
+    nothing from Drive. Building the service eagerly made OAuth a hard
+    dependency of processing an uploaded file, which is a dependency no user of
+    the upload path agreed to.
+    """
+    holder = {}
+
+    def download(source_id, dest_path):
+        if "service" not in holder:
+            holder["service"] = drive_client.build_service()
+        drive_client.download_file(holder["service"], source_id, dest_path)
+
+    return download
+
+
+def downloader_for(book, drive_download):
+    """Pick how this book's bytes arrive. The ONLY place the two sources
+    diverge -- everything after the download step is identical, which is the
+    whole reason process_book takes the downloader as an argument."""
+    if book["source"] == "upload":
+
+        def copy_in(source_id, dest_path):
+            src = upload_path(source_id)
+            if not src.exists():
+                raise RuntimeError(
+                    f"uploaded original is missing from {src} -- the book row "
+                    "outlived its file"
+                )
+            shutil.copyfile(src, dest_path)
+
+        return copy_in
+    return drive_download
 
 
 # ------------------------------------------------------------- process --
@@ -101,7 +178,7 @@ def process_book(conn, book, *, download_file, ocr_client, voyage_client) -> Non
     possibly-killed attempt left behind, then download -> extract -> chunk ->
     embed -> store."""
     book_id = book["id"]
-    drive_file_id = book["drive_file_id"]
+    source_id = book["source_id"]
     title = book["title"] or ""
     t0 = time.time()
 
@@ -115,7 +192,7 @@ def process_book(conn, book, *, download_file, ocr_client, voyage_client) -> Non
 
     # -- download --
     t_download = time.time()
-    download_file(drive_file_id, str(pdf_path))
+    download_file(source_id, str(pdf_path))
     if book.get("md5"):
         local_md5 = _md5_file(pdf_path)
         if local_md5 != book["md5"]:
@@ -134,7 +211,7 @@ def process_book(conn, book, *, download_file, ocr_client, voyage_client) -> Non
         db.set_status(conn, book_id, "needs_ocr", str(e))
         print(f"[{book_id}] {title}: needs_ocr ({e})")
         return
-    extract_mod.write_outputs(book_id, drive_file_id, pdf_path, result)
+    extract_mod.write_outputs(book_id, source_id, pdf_path, result)
     db.mark_extracted(conn, book_id, result.page_count, result.has_text_layer)
     db.touch_claim(conn, book_id)
     extract_s = time.time() - t_extract
@@ -164,18 +241,26 @@ def process_book(conn, book, *, download_file, ocr_client, voyage_client) -> Non
 
 # --------------------------------------------------------------- runs --
 
-def run_worker(limit) -> None:
-    service = drive_client.build_service()
-    download_file = partial(drive_client.download_file, service)
+def process_queue(limit=None, *, source=None, conn=None) -> int:
+    """Drain the work queue, whatever each book's source is. Returns the count.
+
+    This is the whole worker, and it is source-agnostic on purpose: it claims a
+    book, asks downloader_for how that book's bytes arrive, and runs the same
+    pipeline either way. Adding a third source means adding a downloader, not a
+    second worker.
+
+    Nothing here builds a Drive client unless a Drive book is actually claimed
+    (see _lazy_drive_downloader), so with source="upload" this is safe to call
+    with no Google credentials configured at all.
+    """
+    drive_download = _lazy_drive_downloader()
     ocr_client = extract_mod.build_ocr_client()
     voyage_client = embed_mod.build_client()
 
-    with db.get_conn() as conn:
-        discover(conn, config.PILOT_FOLDER_ID, partial(drive_client.list_children, service))
-
+    def drain(c):
         processed = 0
         while limit is None or processed < limit:
-            book = db.claim_next_book(conn)
+            book = db.claim_next_book(c, source)
             if book is None:
                 break
             if book["status"] == "failed":
@@ -183,56 +268,58 @@ def run_worker(limit) -> None:
                 continue
             try:
                 process_book(
-                    conn,
+                    c,
                     book,
-                    download_file=download_file,
+                    download_file=downloader_for(book, drive_download),
                     ocr_client=ocr_client,
                     voyage_client=voyage_client,
                 )
             except Exception as e:  # noqa: BLE001 -- one bad book must not stop the run
-                db.set_status(conn, book["id"], "failed", str(e))
+                db.set_status(c, book["id"], "failed", str(e))
                 print(f"[{book['id']}] {book['title']}: FAILED -- {e}")
             processed += 1
+        return processed
 
-        print(f"Done. Processed {processed} book(s) this run.")
+    if conn is not None:
+        return drain(conn)
+    with db.get_conn() as own:
+        return drain(own)
+
+
+def run_worker(limit) -> None:
+    """Discover the Drive folder, then drain the queue."""
+    service = drive_client.build_service()
+    with db.get_conn() as conn:
+        discover(conn, config.PILOT_FOLDER_ID, partial(drive_client.list_children, service))
+    processed = process_queue(limit)
+    print(f"Done. Processed {processed} book(s) this run.")
 
 
 def run_local(paths: list) -> None:
     """Ingest PDFs already on disk, bypassing Drive.
 
-    Reuses process_book unchanged by swapping the downloader for a file copy --
-    extraction, chunking, embedding, page ranges and the atomic
-    chunks+done commit are all the same code the Drive path runs. Books are
-    keyed on a `local:<filename>` drive_file_id so re-running is idempotent
-    exactly like --discover.
+    Identical to uploading them through the web UI -- both call register_upload
+    and then drain the queue. Keeping one path means the CLI cannot drift from
+    what the API does, which is what happened the first time around: --local
+    used to key books on `local:<filename>` and process them inline, outside the
+    queue, so an interrupted --local run left no claim to recover from.
     """
-    voyage_client = embed_mod.build_client()
-    ocr_client = extract_mod.build_ocr_client()
-
+    registered = []
     with db.get_conn() as conn:
         for raw in paths:
             src = Path(raw).expanduser().resolve()
             if not src.exists():
                 print(f"SKIP -- no such file: {src}")
                 continue
+            book = register_upload(conn, src)
+            registered.append(book)
+            print(f"[{book['id']}] {book['title']}: registered ({book['status']})")
 
-            key = f"local:{src.name}"
-            db.upsert_book(conn, key, src.name, _md5_file(src), src.stat().st_size)
-            row = db.fetch_book_by_drive_id(conn, key)
-
-            def copy_in(_drive_file_id, dest, _src=src):
-                shutil.copyfile(_src, dest)
-
-            try:
-                process_book(
-                    conn, row,
-                    download_file=copy_in,
-                    ocr_client=ocr_client,
-                    voyage_client=voyage_client,
-                )
-            except Exception as e:  # noqa: BLE001 -- one bad file must not stop the rest
-                db.set_status(conn, row["id"], "failed", str(e))
-                print(f"[{row['id']}] {src.name}: FAILED -- {e}")
+    if not registered:
+        print("Nothing to do.")
+        return
+    processed = process_queue()
+    print(f"Done. Processed {processed} book(s) this run.")
 
 
 def run_rechunk() -> None:

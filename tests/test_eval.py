@@ -147,7 +147,7 @@ def corpus(conn):
     for title, chunks in CORPUS:
         db.upsert_book(conn, f"drive-{title}", title, f"md5-{title}", 1000)
         book_id = conn.execute(
-            "SELECT id FROM books WHERE drive_file_id = %s", (f"drive-{title}",)
+            "SELECT id FROM books WHERE source_id = %s", (f"drive-{title}",)
         ).fetchone()[0]
         db.insert_chunks_and_finish(
             conn,

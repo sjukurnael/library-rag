@@ -113,14 +113,14 @@ def extract(pdf_path: Path, book_id: int, ocr_client=None) -> ExtractionResult:
 
 
 def write_outputs(
-    book_id: int, drive_file_id: str, pdf_path: Path, result: ExtractionResult
+    book_id: int, source_id: str, pdf_path: Path, result: ExtractionResult
 ) -> None:
     md_path = config.MARKDOWN_DIR / f"{book_id}.md"
     manifest_path = config.MARKDOWN_DIR / f"{book_id}.manifest.json"
     md_path.write_text(result.markdown, encoding="utf-8")
     manifest = {
         "book_id": book_id,
-        "drive_file_id": drive_file_id,
+        "source_id": source_id,
         "extractor": result.extractor,
         "extractor_version": EXTRACTOR_VERSION,
         "extracted_at": datetime.now(timezone.utc).isoformat(),

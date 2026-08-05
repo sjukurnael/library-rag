@@ -27,20 +27,27 @@ library-rag/
 ├── config.py              # Phase 1: every ingestion tunable (paths, models, chunk sizes)
 ├── db.py                  #   Postgres access: queue semantics (claim/reap) + CRUD
 ├── migrations/            #   *.sql schema, applied in filename order
-│   └── 0001_init.sql      #     books + chunks (halfvec embedding, tsv, doc_status enum)
+│   ├── 0001_init.sql      #     books + chunks (halfvec embedding, tsv, doc_status enum)
+│   ├── 0002_book_sources.sql        # drive_file_id -> source_id, + source column
+│   └── 0002_rekey_local_uploads.py  # its filesystem half (one-off, not a migration)
 ├── migrate.py              #   tiny forward-only migration runner (schema_migrations)
 ├── docker-compose.yml      #   pgvector/pgvector:pg17, port 5434, healthcheck
 ├── ingest.py               #   the worker: Drive PDF -> markdown -> chunks -> embeddings
 ├── search.py               #   retrieval smoke test CLI + the deterministic control
-├── api.py                  #   FastAPI: serves the UI, /api/books, /api/research (SSE)
-├── static/index.html       #   the UI: one question box, clickable inline citations
+├── evaluate.py             #   retrieval quality harness: hit-rate@k / MRR
+├── eval/questions*.json    #   curated ground truth (book + page span, not chunk id)
+├── api.py                  #   FastAPI: UI, /api/books, /api/books/upload, /api/research
+├── static/index.html       #   the UI: question box, inline citations, PDF upload
 ├── report.py               #   calibration report: measured vs. assumptions.py
 ├── pipeline/               #   ingest.py's internals
 │   ├── extract.py         #     PyMuPDF / Mistral OCR -> markdown + manifest
 │   ├── chunking.py         #     markdown -> chunks with page ranges + ordinals
 │   └── embed.py             #     the one place that calls the Voyage API
 ├── pyproject.toml          #   package + dev deps; `pip install -e ".[dev]"`
-├── data/                    #   gitignored: pdfs/, markdown/ (the permanent asset)
+├── data/                    #   gitignored
+│   ├── uploads/            #     uploaded originals, content-addressed (NOT disposable)
+│   ├── markdown/           #     the permanent, rebuildable-from asset
+│   └── pdfs/               #     per-book working cache, safe to delete
 ├── .github/workflows/ci.yml #   pgvector service -> ruff check -> pytest
 └── tests/                   #   real Postgres, fake externals, zero-network
     ├── conftest.py         #     test-DB lifecycle + fake Voyage/Drive
@@ -50,7 +57,10 @@ library-rag/
     ├── test_claim.py       #     queue: SKIP LOCKED, reaper, attempt cap
     ├── test_chunking.py    #     chunk boundaries, pages, ordinals, junk skip
     ├── test_embed_store.py #     atomic chunk+done, crash safety
-    └── test_extract.py     #     text-layer probe, corrupt-PDF recovery
+    ├── test_extract.py     #     text-layer probe, corrupt-PDF recovery
+    ├── test_research.py    #     the agent tool loop, scripted fake client
+    ├── test_eval.py        #     the quality harness, incl. a negative control
+    └── test_upload.py      #     upload validation, content-addressing, queueing
 ```
 
 `drive/` is shared by both phases. `agent/` is Phase 0 only. Everything
@@ -215,6 +225,44 @@ the error saved to `books.error` and the run continues — it does not stop the
 whole batch. A scanned book with no `MISTRAL_API_KEY` set is marked
 `needs_ocr` and skipped, not failed.
 
+### Adding a book
+
+Two sources, one pipeline. A book is a row in `books` with a `source`
+(`drive` | `upload`) and a `source_id` unique within it; everything after the
+download step is identical either way, because `process_book` takes the
+downloader as an argument and `downloader_for` is the only place the two
+diverge.
+
+**From Google Drive** — enumerate the pilot folder, then drain the queue:
+
+```bash
+python ingest.py --discover
+python ingest.py
+```
+
+**From a file you have** — either drag it into the web UI (see below), or:
+
+```bash
+python ingest.py --local some-book.pdf another.pdf
+```
+
+Both call the same `register_upload`, so the CLI cannot drift from what the
+endpoint does.
+
+Uploads are **content-addressed**: `source_id` is `upload:<md5 of the bytes>`
+and the original is kept at `data/uploads/<md5>.pdf`. Three consequences:
+
+- Re-uploading the identical file is recognised, not duplicated — and a book
+  already indexed is not reprocessed.
+- Two different books that happen to share a filename can never overwrite each
+  other.
+- A client-supplied filename never reaches the filesystem, so there is nothing
+  to traverse out of. It is kept only as the title.
+
+`data/uploads/` holds the **only** copy of an uploaded book's bytes — it is to
+an upload what Drive is to a Drive book, and unlike `data/pdfs/` it is not
+disposable.
+
 ### Flags
 
 - `--discover` — enumerate the pilot folder into `books`, then stop.
@@ -328,6 +376,18 @@ decoration.
 ---
 
 ## Ask it questions (web UI)
+
+The page also has an **Add a book (PDF)** control. An upload is validated
+(magic bytes, not the extension or the browser-supplied content type), streamed
+to disk under a size cap, registered, and queued; the response returns as soon
+as it is queued and the page polls `/api/books` for progress. Ingestion takes
+minutes, so holding the request open would tie the result to the browser
+staying on the page.
+
+The API's background worker claims **only uploads**. Drive ingestion stays a
+deliberate `python ingest.py` — otherwise one uploaded PDF puts the whole Drive
+backlog in flight behind it, and a Drive book claimed inside the API process
+blocks on an OAuth flow that has no console to prompt.
 
 ```bash
 make db-up                                   # Postgres must be running

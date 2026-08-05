@@ -5,11 +5,12 @@ from concurrent.futures import ThreadPoolExecutor
 import db
 
 
-def _seed(conn, n, status="discovered"):
+def _seed(conn, n, status="discovered", source="drive", prefix="file"):
     for i in range(n):
         conn.execute(
-            "INSERT INTO books (drive_file_id, title, status) VALUES (%s, %s, %s)",
-            (f"file-{i}", f"Book {i}", status),
+            "INSERT INTO books (source_id, title, status, source) "
+            "VALUES (%s, %s, %s, %s)",
+            (f"{prefix}-{i}", f"Book {i}", status, source),
         )
     conn.commit()
 
@@ -97,3 +98,33 @@ def test_attempts_over_cap_are_failed(conn):
 
     # Nothing processable remains.
     assert db.claim_next_book(conn) is None
+
+
+def test_a_source_scoped_claim_ignores_every_other_source(conn):
+    """The web upload path claims with source='upload'.
+
+    Draining the whole queue instead put the entire Drive backlog in flight
+    behind a single uploaded PDF, and the first Drive book claimed blocked the
+    API's background thread inside an OAuth flow that had no console to prompt
+    -- so the upload the user actually asked for never ran and nothing said why.
+    """
+    _seed(conn, 3, source="drive", prefix="drive")
+    _seed(conn, 1, source="upload", prefix="upload")
+
+    claimed = db.claim_next_book(conn, source="upload")
+    assert claimed is not None
+    assert claimed["source"] == "upload"
+
+    # The one upload is now claimed; scoped claiming must report an empty queue
+    # rather than falling through to the Drive books sitting right there.
+    assert db.claim_next_book(conn, source="upload") is None
+
+    # Unscoped, the CLI worker still sees everything.
+    assert db.claim_next_book(conn) is not None
+
+
+def test_an_unscoped_claim_is_the_default(conn):
+    _seed(conn, 1, source="upload", prefix="upload")
+    assert db.claim_next_book(conn) is not None, (
+        "the CLI worker must keep claiming from every source"
+    )

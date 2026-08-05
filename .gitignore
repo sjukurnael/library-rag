@@ -18,6 +18,8 @@ venv/
 # Phase 1: ingestion pipeline
 data/
 
-# Loose PDFs dropped in the repo root for ad-hoc testing (data/ is already
-# ignored; these are 20 MB+ and must never enter git history).
+# Belt and braces. Books now arrive through the upload endpoint or `--local`
+# and land in data/uploads/ (already ignored), so nothing should drop a PDF in
+# the repo root any more -- but they are 20 MB+ and must never enter git
+# history, so the rule stays.
 *.pdf

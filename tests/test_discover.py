@@ -19,7 +19,7 @@ JUNK = {"id": "j", "name": "index.html", "mimeType": "text/html", "size": "10"}
 
 def _rows(conn):
     return conn.execute(
-        "SELECT drive_file_id, title, md5, size_bytes, status FROM books ORDER BY id"
+        "SELECT source_id, title, md5, size_bytes, status FROM books ORDER BY id"
     ).fetchall()
 
 
@@ -36,12 +36,12 @@ def test_discover_inserts_only_pdfs(conn):
 def test_discover_is_idempotent_and_does_not_touch_updated_at(conn):
     ingest.discover(conn, "folder", _fake_listing([PDF_A]))
     before = conn.execute(
-        "SELECT updated_at FROM books WHERE drive_file_id = 'a'"
+        "SELECT updated_at FROM books WHERE source_id = 'a'"
     ).fetchone()[0]
 
     ingest.discover(conn, "folder", _fake_listing([PDF_A]))  # identical -> no change
     after = conn.execute(
-        "SELECT updated_at FROM books WHERE drive_file_id = 'a'"
+        "SELECT updated_at FROM books WHERE source_id = 'a'"
     ).fetchone()[0]
     assert before == after
     assert conn.execute("SELECT COUNT(*) FROM books").fetchone()[0] == 1
@@ -52,7 +52,7 @@ def test_discover_updates_on_md5_change(conn):
     changed = {**PDF_A, "md5Checksum": "zzz", "size": "999"}
     ingest.discover(conn, "folder", _fake_listing([changed]))
     row = conn.execute(
-        "SELECT md5, size_bytes FROM books WHERE drive_file_id = 'a'"
+        "SELECT md5, size_bytes FROM books WHERE source_id = 'a'"
     ).fetchone()
     assert row[0] == "zzz"
     assert row[1] == 999
@@ -65,14 +65,14 @@ def test_a_done_book_whose_bytes_changed_is_requeued(conn):
     ingest.discover(conn, "folder", _fake_listing([PDF_A]))
     conn.execute(
         "UPDATE books SET status='done', attempts=2, claimed_at=now() "
-        "WHERE drive_file_id='a'"
+        "WHERE source_id='a'"
     )
     conn.commit()
 
     ingest.discover(conn, "folder", _fake_listing([{**PDF_A, "md5Checksum": "zzz"}]))
 
     status, attempts, claimed = conn.execute(
-        "SELECT status, attempts, claimed_at FROM books WHERE drive_file_id='a'"
+        "SELECT status, attempts, claimed_at FROM books WHERE source_id='a'"
     ).fetchone()
     assert status == "discovered", f"edited book left as {status!r}"
     assert attempts == 0, "retry budget not reset for a genuinely new document"
@@ -84,13 +84,13 @@ def test_a_rename_alone_does_not_reprocess(conn):
     """A title change is metadata. Re-ingesting a 400-page book because someone
     renamed it in Drive would be a costly false positive."""
     ingest.discover(conn, "folder", _fake_listing([PDF_A]))
-    conn.execute("UPDATE books SET status='done' WHERE drive_file_id='a'")
+    conn.execute("UPDATE books SET status='done' WHERE source_id='a'")
     conn.commit()
 
     ingest.discover(conn, "folder", _fake_listing([{**PDF_A, "name": "Romans (2nd ed).pdf"}]))
 
     status, title = conn.execute(
-        "SELECT status, title FROM books WHERE drive_file_id='a'"
+        "SELECT status, title FROM books WHERE source_id='a'"
     ).fetchone()
     assert status == "done", "a rename should not requeue the book"
     assert title == "Romans (2nd ed).pdf", "the new title should still be recorded"
