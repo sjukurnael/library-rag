@@ -1,4 +1,4 @@
-.PHONY: db-up db-down db-psql db-logs migrate test lint serve
+.PHONY: db-up db-down db-psql db-logs migrate test lint serve clean
 
 db-up:
 	docker compose up -d
@@ -26,3 +26,11 @@ lint:
 
 serve:
 	uvicorn library_rag.web.api:app --reload --port 8000
+
+# Bytecode outlives the source it came from. After a rename, the old package
+# directory survives as nothing but __pycache__ -- and an empty directory is an
+# importable namespace package, so `import agent` succeeds and then fails
+# confusingly at `from agent import research` instead of saying "no such module".
+clean:
+	find . -path ./.venv -prune -o -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+	rm -rf .pytest_cache .ruff_cache build dist src/*.egg-info
