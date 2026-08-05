@@ -190,6 +190,15 @@ def _chunk_embed_and_finish(conn, book_id: int, markdown: str, voyage_client) ->
         # and every stage downstream reports success.
         msg = "extraction produced no chunks (empty or unparseable markdown)"
         print(f"  WARNING: {msg} for book {book_id}")
+        # Drop whatever the previous successful run indexed BEFORE failing.
+        # This return is upstream of insert_chunks_and_finish, which is the only
+        # thing that clears old chunks on the --rechunk path (process_book's
+        # wipe never runs there). Without this, a book that stops extracting
+        # cleanly ends up 'failed' while its stale chunks keep being returned by
+        # db.search, which has no status filter -- so the library answers
+        # questions from a book it simultaneously reports as broken, and every
+        # status count still reads clean.
+        db.delete_chunks_for_book(conn, book_id)
         db.set_status(conn, book_id, "failed", msg)
         return 0, 0
 

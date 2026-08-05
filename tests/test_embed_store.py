@@ -6,6 +6,7 @@ import pytest
 import config
 import db
 from pipeline import chunking, embed
+from tests.conftest import deterministic_vector
 
 
 def _seed_book(conn, status="chunked"):
@@ -94,3 +95,39 @@ def test_reprocess_replaces_without_duplicates(conn):
         "SELECT COUNT(*) FROM chunks WHERE book_id = %s", (book_id,)
     ).fetchone()[0]
     assert n == 3
+
+
+def test_a_book_that_stops_extracting_drops_its_old_chunks(conn):
+    """A failed re-index must not leave the previous index answering searches.
+
+    The zero-chunk path returns before insert_chunks_and_finish, and that DELETE
+    is the only chunk cleanup on the --rechunk route -- process_book's wipe
+    never runs there. The book was left 'failed' with its old chunks still in
+    the table, and db.search has no status filter, so they kept being retrieved
+    for a book the library reported as broken.
+    """
+    import ingest
+
+    db.upsert_book(conn, "upload:stale", "Stale.pdf", "m", 1, source="upload")
+    book_id = conn.execute(
+        "SELECT id FROM books WHERE source_id = 'upload:stale'"
+    ).fetchone()[0]
+    db.insert_chunks_and_finish(conn, book_id, [{
+        "ordinal": 0, "heading_trail": None, "page_start": 1, "page_end": 1,
+        "content": "text from the previous successful run", "token_count": 6,
+        "embedding": deterministic_vector("previous"),
+    }])
+    assert conn.execute(
+        "SELECT count(*) FROM chunks WHERE book_id = %s", (book_id,)
+    ).fetchone()[0] == 1
+
+    # Re-chunk, but the markdown now yields nothing.
+    n_chunks, _ = ingest._chunk_embed_and_finish(conn, book_id, "   ", None)
+
+    assert n_chunks == 0
+    assert conn.execute(
+        "SELECT status FROM books WHERE id = %s", (book_id,)
+    ).fetchone()[0] == "failed"
+    assert conn.execute(
+        "SELECT count(*) FROM chunks WHERE book_id = %s", (book_id,)
+    ).fetchone()[0] == 0, "stale chunks still answer searches for a failed book"
