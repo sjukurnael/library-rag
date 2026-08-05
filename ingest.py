@@ -89,6 +89,44 @@ def register_upload(conn, src: Path, title: str | None = None) -> dict:
     return db.fetch_book_by_source_id(conn, source_id)
 
 
+def purge_book(conn, book_id: int):
+    """Remove a book completely: the row, its chunks, and every file it owns.
+
+    Returns {"book": row, "removed": [filenames]}, or None if no such book.
+
+    Deleting the row alone leaves up to four orphans -- the working PDF cache,
+    the extracted markdown, its manifest, and (for an upload) the original
+    bytes. Nothing would ever collect them: they are keyed by book_id, and the
+    next upload gets a new id, so they would sit there forever while looking
+    like a book that still exists.
+
+    The row goes FIRST. If file removal then fails, the leftovers are harmless
+    and re-uploading overwrites them; doing it the other way round would leave a
+    book row pointing at files that are gone, which the pipeline would only
+    discover mid-run.
+    """
+    book = db.delete_book(conn, book_id)
+    if book is None:
+        return None
+
+    paths = [
+        config.PDF_DIR / f"{book_id}.pdf",
+        config.MARKDOWN_DIR / f"{book_id}.md",
+        config.MARKDOWN_DIR / f"{book_id}.manifest.json",
+    ]
+    # Only an upload owns its original. A Drive book's source_id is a Drive file
+    # id with no "upload:" prefix, and Drive still holds the bytes regardless.
+    if book["source"] == "upload":
+        paths.append(upload_path(book["source_id"]))
+
+    removed = []
+    for path in paths:
+        if path.exists():
+            path.unlink()
+            removed.append(path.name)
+    return {"book": book, "removed": removed}
+
+
 def _lazy_drive_downloader():
     """A Drive downloader that builds the API client on first use only.
 
@@ -322,6 +360,17 @@ def run_local(paths: list) -> None:
     print(f"Done. Processed {processed} book(s) this run.")
 
 
+def run_delete(book_ids: list) -> None:
+    with db.get_conn() as conn:
+        for book_id in book_ids:
+            result = purge_book(conn, book_id)
+            if result is None:
+                print(f"[{book_id}] no such book")
+                continue
+            files = ", ".join(result["removed"]) or "no files"
+            print(f"[{book_id}] deleted {result['book']['title']} -- removed {files}")
+
+
 def run_rechunk() -> None:
     """Rebuild chunks+embeddings from local markdown only. No Drive or OCR
     calls -- this is the point of keeping markdown as the permanent asset."""
@@ -399,9 +448,15 @@ def main():
         "--local", nargs="+", metavar="PDF",
         help="Ingest PDFs already on disk instead of from Drive.",
     )
+    parser.add_argument(
+        "--delete", nargs="+", type=int, metavar="ID",
+        help="Remove books by id: row, chunks, and every file they own.",
+    )
     args = parser.parse_args()
 
-    if args.local:
+    if args.delete:
+        run_delete(args.delete)
+    elif args.local:
         run_local(args.local)
     elif args.status:
         run_status()

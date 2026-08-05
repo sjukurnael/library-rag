@@ -231,3 +231,88 @@ def test_a_failed_book_stays_visible_with_its_error(client, conn):
     assert "no chunks" in pending[0]["error"], (
         "a failed upload that disappears tells the user it succeeded"
     )
+
+
+# -------------------------------------------------------------- delete --
+
+def test_purge_removes_the_row_its_chunks_and_its_files(conn, tmp_path):
+    src = tmp_path / "book.pdf"
+    src.write_bytes(_pdf())
+    book = ingest.register_upload(conn, src)
+    book_id = book["id"]
+
+    # Stand in for what a real run leaves behind.
+    original = ingest.upload_path(book["source_id"])
+    (config.PDF_DIR / f"{book_id}.pdf").write_bytes(_pdf())
+    (config.MARKDOWN_DIR / f"{book_id}.md").write_text("# extracted")
+    (config.MARKDOWN_DIR / f"{book_id}.manifest.json").write_text("{}")
+    db.insert_chunks_and_finish(conn, book_id, [{
+        "ordinal": 0, "heading_trail": None, "page_start": 1, "page_end": 2,
+        "content": "body", "token_count": 2, "embedding": [0.0] * config.EMBED_DIM,
+    }])
+    assert conn.execute(
+        "SELECT count(*) FROM chunks WHERE book_id = %s", (book_id,)
+    ).fetchone()[0] == 1
+
+    result = ingest.purge_book(conn, book_id)
+
+    assert result["book"]["id"] == book_id
+    assert conn.execute("SELECT count(*) FROM books WHERE id=%s", (book_id,)).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM chunks WHERE book_id = %s", (book_id,)
+    ).fetchone()[0] == 0, "chunks outlived their book and still answer searches"
+    assert not original.exists(), "the uploaded original was left on disk"
+    assert not (config.PDF_DIR / f"{book_id}.pdf").exists()
+    assert not (config.MARKDOWN_DIR / f"{book_id}.md").exists()
+    assert not (config.MARKDOWN_DIR / f"{book_id}.manifest.json").exists()
+    assert len(result["removed"]) == 4
+
+
+def test_purging_a_drive_book_never_touches_an_upload_path(conn):
+    """A Drive source_id has no "upload:" prefix, so treating it as one would
+    build a nonsense path -- and Drive still holds the bytes either way."""
+    conn.execute(
+        "INSERT INTO books (source_id, title, source, status) "
+        "VALUES ('drive-abc', 'From Drive.pdf', 'drive', 'done')"
+    )
+    conn.commit()
+    book_id = conn.execute(
+        "SELECT id FROM books WHERE source_id = 'drive-abc'"
+    ).fetchone()[0]
+
+    result = ingest.purge_book(conn, book_id)
+    assert result["book"]["source"] == "drive"
+    assert result["removed"] == []
+
+
+def test_purging_an_unknown_book_is_not_an_error(conn):
+    assert ingest.purge_book(conn, 999999) is None
+
+
+def test_delete_endpoint_removes_the_book(client, conn):
+    r = _post(client, "unwanted.pdf", _pdf())
+    book_id = r.json()["id"]
+
+    d = client.delete(f"/api/books/{book_id}")
+    assert d.status_code == 200, d.text
+    assert d.json()["title"] == "unwanted.pdf"
+    assert conn.execute(
+        "SELECT count(*) FROM books WHERE id = %s", (book_id,)
+    ).fetchone()[0] == 0
+
+
+def test_deleting_an_unknown_book_is_a_404(client):
+    assert client.delete("/api/books/999999").status_code == 404
+
+
+def test_a_deleted_book_can_be_uploaded_again(client, conn):
+    """Content-addressing must not make a deletion permanent: the same bytes
+    were the same book, so re-uploading has to create a fresh one rather than
+    matching a row that no longer exists."""
+    first = _post(client, "book.pdf", _pdf()).json()["id"]
+    client.delete(f"/api/books/{first}")
+
+    second = _post(client, "book.pdf", _pdf())
+    assert second.status_code == 200
+    assert second.json()["id"] != first
+    assert second.json()["already_indexed"] is False

@@ -179,6 +179,25 @@ async def upload_book(background: BackgroundTasks, file: UploadFile = File(...))
     }
 
 
+@app.delete("/api/books/{book_id}")
+def delete_book(book_id: int):
+    """Remove a book and everything it owns.
+
+    Hard delete, not a soft one: the point of removing a book is that it stops
+    answering questions, and a flag that has to be honoured by every future
+    query is a flag someone will eventually forget in one of them.
+    """
+    with db.get_conn() as conn:
+        result = ingest.purge_book(conn, book_id)
+    if result is None:
+        raise HTTPException(404, f"No book with id {book_id}.")
+    return {
+        "id": book_id,
+        "title": result["book"]["title"],
+        "removed_files": result["removed"],
+    }
+
+
 @app.post("/api/research")
 def research_stream(req: AskRequest):
     """Server-sent events rather than one JSON blob: the loop takes tens of

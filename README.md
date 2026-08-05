@@ -263,6 +263,21 @@ and the original is kept at `data/uploads/<md5>.pdf`. Three consequences:
 an upload what Drive is to a Drive book, and unlike `data/pdfs/` it is not
 disposable.
 
+### Removing a book
+
+```bash
+python ingest.py --delete 93 94        # or the × in the web UI
+```
+
+Hard delete: the row, its chunks (via `ON DELETE CASCADE`, so there is never a
+moment where orphaned chunks still answer searches), the working PDF cache, the
+extracted markdown and its manifest, and — for an upload — the original bytes.
+Deleting the row alone would leave four orphans keyed by a `book_id` that will
+never be reused.
+
+Re-uploading afterwards creates a **new** book. Content-addressing decides
+identity, not history, so a deletion is not permanent.
+
 ### Flags
 
 - `--discover` — enumerate the pilot folder into `books`, then stop.

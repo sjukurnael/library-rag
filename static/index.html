@@ -142,6 +142,12 @@
   .uploadbtn:hover { color: var(--ink); border-color: var(--accent); }
   .uploadnote { font-size: 12.5px; color: var(--dim); }
   .uploadnote.err { color: #d2544a; }
+  .lib li { display: flex; align-items: baseline; gap: 8px; }
+  .lib .del { margin-left: auto; cursor: pointer; border: 0; background: none;
+              color: var(--dim); font-size: 15px; line-height: 1; padding: 0 4px;
+              opacity: 0; transition: .15s; }
+  .lib li:hover .del { opacity: 1; }
+  .lib .del:hover { color: #d2544a; }
   .lib.pending li { color: var(--dim); }
   .lib.pending li.failed { color: #d2544a; }
   @keyframes pulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
@@ -204,14 +210,22 @@ function loadBooks() {
     $('#libsummary').textContent =
       `${d.books.length} books · ${d.total_chunks.toLocaleString()} chunks indexed`;
     $('#lib').innerHTML = d.books.map(b =>
-      `<li>${esc(b.title)} — ${b.pages ?? '?'} pages, ${b.chunks} chunks</li>`).join('');
+      `<li><span>${esc(b.title)} — ${b.pages ?? '?'} pages, ${b.chunks} chunks</span>` +
+      `<button class="del" data-id="${b.id}" data-title="${esc(b.title)}" ` +
+      `title="Remove this book">&times;</button></li>`).join('');
 
     const pending = d.pending || [];
     $('#pending').innerHTML = pending.map(b => {
       const failed = b.status === 'failed';
       const label = failed ? `failed — ${esc(b.error || 'unknown error')}`
                            : `${esc(b.status)}…`;
-      return `<li class="${failed ? 'failed' : 'loading'}">${esc(b.title)} — ${label}</li>`;
+      // A failed book gets a delete control too -- otherwise the only way out of
+      // a bad upload is SQL.
+      const del = failed
+        ? `<button class="del" data-id="${b.id}" data-title="${esc(b.title)}">&times;</button>`
+        : '';
+      return `<li class="${failed ? 'failed' : 'loading'}">` +
+             `<span>${esc(b.title)} — ${label}</span>${del}</li>`;
     }).join('');
 
     // Only a book actually moving through the pipeline justifies polling; one
@@ -223,6 +237,29 @@ function loadBooks() {
   }).catch(() => $('#libsummary').textContent = 'index unavailable');
 }
 loadBooks();
+
+// Delete is a hard delete of the row, its chunks and its files, so confirm by
+// name rather than by a bare "are you sure" that says nothing about what goes.
+document.addEventListener('click', async e => {
+  const btn = e.target.closest('.del');
+  if (!btn) return;
+  const { id, title } = btn.dataset;
+  if (!confirm(`Remove "${title}" from the library?\n\nThis deletes its passages and the uploaded file. You can add it again later.`)) return;
+  btn.disabled = true;
+  const note = $('#uploadnote');
+  try {
+    const r = await fetch(`/api/books/${id}`, { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || `delete failed (${r.status})`);
+    note.className = 'uploadnote';
+    note.textContent = `Removed ${d.title}.`;
+    loadBooks();
+  } catch (err) {
+    btn.disabled = false;
+    note.className = 'uploadnote err';
+    note.textContent = err.message;
+  }
+});
 
 $('#file').addEventListener('change', async e => {
   const file = e.target.files[0];

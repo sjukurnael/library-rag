@@ -292,6 +292,26 @@ def insert_chunks_and_finish(conn, book_id: int, chunks: list) -> None:
     conn.commit()
 
 
+def delete_book(conn, book_id: int):
+    """Delete a book and its chunks. Returns the deleted row as a dict, or None
+    if there was no such book.
+
+    Chunks go with it through ON DELETE CASCADE rather than a second statement,
+    so there is no window in which the book is gone and its chunks are not --
+    orphaned chunks would keep answering searches for a book the library no
+    longer lists.
+
+    Returns the row because the caller needs source and source_id to know which
+    files on disk belonged to it, and after the DELETE there is nowhere else to
+    read them from.
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("DELETE FROM books WHERE id = %s RETURNING *", (book_id,))
+        row = cur.fetchone()
+    conn.commit()
+    return row
+
+
 def build_hnsw_index(conn) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS chunks_hnsw "
