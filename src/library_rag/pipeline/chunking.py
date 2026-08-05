@@ -21,7 +21,7 @@ from langchain_text_splitters import (
     RecursiveCharacterTextSplitter,
 )
 
-import config
+from library_rag import config
 
 PAGE_MARKER_RE = re.compile(r"<!--\s*page:\s*(\d+)\s*-->")
 # A whole markdown heading line, used to detect pieces that carry no prose.

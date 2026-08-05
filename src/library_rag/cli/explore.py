@@ -18,8 +18,8 @@ from dotenv import load_dotenv
 # Load before importing agent so ANTHROPIC_MODEL (read at import time) is set.
 load_dotenv()
 
-from agent.loop import run  # noqa: E402
-from drive.client import DriveAuthError  # noqa: E402
+from library_rag.drive.client import DriveAuthError  # noqa: E402
+from library_rag.exploration.loop import run  # noqa: E402
 
 
 def main():

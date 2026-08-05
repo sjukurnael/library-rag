@@ -11,7 +11,7 @@ import types
 
 import pytest
 
-from agent import research
+from library_rag.retrieval import research
 
 # ------------------------------------------------------------- fakes --
 

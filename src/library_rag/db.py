@@ -18,7 +18,7 @@ from pgvector import HalfVector
 from pgvector.psycopg import register_vector
 from psycopg.rows import dict_row
 
-import config
+from library_rag import config
 
 # Statuses a book can be claimed from (anything not terminal-or-skipped).
 TERMINAL_STATUSES = ("done", "failed", "needs_ocr")

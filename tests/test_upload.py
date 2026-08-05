@@ -15,10 +15,8 @@ import io
 import pytest
 from fastapi.testclient import TestClient
 
-import api
-import config
-import db
-import ingest
+from library_rag import config, db, ingest
+from library_rag.web import api
 
 MINIMAL_PDF = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
 

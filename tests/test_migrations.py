@@ -1,7 +1,7 @@
 """The migration runner applies each file once and is a no-op on re-run."""
 import psycopg
 
-import migrate
+from library_rag import migrate
 
 
 def _table_exists(url, name):

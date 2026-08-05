@@ -9,8 +9,8 @@ import os
 import random
 import statistics
 
-from agent import assumptions
-from drive import client as drive_client
+from library_rag.drive import client as drive_client
+from library_rag.exploration import assumptions
 
 CACHE_FILE = "cache.json"
 FOLDER_MIME = "application/vnd.google-apps.folder"

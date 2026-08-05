@@ -20,9 +20,8 @@ A gate that cannot go red is decoration.
 """
 import pytest
 
-import config
-import db
-import evaluate
+from library_rag import config, db
+from library_rag.evaluation import harness as evaluate
 from tests.conftest import lexical_vector
 
 # --------------------------------------------------------- synthetic corpus --
@@ -224,10 +223,10 @@ def test_hit_rate_and_mrr_arithmetic():
 def test_the_question_set_shipped_in_the_repo_is_well_formed():
     """Cheap, and it catches the failure mode where a hand-edited JSON file
     silently drops a field and every question starts scoring as a miss."""
-    for path in ("eval/questions.json", "eval/questions_paraphrase.json"):
-        data = evaluate.load_questions(config.BASE_DIR / path)
+    for name in ("questions.json", "questions_paraphrase.json"):
+        data = evaluate.load_questions(evaluate.QUESTIONS_DIR / name)
         ids = [q["id"] for q in data["questions"]]
-        assert len(ids) == len(set(ids)), f"duplicate question ids in {path}"
+        assert len(ids) == len(set(ids)), f"duplicate question ids in {name}"
         for q in data["questions"]:
             assert q["question"].strip(), f"{q['id']} has no question text"
             assert q["expect"], f"{q['id']} has no expected passage"

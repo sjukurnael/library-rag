@@ -1,7 +1,7 @@
 """
 The filesystem half of 0002_book_sources.sql. Run once, after that migration.
 
-    python migrations/0002_rekey_local_uploads.py
+    python scripts/rekey_local_uploads.py
 
 0002 labelled the old `--local` books as source='upload' but left their
 source_id as "local:<filename>". Re-keying to the content-addressed
@@ -14,17 +14,15 @@ no-op. The bytes come from data/pdfs/<book_id>.pdf, the working copy the
 original ingest left behind -- which is why this must run before anything
 prunes that cache.
 
-migrate.py globs *.sql, so this file is never picked up as a schema migration.
+It lives in scripts/ rather than migrations/ because it is a one-off run by a
+human against a specific database, not part of the schema sequence.
 """
 import hashlib
 import shutil
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import config  # noqa: E402
-import db  # noqa: E402
+from library_rag import config, db
 
 
 def _md5(path: Path) -> str:

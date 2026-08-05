@@ -8,8 +8,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent import assumptions
-from agent.tools import estimate_pipeline
+from library_rag.exploration import assumptions
+from library_rag.exploration.tools import estimate_pipeline
 
 
 def test_all_digital_has_no_ocr_cost():

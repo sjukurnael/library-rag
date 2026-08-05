@@ -1,4 +1,4 @@
-.PHONY: db-up db-down db-psql db-logs migrate
+.PHONY: db-up db-down db-psql db-logs migrate test lint serve
 
 db-up:
 	docker compose up -d
@@ -7,7 +7,7 @@ db-up:
 	@echo "Postgres is up on localhost:5434"
 
 migrate:
-	python -m migrate
+	python -m library_rag.cli.migrate
 
 db-down:
 	docker compose down
@@ -17,3 +17,12 @@ db-psql:
 
 db-logs:
 	docker compose logs -f db
+
+test:
+	pytest -q
+
+lint:
+	ruff check
+
+serve:
+	uvicorn library_rag.web.api:app --reload --port 8000

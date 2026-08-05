@@ -19,9 +19,8 @@ import psycopg
 import pytest
 from psycopg import conninfo
 
-import config
-import db as db_mod
-import migrate
+from library_rag import config, migrate
+from library_rag import db as db_mod
 
 TEST_DB = "library_test"
 

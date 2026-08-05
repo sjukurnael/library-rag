@@ -23,7 +23,7 @@ from pathlib import Path
 import fitz  # PyMuPDF
 import pymupdf4llm
 
-import config
+from library_rag import config
 
 # Set explicitly rather than relying on the library default, because this one
 # flag decides whether the whole pipeline sees any document structure at all.

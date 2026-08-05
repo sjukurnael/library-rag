@@ -15,8 +15,13 @@ load_dotenv()
 # Markdown is the permanent asset; Postgres is disposable and rebuildable
 # from it (see ingest.py --rechunk). PDFs are a local cache of Drive, not
 # an asset -- safe to delete and re-download.
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
+# The repo root, three levels up from src/library_rag/config.py. Data lives
+# beside the source tree, not inside it: `data/` is the user's corpus -- their
+# uploaded originals and extracted markdown -- and packaging user data into an
+# importable package would put it wherever pip happened to install this.
+# Overridable so a container or an installed copy can point somewhere writable.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = Path(os.environ.get("LIBRARY_RAG_DATA_DIR", PROJECT_ROOT / "data"))
 PDF_DIR = DATA_DIR / "pdfs"
 MARKDOWN_DIR = DATA_DIR / "markdown"
 # Uploaded originals. This is to an uploaded book what Drive is to a Drive book:

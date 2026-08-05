@@ -26,8 +26,8 @@ import os
 
 from anthropic import Anthropic
 
-import db
-from pipeline import embed as embed_mod
+from library_rag import db
+from library_rag.pipeline import embed as embed_mod
 
 MODEL = "claude-opus-5"
 MAX_ITERATIONS = 8

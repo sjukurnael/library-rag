@@ -1,6 +1,5 @@
 """discover(): idempotent upsert, updates only on real change, PDF-only."""
-import db
-import ingest
+from library_rag import db, ingest
 
 
 def _fake_listing(files):

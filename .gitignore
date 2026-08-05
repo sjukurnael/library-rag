@@ -9,6 +9,9 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+src/*.egg-info/
+build/
+dist/
 .pytest_cache/
 .ruff_cache/
 

@@ -3,9 +3,8 @@ commit atomically; a crash before commit leaves no orphan chunks; reprocessing
 replaces chunks rather than duplicating them."""
 import pytest
 
-import config
-import db
-from pipeline import chunking, embed
+from library_rag import config, db
+from library_rag.pipeline import chunking, embed
 from tests.conftest import deterministic_vector
 
 
@@ -106,7 +105,7 @@ def test_a_book_that_stops_extracting_drops_its_old_chunks(conn):
     the table, and db.search has no status filter, so they kept being retrieved
     for a book the library reported as broken.
     """
-    import ingest
+    from library_rag import ingest
 
     db.upsert_book(conn, "upload:stale", "Stale.pdf", "m", 1, source="upload")
     book_id = conn.execute(
@@ -122,7 +121,7 @@ def test_a_book_that_stops_extracting_drops_its_old_chunks(conn):
     ).fetchone()[0] == 1
 
     # Re-chunk, but the markdown now yields nothing.
-    n_chunks, _ = ingest._chunk_embed_and_finish(conn, book_id, "   ", None)
+    n_chunks, _ = ingest.chunk_embed_and_finish(conn, book_id, "   ", None)
 
     assert n_chunks == 0
     assert conn.execute(

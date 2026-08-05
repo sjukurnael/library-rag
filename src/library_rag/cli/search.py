@@ -12,9 +12,8 @@ so query and document vectors live in one space.
 """
 import argparse
 
-import config
-import db
-from pipeline import embed as embed_mod
+from library_rag import config, db
+from library_rag.pipeline import embed as embed_mod
 
 
 def main():

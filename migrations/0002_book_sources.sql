@@ -21,8 +21,8 @@ ALTER TABLE books ADD COLUMN source TEXT NOT NULL DEFAULT 'drive';
 -- Re-keying their source_id to "upload:<md5>" is deliberately NOT done here.
 -- It needs the file's md5 and a copy into data/uploads/, and a SQL migration
 -- can do neither -- it would rewrite the id to point at a file that was never
--- put there. That half of the move belongs to a one-off script with filesystem
--- access, run once alongside this migration.
+-- put there. That half is scripts/rekey_local_uploads.py, run once alongside
+-- this migration.
 UPDATE books SET source = 'upload' WHERE source_id LIKE 'local:%';
 
 ALTER TABLE books ADD CONSTRAINT books_source_check

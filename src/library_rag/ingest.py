@@ -4,32 +4,24 @@ Postgres. Postgres is the work queue over the `books` table (claim via
 UPDATE ... FOR UPDATE SKIP LOCKED), so this is safe to run more than once and
 safe to kill and restart mid-book.
 
-    python ingest.py --discover     # enumerate the pilot folder into `books`
-    python ingest.py --limit 2      # process at most 2 books this run
-    python ingest.py                # process all remaining processable books
-    python ingest.py --rechunk      # rebuild chunks+embeddings from local markdown
-                                     # only (no Drive or OCR calls -- markdown is the asset)
-    python ingest.py --index        # build the HNSW index (run once, after ingestion)
-    python ingest.py --status       # print a counts-by-status table
-    python ingest.py --local a.pdf b.pdf   # ingest PDFs already on disk
+Commands live in library_rag.cli.ingest; this module is the importable half
+(discover, register_upload, process_book, process_queue, purge_book) so the API
+and the tests can drive ingestion without going through argv.
 
 The external services (Drive, Voyage, Mistral OCR) are built once at the top of
 a run and passed down, so nothing is a module-level client and tests inject
 fakes.
 """
-import argparse
 import hashlib
 import shutil
 import time
-from functools import partial
 from pathlib import Path
 
-import config
-import db
-from drive import client as drive_client
-from pipeline import chunking as chunk_mod
-from pipeline import embed as embed_mod
-from pipeline import extract as extract_mod
+from library_rag import config, db
+from library_rag.drive import client as drive_client
+from library_rag.pipeline import chunking as chunk_mod
+from library_rag.pipeline import embed as embed_mod
+from library_rag.pipeline import extract as extract_mod
 
 PDF_MIME = "application/pdf"
 
@@ -174,9 +166,13 @@ def _md5_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _chunk_embed_and_finish(conn, book_id: int, markdown: str, voyage_client) -> tuple:
+def chunk_embed_and_finish(conn, book_id: int, markdown: str, voyage_client) -> tuple:
     """Chunk markdown, embed, and commit chunks+done in one transaction.
-    Returns (n_chunks, total_tokens)."""
+    Returns (n_chunks, total_tokens).
+
+    Public, not _private: the rechunk command calls it directly to rebuild a
+    book from local markdown without re-downloading or re-extracting, which is
+    the entire point of keeping markdown as the permanent asset."""
     dropped = []
     chunks = chunk_mod.chunk_markdown(markdown, dropped=dropped)
     if dropped:
@@ -265,7 +261,7 @@ def process_book(conn, book, *, download_file, ocr_client, voyage_client) -> Non
 
     # -- chunk + embed + store --
     t_chunk_embed = time.time()
-    n_chunks, n_tokens = _chunk_embed_and_finish(
+    n_chunks, n_tokens = chunk_embed_and_finish(
         conn, book_id, result.markdown, voyage_client
     )
     chunk_embed_s = time.time() - t_chunk_embed
@@ -286,7 +282,7 @@ def process_book(conn, book, *, download_file, ocr_client, voyage_client) -> Non
     )
 
 
-# --------------------------------------------------------------- runs --
+# ---------------------------------------------------------------- worker --
 
 def process_queue(limit=None, *, source=None, conn=None) -> int:
     """Drain the work queue, whatever each book's source is. Returns the count.
@@ -331,153 +327,3 @@ def process_queue(limit=None, *, source=None, conn=None) -> int:
         return drain(conn)
     with db.get_conn() as own:
         return drain(own)
-
-
-def run_worker(limit) -> None:
-    """Discover the Drive folder, then drain the queue."""
-    service = drive_client.build_service()
-    with db.get_conn() as conn:
-        discover(conn, config.PILOT_FOLDER_ID, partial(drive_client.list_children, service))
-    processed = process_queue(limit)
-    print(f"Done. Processed {processed} book(s) this run.")
-
-
-def run_local(paths: list) -> None:
-    """Ingest PDFs already on disk, bypassing Drive.
-
-    Identical to uploading them through the web UI -- both call register_upload
-    and then drain the queue. Keeping one path means the CLI cannot drift from
-    what the API does, which is what happened the first time around: --local
-    used to key books on `local:<filename>` and process them inline, outside the
-    queue, so an interrupted --local run left no claim to recover from.
-    """
-    registered = []
-    with db.get_conn() as conn:
-        for raw in paths:
-            src = Path(raw).expanduser().resolve()
-            if not src.exists():
-                print(f"SKIP -- no such file: {src}")
-                continue
-            book = register_upload(conn, src)
-            registered.append(book)
-            print(f"[{book['id']}] {book['title']}: registered ({book['status']})")
-
-    if not registered:
-        print("Nothing to do.")
-        return
-    processed = process_queue()
-    print(f"Done. Processed {processed} book(s) this run.")
-
-
-def run_delete(book_ids: list) -> None:
-    with db.get_conn() as conn:
-        for book_id in book_ids:
-            result = purge_book(conn, book_id)
-            if result is None:
-                print(f"[{book_id}] no such book")
-                continue
-            files = ", ".join(result["removed"]) or "no files"
-            print(f"[{book_id}] deleted {result['book']['title']} -- removed {files}")
-
-
-def run_rechunk() -> None:
-    """Rebuild chunks+embeddings from local markdown only. No Drive or OCR
-    calls -- this is the point of keeping markdown as the permanent asset."""
-    voyage_client = embed_mod.build_client()
-    with db.get_conn() as conn:
-        reset = db.reset_done_to_extracted(conn)
-        if reset:
-            print(f"Reset {reset} done book(s) back to extracted for rechunk.")
-        for book_id, title in db.fetch_rechunkable_books(conn):
-            md_path = config.MARKDOWN_DIR / f"{book_id}.md"
-            if not md_path.exists():
-                print(f"[{book_id}] {title}: SKIP -- no local markdown at {md_path}")
-                continue
-            markdown = md_path.read_text(encoding="utf-8")
-            t0 = time.time()
-            n_chunks, n_tokens = _chunk_embed_and_finish(
-                conn, book_id, markdown, voyage_client
-            )
-            extract_mod.update_manifest(
-                book_id,
-                chunk_embed_seconds=round(time.time() - t0, 2),
-                chunk_count=n_chunks,
-            )
-            print(f"[{book_id}] {title}: rechunked -> {n_chunks} chunks, {n_tokens} tokens")
-
-
-def run_index() -> None:
-    with db.get_conn() as conn:
-        print("Building HNSW index on chunks.embedding (this can take a while) ...")
-        db.build_hnsw_index(conn)
-        print("Done.")
-
-
-def run_status() -> None:
-    with db.get_conn() as conn:
-        rows = db.status_counts(conn)
-    print(f"{'status':<12} {'count':>6}")
-    print("-" * 20)
-    total = 0
-    for status, count in rows:
-        print(f"{status:<12} {count:>6}")
-        total += count
-    print("-" * 20)
-    print(f"{'total':<12} {total:>6}")
-
-
-def run_discover_only() -> None:
-    service = drive_client.build_service()
-    with db.get_conn() as conn:
-        discover(conn, config.PILOT_FOLDER_ID, partial(drive_client.list_children, service))
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    parser.add_argument(
-        "--discover", action="store_true", help="Enumerate the pilot folder, then stop."
-    )
-    parser.add_argument(
-        "--limit", type=int, default=None, help="Process at most N books this run."
-    )
-    parser.add_argument(
-        "--rechunk",
-        action="store_true",
-        help="Rebuild chunks+embeddings from local markdown only.",
-    )
-    parser.add_argument(
-        "--index", action="store_true", help="Build the HNSW index on chunks.embedding."
-    )
-    parser.add_argument(
-        "--status", action="store_true", help="Print a counts-by-status table."
-    )
-    parser.add_argument(
-        "--local", nargs="+", metavar="PDF",
-        help="Ingest PDFs already on disk instead of from Drive.",
-    )
-    parser.add_argument(
-        "--delete", nargs="+", type=int, metavar="ID",
-        help="Remove books by id: row, chunks, and every file they own.",
-    )
-    args = parser.parse_args()
-
-    if args.delete:
-        run_delete(args.delete)
-    elif args.local:
-        run_local(args.local)
-    elif args.status:
-        run_status()
-    elif args.index:
-        run_index()
-    elif args.rechunk:
-        run_rechunk()
-    elif args.discover:
-        run_discover_only()
-    else:
-        run_worker(args.limit)
-
-
-if __name__ == "__main__":
-    main()

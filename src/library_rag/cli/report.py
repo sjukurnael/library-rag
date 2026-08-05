@@ -8,10 +8,9 @@ after ingest.py has processed the pilot folder.
 The whole point of the pilot: replace the guessed constants in
 agent/assumptions.py with numbers measured on real books.
 """
-import config
-import db
-from agent import assumptions as assumed
-from pipeline import extract as extract_mod
+from library_rag import config, db
+from library_rag.exploration import assumptions as assumed
+from library_rag.pipeline import extract as extract_mod
 
 BYTES_PER_MB = 1024 * 1024
 

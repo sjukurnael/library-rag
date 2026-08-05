@@ -2,7 +2,7 @@
 stale books; attempts past the cap fail instead of looping forever."""
 from concurrent.futures import ThreadPoolExecutor
 
-import db
+from library_rag import db
 
 
 def _seed(conn, n, status="discovered", source="drive", prefix="file"):

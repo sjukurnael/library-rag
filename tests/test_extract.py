@@ -8,10 +8,8 @@ from pathlib import Path
 import fitz
 import pytest
 
-import config
-import db
-import ingest
-from pipeline import chunking, embed, extract
+from library_rag import config, db, ingest
+from library_rag.pipeline import chunking, embed, extract
 
 
 def _make_text_pdf(dest, pages=3):

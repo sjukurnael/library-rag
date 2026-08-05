@@ -9,14 +9,15 @@ filename in schema_migrations. Idempotent: a second run is a no-op. Each
 migration runs in its own transaction, so a failing migration rolls back
 cleanly and leaves earlier ones applied.
 """
-import sys
-from pathlib import Path
 
 import psycopg
 
-import config
+from library_rag import config
 
-MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+# Repo root, not package data: migrations are applied by an operator against a
+# database, and keeping them visible at the top level is how anyone looking for
+# "what is the schema" finds it.
+MIGRATIONS_DIR = config.PROJECT_ROOT / "migrations"
 
 ENSURE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -57,16 +58,3 @@ def run(database_url: str = None) -> list:
             newly_applied.append(path.name)
             print(f"applied {path.name}")
     return newly_applied
-
-
-def main() -> int:
-    applied = run()
-    if not applied:
-        print("Schema already up to date; nothing to apply.")
-    else:
-        print(f"Applied {len(applied)} migration(s).")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

@@ -9,8 +9,8 @@ import sys
 
 from anthropic import Anthropic
 
-from agent import assumptions, tools
-from drive.client import DriveAuthError
+from library_rag.drive.client import DriveAuthError
+from library_rag.exploration import assumptions, tools
 
 ROOT_FOLDER_ID = "1jOO-7ZAEosq2mAtuVzTTq9uAekrypVfq"
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")

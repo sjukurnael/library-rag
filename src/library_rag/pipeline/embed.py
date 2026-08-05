@@ -14,7 +14,7 @@ import time
 
 import tiktoken
 
-import config
+from library_rag import config
 
 _encoding = None
 

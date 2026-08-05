@@ -1,7 +1,7 @@
 """
 Local web UI over the indexed library.
 
-    ./.venv/bin/uvicorn api:app --reload --port 8000
+    ./.venv/bin/uvicorn library_rag.web.api:app --reload --port 8000
     open http://localhost:8000
 
 Every question goes through agent/research.py: the model runs its own search
@@ -27,14 +27,12 @@ from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-import config
-import db
-import ingest
-from agent import research
-from pipeline import embed as embed_mod
+from library_rag import config, db, ingest
+from library_rag.pipeline import embed as embed_mod
+from library_rag.retrieval import research
 
 app = FastAPI(title="library-rag")
-_here = os.path.dirname(os.path.abspath(__file__))
+_STATIC = Path(__file__).resolve().parent / "static"
 
 
 class AskRequest(BaseModel):
@@ -43,7 +41,7 @@ class AskRequest(BaseModel):
 
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(_here, "static", "index.html"))
+    return FileResponse(_STATIC / "index.html")
 
 
 @app.get("/api/books")

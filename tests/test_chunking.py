@@ -3,8 +3,8 @@ ordinals, and overlap when a section is split. Pure functions -- no DB, no
 network."""
 from pathlib import Path
 
-import config
-from pipeline import chunking
+from library_rag import config
+from library_rag.pipeline import chunking
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_book.md"
 

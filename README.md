@@ -16,55 +16,55 @@ Google Drive. Built in phases:
 
 ```
 library-rag/
-├── explore.py            # Phase 0 CLI: pilot-folder exploration/estimation
-├── agent/                # the exploration agent
-│   ├── loop.py           #   system prompt + hand-written tool-use loop
-│   ├── tools.py          #   list_folder (cached Drive listing) + estimate_pipeline
-│   ├── assumptions.py    #   every estimation constant, each with a rationale comment
-│   └── research.py       #   Phase 1: the retrieval agent's own search loop
-├── drive/                # Drive access, shared by both phases
-│   └── client.py         #   OAuth, paginated listing, download, retries
-├── config.py              # Phase 1: every ingestion tunable (paths, models, chunk sizes)
-├── db.py                  #   Postgres access: queue semantics (claim/reap) + CRUD
-├── migrations/            #   *.sql schema, applied in filename order
-│   ├── 0001_init.sql      #     books + chunks (halfvec embedding, tsv, doc_status enum)
-│   ├── 0002_book_sources.sql        # drive_file_id -> source_id, + source column
-│   └── 0002_rekey_local_uploads.py  # its filesystem half (one-off, not a migration)
-├── migrate.py              #   tiny forward-only migration runner (schema_migrations)
-├── docker-compose.yml      #   pgvector/pgvector:pg17, port 5434, healthcheck
-├── ingest.py               #   the worker: Drive PDF -> markdown -> chunks -> embeddings
-├── search.py               #   retrieval smoke test CLI + the deterministic control
-├── evaluate.py             #   retrieval quality harness: hit-rate@k / MRR
-├── eval/questions*.json    #   curated ground truth (book + page span, not chunk id)
-├── api.py                  #   FastAPI: UI, /api/books, /api/books/upload, /api/research
-├── static/index.html       #   the UI: question box, inline citations, PDF upload
-├── report.py               #   calibration report: measured vs. assumptions.py
-├── pipeline/               #   ingest.py's internals
-│   ├── extract.py         #     PyMuPDF / Mistral OCR -> markdown + manifest
-│   ├── chunking.py         #     markdown -> chunks with page ranges + ordinals
-│   └── embed.py             #     the one place that calls the Voyage API
-├── pyproject.toml          #   package + dev deps; `pip install -e ".[dev]"`
-├── data/                    #   gitignored
-│   ├── uploads/            #     uploaded originals, content-addressed (NOT disposable)
-│   ├── markdown/           #     the permanent, rebuildable-from asset
-│   └── pdfs/               #     per-book working cache, safe to delete
-├── .github/workflows/ci.yml #   pgvector service -> ruff check -> pytest
-└── tests/                   #   real Postgres, fake externals, zero-network
-    ├── conftest.py         #     test-DB lifecycle + fake Voyage/Drive
-    ├── test_estimate.py    #     Phase 0: estimate_pipeline arithmetic
-    ├── test_migrations.py  #     migration runner idempotency
-    ├── test_discover.py    #     enumerate/upsert
-    ├── test_claim.py       #     queue: SKIP LOCKED, reaper, attempt cap
-    ├── test_chunking.py    #     chunk boundaries, pages, ordinals, junk skip
-    ├── test_embed_store.py #     atomic chunk+done, crash safety
-    ├── test_extract.py     #     text-layer probe, corrupt-PDF recovery
-    ├── test_research.py    #     the agent tool loop, scripted fake client
-    ├── test_eval.py        #     the quality harness, incl. a negative control
-    └── test_upload.py      #     upload validation, content-addressing, queueing
+├── pyproject.toml          # deps, console scripts, packaging (src layout)
+├── docker-compose.yml      # pgvector/pgvector:pg17 on port 5434
+├── Makefile                # db-up / db-psql / migrate / test
+├── migrations/             # *.sql, applied in filename order by migrate.py
+├── scripts/                # one-off maintenance, not part of any pipeline
+├── data/                   # gitignored, YOUR corpus (not packaged)
+│   ├── uploads/            #   uploaded originals, content-addressed (NOT disposable)
+│   ├── markdown/           #   extracted markdown -- the permanent asset
+│   └── pdfs/               #   per-book working cache, safe to delete
+├── tests/                  # real Postgres, fake externals, zero network
+└── src/library_rag/
+    ├── config.py           # every tunable, with the measurement behind it
+    ├── db.py               # Postgres: the work queue (claim/lease) + CRUD + search
+    ├── ingest.py           # the worker: discover, register_upload, process_book,
+    │                       #   process_queue, purge_book
+    ├── migrate.py          # forward-only migration runner
+    ├── drive/client.py     # OAuth, paginated listing, download, retries
+    ├── pipeline/           # how a PDF becomes searchable
+    │   ├── extract.py      #   PyMuPDF / Mistral OCR -> markdown + manifest
+    │   ├── chunking.py     #   markdown -> chunks with page ranges + ordinals
+    │   └── embed.py        #   the one place that calls the Voyage API
+    ├── retrieval/
+    │   └── research.py     # the agent that decides what to search for, and when to stop
+    ├── evaluation/
+    │   ├── harness.py      # hit-rate@k / MRR scoring -- no CLI, so tests reuse it
+    │   └── questions/      # curated ground truth (book + page span, never chunk id)
+    ├── web/
+    │   ├── api.py          # /api/books, /api/books/upload, DELETE, /api/research (SSE)
+    │   └── static/         # the UI: question box, inline citations, PDF upload
+    ├── exploration/        # Phase 0, finished. Nothing live imports it.
+    │   ├── loop.py         #   hand-written tool-use loop
+    │   ├── tools.py        #   list_folder + estimate_pipeline
+    │   └── assumptions.py  #   every estimation constant, each with a rationale
+    └── cli/                # EVERY command. Library modules have no __main__.
+        ├── ingest.py  search.py  evaluate.py
+        └── migrate.py report.py  explore.py
 ```
 
-`drive/` is shared by both phases. `agent/` is Phase 0 only. Everything
-under Phase 1 treats `data/markdown/*.md` (+ its `.manifest.json`) as the
+Two rules make the tree navigable. **Every command lives in `cli/`** — if a
+module parses argv or prints, it goes there, and everything else is importable
+library code the tests and the API can drive directly. **`exploration/` is
+finished work** — Phase 0 ran once, picked a pilot folder, and nothing in the
+live pipeline imports it.
+
+`src/` layout on purpose: the package is importable only once installed
+(`pip install -e ".[dev]"`), so a test can never pass by accidentally picking up
+the working directory instead of what would actually ship.
+
+Everything under Phase 1 treats `data/markdown/*.md` (+ its `.manifest.json`) as the
 permanent, rebuildable-from asset — Postgres is disposable
 (`ingest.py --rechunk` rebuilds every chunk/embedding from local markdown
 alone, no Drive or OCR calls).
@@ -77,7 +77,7 @@ alone, no Drive or OCR calls).
 cd ~/Desktop/library-rag
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[dev]"
 ```
 
 ### 2. Anthropic API key
@@ -134,7 +134,7 @@ account's "Shared with me" folder. Read-only access, nothing is ever written.
 ## Running it
 
 ```bash
-python explore.py
+python -m library_rag.cli.explore
 ```
 
 This prints a live `[agent] ...` trail of every Drive folder it lists and
@@ -161,7 +161,7 @@ needs to change when you retune a constant.
 ## Tests
 
 ```bash
-python -m tests.test_estimate
+pytest tests/test_estimate.py
 ```
 
 ## Troubleshooting
@@ -189,7 +189,7 @@ vector search.
 1. **Postgres.** Requires **Docker Desktop running** (human step).
    ```bash
    make db-up      # starts pgvector/pgvector:pg17 on localhost:5434
-   python -m migrate   # apply migrations/*.sql (idempotent)
+   python -m library_rag.cli.migrate   # apply migrations/*.sql (idempotent)
    ```
 2. **API keys.** Add to `.env` (see `.env.example`):
    ```
@@ -208,15 +208,15 @@ vector search.
 ### Run: empty DB → working search
 
 ```bash
-python ingest.py --discover  # enumerate the pilot folder → 23 `discovered` rows
-python ingest.py --limit 2   # process 2 books fully → CHECKPOINT (human step):
+python -m library_rag.cli.ingest --discover  # enumerate the pilot folder → 23 `discovered` rows
+python -m library_rag.cli.ingest --limit 2   # process 2 books fully → CHECKPOINT (human step):
                              #   read data/markdown/*.md by hand before continuing
-python ingest.py             # process the remaining books
-python ingest.py --index     # build the HNSW index (run once, after ingestion)
-python ingest.py --status    # counts-by-status table
-python search.py "structure of the book of Romans"
-python search.py "How should I study a Bible chapter?" -k 8
-python report.py             # measured vs. assumptions.py, suggested corrections
+python -m library_rag.cli.ingest             # process the remaining books
+python -m library_rag.cli.ingest --index     # build the HNSW index (run once, after ingestion)
+python -m library_rag.cli.ingest --status    # counts-by-status table
+python -m library_rag.cli.search "structure of the book of Romans"
+python -m library_rag.cli.search "How should I study a Bible chapter?" -k 8
+python -m library_rag.cli.report             # measured vs. assumptions.py, suggested corrections
 ```
 
 Console output during `ingest.py` prints one line per book: title, pages,
@@ -236,14 +236,14 @@ diverge.
 **From Google Drive** — enumerate the pilot folder, then drain the queue:
 
 ```bash
-python ingest.py --discover
-python ingest.py
+python -m library_rag.cli.ingest --discover
+python -m library_rag.cli.ingest
 ```
 
 **From a file you have** — either drag it into the web UI (see below), or:
 
 ```bash
-python ingest.py --local some-book.pdf another.pdf
+python -m library_rag.cli.ingest --local some-book.pdf another.pdf
 ```
 
 Both call the same `register_upload`, so the CLI cannot drift from what the
@@ -266,7 +266,7 @@ disposable.
 ### Removing a book
 
 ```bash
-python ingest.py --delete 93 94        # or the × in the web UI
+python -m library_rag.cli.ingest --delete 93 94        # or the × in the web UI
 ```
 
 Hard delete: the row, its chunks (via `ON DELETE CASCADE`, so there is never a
@@ -336,13 +336,13 @@ fusion and its constants all trade quality against each other silently, and the
 only symptom of getting one wrong is that answers quietly get worse.
 
 ```bash
-python -m evaluate                  # score the shipping config
-python -m evaluate --compare        # every mode side by side
-python -m evaluate --show-misses    # what came back instead
-python -m evaluate --questions eval/questions_paraphrase.json
+python -m library_rag.cli.evaluate                  # score the shipping config
+python -m library_rag.cli.evaluate --compare        # every mode side by side
+python -m library_rag.cli.evaluate --show-misses    # what came back instead
+python -m library_rag.cli.evaluate --questions src/library_rag/evaluation/questions/questions_paraphrase.json
 ```
 
-Ground truth lives in `eval/questions.json` as (book, page span) — never chunk
+Ground truth lives in `src/library_rag/evaluation/questions/questions.json` as (book, page span) — never chunk
 ids, which do not survive a re-chunk. Two sets of the same 22 questions: one
 phrased in the books' own vocabulary, one phrased the way a user would ask.
 Metrics are hit-rate@k (what matters — everything retrieved is handed to the
@@ -379,14 +379,14 @@ decoration.
 
 - **`db-up` hangs / connection refused** — Docker Desktop isn't running.
   Launch it and wait for the whale icon before `make db-up`.
-- **`relation "books" does not exist`** — run `python -m migrate`.
+- **`relation "books" does not exist`** — run `python -m library_rag.cli.migrate`.
 - **`VOYAGE_API_KEY is not set`** — copy it into `.env`; both `ingest.py` and
   `search.py` read it via `config.py`.
 - **A book stuck in `needs_ocr`** — set `MISTRAL_API_KEY` in `.env`, then reset
   it (`needs_ocr` is terminal to the queue): `UPDATE books SET status='discovered'
   WHERE status='needs_ocr';` (via `make db-psql`) and re-run `ingest.py`.
 - **`search.py` returns nothing** — confirm at least one `done` book
-  (`python ingest.py --status`) and that `ingest.py --index` has run.
+  (`python -m library_rag.cli.ingest --status`) and that `ingest.py --index` has run.
 
 ---
 
@@ -400,13 +400,13 @@ minutes, so holding the request open would tie the result to the browser
 staying on the page.
 
 The API's background worker claims **only uploads**. Drive ingestion stays a
-deliberate `python ingest.py` — otherwise one uploaded PDF puts the whole Drive
+deliberate `python -m library_rag.cli.ingest` — otherwise one uploaded PDF puts the whole Drive
 backlog in flight behind it, and a Drive book claimed inside the API process
 blocks on an OAuth flow that has no console to prompt.
 
 ```bash
 make db-up                                   # Postgres must be running
-./.venv/bin/uvicorn api:app --reload --port 8000
+./.venv/bin/uvicorn library_rag.web.api:app --reload --port 8000
 open http://localhost:8000
 ```
 

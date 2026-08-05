@@ -47,13 +47,26 @@ dev = [
     "ruff==0.15.22",
 ]
 
-# Flat top-level scripts + the two subpackages. Listing py-modules explicitly so
-# `pip install -e .` exposes `import config`, `import db`, `python -m migrate`, etc.
-[tool.setuptools]
-py-modules = ["config", "db", "ingest", "search", "evaluate", "report", "migrate", "explore"]
+[project.scripts]
+# `python -m library_rag.cli.<name>` always works too; these are the short form.
+library-rag-ingest = "library_rag.cli.ingest:main"
+library-rag-search = "library_rag.cli.search:main"
+library-rag-evaluate = "library_rag.cli.evaluate:main"
+library-rag-migrate = "library_rag.cli.migrate:main"
+library-rag-report = "library_rag.cli.report:main"
+library-rag-explore = "library_rag.cli.explore:main"
 
+# src layout: the package is importable ONLY once installed, so a test can never
+# accidentally pass by picking up the working directory instead of the thing
+# that would actually ship.
 [tool.setuptools.packages.find]
-include = ["agent*", "drive*", "pipeline*"]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# Files the package needs at runtime and must carry with it. The corpus in
+# data/ is deliberately NOT here -- that is the user's, and lives at the repo
+# root (see config.PROJECT_ROOT).
+library_rag = ["web/static/*", "evaluation/questions/*.json"]
 
 [tool.pyright]
 venvPath = "."
@@ -68,5 +81,7 @@ target-version = "py311"
 extend-select = ["I"]  # import sorting
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+# No pythonpath entry: with a src layout the package must be installed
+# (`pip install -e ".[dev]"`), which is what makes the tests exercise the
+# installed package rather than whatever happens to be in the CWD.
 testpaths = ["tests"]
