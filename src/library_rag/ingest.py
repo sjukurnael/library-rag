@@ -17,7 +17,7 @@ import shutil
 import time
 from pathlib import Path
 
-from library_rag import config, db
+from library_rag import config, db, storage
 from library_rag.drive import client as drive_client
 from library_rag.pipeline import chunking as chunk_mod
 from library_rag.pipeline import embed as embed_mod
@@ -116,6 +116,14 @@ def purge_book(conn, book_id: int):
         if path.exists():
             path.unlink()
             removed.append(path.name)
+
+    # The bucket object is shared by every book with the same bytes (same md5
+    # via Drive AND via upload = two rows, one object), so it goes only when
+    # the LAST reference is gone. The row was already deleted above, so a
+    # plain existence check is the right question.
+    if book.get("md5") and not db.md5_in_use(conn, book["md5"]):
+        if storage.delete_original(book["md5"]):
+            removed.append(storage.original_key(book["md5"]))
     return {"book": book, "removed": removed}
 
 
@@ -236,12 +244,15 @@ def process_book(conn, book, *, download_file, ocr_client, voyage_client) -> Non
     # -- download --
     t_download = time.time()
     download_file(source_id, str(pdf_path))
-    if book.get("md5"):
-        local_md5 = _md5_file(pdf_path)
-        if local_md5 != book["md5"]:
-            raise RuntimeError(
-                f"md5 mismatch after download: Drive={book['md5']} local={local_md5}"
-            )
+    local_md5 = _md5_file(pdf_path)
+    if book.get("md5") and local_md5 != book["md5"]:
+        raise RuntimeError(
+            f"md5 mismatch after download: Drive={book['md5']} local={local_md5}"
+        )
+    # Mirror the verified bytes to the bucket. Warn-only inside: a storage
+    # outage must not fail a book the pipeline can otherwise finish, and the
+    # viewer falls back to the local copy (or a fresh Drive fetch) anyway.
+    storage.put_original(book.get("md5") or local_md5, pdf_path)
     db.mark_downloaded(conn, book_id)
     db.touch_claim(conn, book_id)
     download_s = time.time() - t_download

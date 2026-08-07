@@ -50,6 +50,18 @@ MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "64")) * 1024 * 1024
 # chooses freely.
 PDF_MAGIC = b"%PDF-"
 
+# ---- Supabase Storage (optional) ----
+# When both are set, every successfully downloaded original is mirrored to the
+# bucket and the PDF viewer serves signed URLs from it; when either is empty,
+# the app is purely local and no network storage is touched. Tests blank these
+# (conftest) so the suite can never talk to a real bucket.
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+SUPABASE_BUCKET = os.environ.get("SUPABASE_BUCKET", "library-bucket")
+# Lifetime of a signed PDF link. Long enough to read a book chapter from it,
+# short enough that a leaked link goes stale the same afternoon.
+SIGNED_URL_TTL_SECONDS = 3600
+
 # ---- Database ----
 # Port 5434 must match the host side of docker-compose.yml's "5434:5432"
 # mapping. It is deliberately not 5432/5433 -- both are commonly taken by a

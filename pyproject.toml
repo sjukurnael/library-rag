@@ -36,6 +36,10 @@ dependencies = [
     # this is installed; without it the route raises at import time, not at
     # request time, so it is a hard dependency rather than an extra.
     "python-multipart>=0.0.9",
+    # Supabase Storage (originals bucket + signed URLs for the PDF viewer).
+    # Only storage is used -- Postgres is spoken natively via psycopg -- but
+    # the umbrella package is what Supabase documents and keeps current.
+    "supabase>=2.0",
 ]
 
 [project.optional-dependencies]

@@ -69,6 +69,9 @@
   </div>
   <div class="pbody">
     <dl class="meta" id="pmeta"></dl>
+    <a id="ppdf" class="btn soft" target="_blank" rel="noopener" style="margin-bottom:16px" hidden>
+      Open the PDF at this page ↗
+    </a>
     <div class="rawhead">Original passage (markdown)</div>
     <div class="raw" id="praw"></div>
   </div>
@@ -136,6 +139,18 @@ function showSource(ti, n) {
     .map(([k, v]) => `<dt>${k}</dt><dd>${esc(String(v))}</dd>`).join('');
   // textContent, not innerHTML: this is the ORIGINAL markdown, shown verbatim.
   $('#praw').textContent = s.content;
+
+  // The real thing: the PDF itself, opened at the passage's first page. The
+  // endpoint redirects to storage or serves a local copy; the #page fragment
+  // is client-side and survives the redirect.
+  const pdf = $('#ppdf');
+  if (s.book_id != null && s.page_start != null) {
+    pdf.href = `/api/books/${s.book_id}/pdf#page=${s.page_start}`;
+    pdf.textContent = `Open the PDF at p.${s.page_start} ↗`;
+    pdf.hidden = false;
+  } else {
+    pdf.hidden = true;
+  }
   $('#panel').classList.add('show');
 }
 

@@ -11,6 +11,7 @@ listings are injected as deterministic fakes.
 """
 import hashlib
 import math
+import os
 import random
 import re
 import uuid
@@ -23,6 +24,24 @@ from library_rag import config, migrate
 from library_rag import db as db_mod
 
 TEST_DB = "library_test"
+
+# Tests CREATE and DROP whole databases, so they must never aim at a shared
+# server. Now that DATABASE_URL can point at Supabase, the suite takes its own
+# TEST_DATABASE_URL (falling back to DATABASE_URL for the pre-cloud setup) and
+# refuses anything non-local outright -- a skip message beats discovering that
+# `pytest` dropped a database on a production cluster.
+TEST_BASE_URL = os.environ.get("TEST_DATABASE_URL", config.DATABASE_URL)
+
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", None, ""}
+
+
+def _require_local(url: str) -> None:
+    host = conninfo.conninfo_to_dict(url).get("host")
+    if host not in _LOCAL_HOSTS:
+        pytest.skip(
+            f"Refusing to create/drop test databases on non-local host {host!r}. "
+            "Set TEST_DATABASE_URL to a local Postgres (e.g. the docker-compose one)."
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -53,6 +72,12 @@ def _isolate_data_dirs(tmp_path, monkeypatch):
     # broken sync rather than a misconfigured test. Pruning gets its own test,
     # which sets this deliberately.
     monkeypatch.setattr(config, "DRIVE_ROOT_FOLDER_ID", None)
+    # Storage must be OFF in tests: config loads the real .env, so without this
+    # a purge test would delete a real object from the real bucket. Blanking
+    # the config makes storage.enabled() False and every call a no-op; tests
+    # that exercise storage behaviour monkeypatch the module explicitly.
+    monkeypatch.setattr(config, "SUPABASE_URL", "")
+    monkeypatch.setattr(config, "SUPABASE_SERVICE_KEY", "")
 
 
 def _url_with_db(base_url: str, dbname: str) -> str:
@@ -64,11 +89,12 @@ def _url_with_db(base_url: str, dbname: str) -> str:
 def _admin_connect():
     """Connect to the `postgres` maintenance DB (autocommit) to CREATE/DROP test
     databases. Skips the suite if Postgres isn't reachable."""
-    admin_url = _url_with_db(config.DATABASE_URL, "postgres")
+    _require_local(TEST_BASE_URL)
+    admin_url = _url_with_db(TEST_BASE_URL, "postgres")
     try:
         return psycopg.connect(admin_url, autocommit=True, connect_timeout=3)
     except psycopg.OperationalError as e:
-        pytest.skip(f"Postgres not reachable at {config.DATABASE_URL!r}: {e}")
+        pytest.skip(f"Postgres not reachable at {TEST_BASE_URL!r}: {e}")
 
 
 def _drop_db(admin, dbname: str) -> None:
@@ -86,7 +112,7 @@ def test_database_url():
     with _admin_connect() as admin:
         _drop_db(admin, TEST_DB)
         admin.execute(f'CREATE DATABASE "{TEST_DB}"')
-    url = _url_with_db(config.DATABASE_URL, TEST_DB)
+    url = _url_with_db(TEST_BASE_URL, TEST_DB)
     migrate.run(url)
     yield url
     with _admin_connect() as admin:
@@ -116,7 +142,7 @@ def fresh_database():
     with _admin_connect() as admin:
         admin.execute(f'CREATE DATABASE "{name}"')
     try:
-        yield _url_with_db(config.DATABASE_URL, name)
+        yield _url_with_db(TEST_BASE_URL, name)
     finally:
         with _admin_connect() as admin:
             _drop_db(admin, name)

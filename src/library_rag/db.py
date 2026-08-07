@@ -180,6 +180,24 @@ def touch_claim(conn, book_id: int) -> None:
     conn.commit()
 
 
+def fetch_book(conn, book_id: int):
+    """One book row as a dict by primary key, or None. The PDF-viewer route
+    needs source, source_id and md5 to decide where the bytes live."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT * FROM books WHERE id = %s", (book_id,))
+        return cur.fetchone()
+
+
+def md5_in_use(conn, md5: str) -> bool:
+    """Does ANY book still reference these bytes? Two rows can share an md5
+    (the same content indexed once from Drive and once as an upload), and the
+    bucket holds ONE object per md5 -- so a purge may only delete the object
+    when the last referencing row is gone."""
+    return conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM books WHERE md5 = %s)", (md5,)
+    ).fetchone()[0]
+
+
 def fetch_book_by_source_id(conn, source_id: str):
     """One book row as a dict, or None. Same shape claim_next_book returns, so
     callers can hand it straight to process_book. Used by the upload path, which

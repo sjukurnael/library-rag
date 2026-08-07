@@ -30,11 +30,12 @@ from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
+    RedirectResponse,
     StreamingResponse,
 )
 from pydantic import BaseModel, Field
 
-from library_rag import config, db, ingest
+from library_rag import config, db, ingest, storage
 from library_rag.drive import client as drive_client
 from library_rag.drive import mirror
 from library_rag.exploration import loop as browse_loop
@@ -250,6 +251,50 @@ async def upload_book(background: BackgroundTasks, file: UploadFile = File(...))
         # rather than duplicated; say so instead of implying work is happening.
         "already_indexed": already_indexed,
     }
+
+
+@app.get("/api/books/{book_id}/pdf")
+def book_pdf(book_id: int):
+    """The book's ORIGINAL bytes, for the citation panel's "open the real
+    page" link. The caller appends #page=N; fragments are client-side, so they
+    survive the redirect below.
+
+    Three sources, tried in order of cheapness:
+      1. a signed Supabase Storage URL (no bytes through this process),
+      2. a local copy (an upload's original, or the working PDF cache),
+      3. for a Drive book, a one-time fetch into the cache -- also mirrored to
+         the bucket so the next click takes path 1.
+    """
+    with db.get_conn() as conn:
+        book = db.fetch_book(conn, book_id)
+    if book is None:
+        raise HTTPException(404, f"No book with id {book_id}.")
+
+    url = storage.signed_original_url(book["md5"])
+    if url:
+        return RedirectResponse(url, status_code=302)
+
+    inline = {"Content-Disposition": "inline"}
+    candidates = []
+    if book["source"] == "upload":
+        candidates.append(ingest.upload_path(book["source_id"]))
+    candidates.append(config.PDF_DIR / f"{book_id}.pdf")
+    for path in candidates:
+        if path.exists():
+            return FileResponse(path, media_type="application/pdf", headers=inline)
+
+    if book["source"] == "drive":
+        service = drive_client.build_service()
+        dest = config.PDF_DIR / f"{book_id}.pdf"
+        drive_client.download_file(service, book["source_id"], str(dest))
+        storage.put_original(book["md5"], dest)
+        return FileResponse(dest, media_type="application/pdf", headers=inline)
+
+    raise HTTPException(
+        404,
+        "The original file for this book is gone from disk and storage. "
+        "Re-upload it to restore the PDF view; search still works.",
+    )
 
 
 @app.delete("/api/books/{book_id}")
