@@ -44,6 +44,15 @@ def _isolate_data_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "PDF_DIR", pdfs)
     monkeypatch.setattr(config, "MARKDOWN_DIR", markdown)
     monkeypatch.setattr(config, "UPLOAD_DIR", uploads)
+    # A browse test must not poison the real cache with fake Drive folders --
+    # the agent would then recommend books that do not exist.
+    monkeypatch.setattr(config, "DRIVE_CACHE_FILE", tmp_path / "drive_cache.json")
+    # No mirror test may depend on the real library's folder id. Left set, the
+    # sync's prune step deletes every synthetic fixture row (none descend from a
+    # folder that exists only in the user's Drive) and the failure looks like a
+    # broken sync rather than a misconfigured test. Pruning gets its own test,
+    # which sets this deliberately.
+    monkeypatch.setattr(config, "DRIVE_ROOT_FOLDER_ID", None)
 
 
 def _url_with_db(base_url: str, dbname: str) -> str:
@@ -86,9 +95,15 @@ def test_database_url():
 
 @pytest.fixture
 def conn(test_database_url):
-    """A connection to the test DB with tables truncated to a clean slate."""
+    """A connection to the test DB with tables truncated to a clean slate.
+
+    drive_files is listed explicitly. It has no foreign key to books -- a Drive
+    file exists whether or not we hold it -- so CASCADE does not reach it, and
+    leaving it out let one test's mirror (and its embeddings) leak into the
+    next's counts.
+    """
     with db_mod.get_conn(test_database_url) as c:
-        c.execute("TRUNCATE books RESTART IDENTITY CASCADE")
+        c.execute("TRUNCATE books, drive_files RESTART IDENTITY CASCADE")
         c.commit()
         yield c
 

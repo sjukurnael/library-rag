@@ -34,6 +34,12 @@ PDF_DIR.mkdir(parents=True, exist_ok=True)
 MARKDOWN_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+# The browsing agent's Drive-listing cache. Absolute, under DATA_DIR: it used to
+# be the bare relative "cache.json", which resolves against whatever cwd the
+# process happened to start in -- so the CLI and the web server could disagree
+# about where the cache was, and tests could write one into the repo root.
+DRIVE_CACHE_FILE = DATA_DIR / "drive_cache.json"
+
 # ---- Upload limits ----
 # Enforced while streaming to disk, not after: reading an unbounded upload into
 # memory to measure it is the denial of service, and a Content-Length header is
@@ -73,6 +79,19 @@ MAX_ATTEMPTS = 3
 PILOT_FOLDER_ID = os.environ.get(
     "PILOT_FOLDER_ID", "1ZkjfpG7KPve2grlQhJ7ZHXLhuyC9b5tL"
 )
+
+# The shared library's top folder. The metadata mirror is pruned to this
+# subtree, and the browsing agent starts here.
+#
+# Scoping is not cosmetic. Drive's `files.list` has no "within this subtree"
+# filter, so a sync necessarily pulls everything the account can see -- which on
+# a personal account is coursework, sheet music, tax documents and a resume. The
+# first real sync mirrored 126 such files alongside the 57,401 library ones, and
+# they are worse than noise: a browse UI that surfaces someone's personal
+# documents is one nobody can show anyone. Set to None to mirror the whole drive.
+DRIVE_ROOT_FOLDER_ID = os.environ.get(
+    "DRIVE_ROOT_FOLDER_ID", "1jOO-7ZAEosq2mAtuVzTTq9uAekrypVfq"
+) or None
 
 # ---- Extraction ----
 # Text-layer probe: a PDF has a usable text layer (digital-native, extract with
@@ -228,3 +247,30 @@ MISTRAL_OCR_MODEL = "mistral-ocr-latest"
 # USD per 1,000 pages, Mistral OCR API non-batch pricing, verified 2026-07 at
 # https://mistral.ai/pricing/api/
 OCR_COST_PER_1K_PAGES = 4.0
+
+
+# ---- Drive title search ----
+# Weight of the lexical leg when fusing search over drive_files (titles + folder
+# paths), separate from RRF_LEXICAL_WEIGHT because the two corpora behave
+# differently and the measurement says so.
+#
+# Over CHUNKS, hybrid tied dense and SEARCH_MODE stayed "dense". Over TITLES it
+# genuinely helps. Measured on 8 natural-language queries against all 57,527
+# titles, scoring hit-rate@5 and MRR against a substring ground truth:
+#
+#     dense           7/8   MRR 0.719
+#     lexical         5/8   MRR 0.448
+#     hybrid w=1.0    7/8   MRR 0.719
+#     hybrid w=0.5    8/8   MRR 0.812   <- shipped
+#     hybrid w=0.25   7/8   MRR 0.812
+#     hybrid w=0.1    7/8   MRR 0.812
+#
+# Read that carefully. Fusing beats either leg alone, but an EQUAL weight does
+# not: at 1.0 the lexical leg drags in machine-generated filenames like
+# "07_John_Jesus_and_History_Volume_3_Glimpses..." that rank high on token count
+# rather than relevance, and "the end times" returns essays on how Mark ends his
+# narrative. Held at 0.5 it breaks dense's ties without setting the order.
+#
+# 0.5 over 0.25/0.1 is worth one question and no MRR -- inside the noise of an
+# 8-question set. Re-measure with a larger set before treating the gap as real.
+DRIVE_RRF_LEXICAL_WEIGHT = 0.5

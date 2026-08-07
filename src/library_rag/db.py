@@ -23,6 +23,10 @@ from library_rag import config
 # Statuses a book can be claimed from (anything not terminal-or-skipped).
 TERMINAL_STATUSES = ("done", "failed", "needs_ocr")
 
+# Drive's marker for a folder. Folders are ordinary file rows with this
+# mime_type -- there is no separate folder table, in Drive or in the mirror.
+FOLDER_MIME = "application/vnd.google-apps.folder"
+
 
 @contextlib.contextmanager
 def get_conn(database_url: str | None = None):
@@ -415,7 +419,7 @@ def _search_fused(
     `distance` is recomputed in the final SELECT for every fused row, including
     rows only the lexical leg found. It costs one vector op per surviving
     candidate (at most 2 * HYBRID_CANDIDATES) and it means `distance` is never
-    NULL -- agent/research.py's weak-match cutoff reads it on every row, and a
+    NULL -- retrieval/tools.py's weak-match cutoff reads it on every row, and a
     lexical-only hit with no distance would silently read as a strong match.
     """
     dense_pool = 0 if mode == "lexical" else config.HYBRID_CANDIDATES
@@ -524,3 +528,185 @@ def fetch_report_data(conn):
         """
     )
     return cur.fetchall()
+
+
+# ---------------------------------------------------------- drive mirror --
+
+# Every row a Drive-browser view returns, in one place so the tree, the search
+# and the agent all render identically. `indexed`/`book_id`/`status` come from a
+# LEFT JOIN rather than a column: a Drive file exists whether or not we hold it,
+# and most never will be held.
+_DRIVE_COLUMNS = """
+    d.file_id, d.name AS title, d.mime_type, d.parent_id, d.path,
+    d.web_view_link AS url,
+    round(d.size_bytes / 1048576.0, 1)::float8 AS size_mb,
+    (b.id IS NOT NULL) AS indexed, b.id AS book_id, b.status::text AS status
+"""
+
+_DRIVE_JOIN = """
+    LEFT JOIN books b
+        ON b.source_id = d.file_id AND b.source = 'drive'
+"""
+
+
+def drive_children(conn, parent_id: str | None) -> dict:
+    """One folder's contents: subfolders and PDFs, separately.
+
+    parent_id=None means the roots -- rows with no parent, or whose parent is
+    outside the mirror (a shared drive's top folder has a parent we cannot see,
+    so treating only NULL as a root would show an empty library).
+
+    Folders and files are returned as two lists rather than one sorted mix
+    because the UI renders them differently, and separating them here means the
+    frontend never has to branch on mime_type.
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            SELECT {_DRIVE_COLUMNS}
+            FROM drive_files d
+            {_DRIVE_JOIN}
+            LEFT JOIN drive_files p ON p.file_id = d.parent_id
+            WHERE CASE
+                    WHEN %(parent)s::text IS NULL
+                        THEN d.parent_id IS NULL OR p.file_id IS NULL
+                    ELSE d.parent_id = %(parent)s::text
+                  END
+            ORDER BY lower(d.name)
+            """,
+            {"parent": parent_id},
+        )
+        rows = cur.fetchall()
+    folders = [r for r in rows if r["mime_type"] == FOLDER_MIME]
+    return {
+        "folders": folders,
+        "files": [r for r in rows if r["mime_type"] != FOLDER_MIME],
+        "folder_count": len(folders),
+    }
+
+
+def drive_breadcrumb(conn, file_id: str) -> list:
+    """Root-first ancestry of one folder, for the header trail.
+
+    Walked in SQL rather than by repeated round trips: the same recursive-CTE
+    shape mirror.materialise_paths uses, but upward and for one node.
+    """
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            WITH RECURSIVE up AS (
+                SELECT file_id, name, parent_id, 0 AS depth
+                FROM drive_files WHERE file_id = %s
+              UNION ALL
+                SELECT d.file_id, d.name, d.parent_id, up.depth + 1
+                FROM drive_files d JOIN up ON d.file_id = up.parent_id
+            )
+            SELECT file_id, name FROM up ORDER BY depth DESC
+            """,
+            (file_id,),
+        )
+        return cur.fetchall()
+
+
+def drive_sync_status(conn) -> dict:
+    """What the mirror currently holds, and whether it is finished."""
+    row = conn.execute(
+        """
+        SELECT count(*) FILTER (WHERE mime_type = %s) AS folders,
+               count(*) FILTER (WHERE mime_type <> %s) AS files,
+               count(*) FILTER (WHERE mime_type <> %s AND embedding IS NOT NULL)
+                   AS embedded,
+               max(synced_at) AS synced_at
+        FROM drive_files
+        """,
+        (FOLDER_MIME, FOLDER_MIME, FOLDER_MIME),
+    ).fetchone()
+    folders, files, embedded, synced_at = row
+    return {
+        "folders": folders,
+        "files": files,
+        "embedded": embedded,
+        "pending": files - embedded,
+        "synced_at": synced_at.isoformat() if synced_at else None,
+    }
+
+
+def search_drive_files(conn, query_embedding, query_text: str, k: int, mode=None,
+                       lexical_weight=None) -> list:
+    """Rank the mirror by meaning and by words, fused with RRF.
+
+    Same algorithm as search() over chunks -- two rankers, rank-based fusion,
+    1/(RRF_K + rank) -- against drive_files instead. The measured result that
+    hybrid ties dense over CHUNKS does not carry here, and was re-measured
+    rather than assumed: over 57,527 titles, fusing beat both legs alone
+    (8/8 hit-rate@5 vs dense 7/8 and lexical 5/8) -- but only at a REDUCED
+    lexical weight. See config.DRIVE_RRF_LEXICAL_WEIGHT for the sweep and for
+    what an equal weight does to "the end times".
+
+    Rows that have never been embedded simply lose the dense leg rather than
+    being excluded: a title synced five seconds ago is still findable by word
+    while the embed pass catches up.
+    """
+    mode = mode or "hybrid"
+    if mode not in SEARCH_MODES:
+        raise ValueError(f"unknown search mode {mode!r}; expected one of {SEARCH_MODES}")
+    dense_pool = 0 if mode == "lexical" else config.HYBRID_CANDIDATES
+    lexical_pool = 0 if mode == "dense" else config.HYBRID_CANDIDATES
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            WITH dense AS (
+                SELECT x.file_id, row_number() OVER (ORDER BY x.distance, x.file_id) AS rank
+                FROM (
+                    SELECT d.file_id, d.embedding <=> %(vec)s::halfvec AS distance
+                    FROM drive_files d
+                    WHERE d.mime_type <> %(folder)s AND d.embedding IS NOT NULL
+                    ORDER BY 2
+                    LIMIT %(dense_pool)s
+                ) x
+            ),
+            q AS (
+                SELECT NULLIF(array_to_string(ARRAY(
+                    SELECT quote_literal(l)
+                    FROM unnest(tsvector_to_array(
+                        to_tsvector('english', %(text)s))) l
+                ), ' | '), '')::tsquery AS query
+            ),
+            lexical AS (
+                SELECT y.file_id, row_number() OVER (ORDER BY y.score DESC, y.file_id) AS rank
+                FROM (
+                    SELECT d.file_id, ts_rank_cd(d.tsv, q.query) AS score
+                    FROM drive_files d, q
+                    WHERE d.tsv @@ q.query AND d.mime_type <> %(folder)s
+                    ORDER BY 2 DESC
+                    LIMIT %(lexical_pool)s
+                ) y
+            ),
+            fused AS (
+                SELECT COALESCE(dn.file_id, lx.file_id) AS file_id,
+                       COALESCE(1.0 / (%(rrf_k)s + dn.rank), 0)
+                         + COALESCE(%(w_lex)s / (%(rrf_k)s + lx.rank), 0) AS rrf_score,
+                       dn.rank AS dense_rank, lx.rank AS lexical_rank
+                FROM dense dn FULL OUTER JOIN lexical lx ON lx.file_id = dn.file_id
+            )
+            SELECT {_DRIVE_COLUMNS}, f.rrf_score, f.dense_rank, f.lexical_rank
+            FROM fused f
+            JOIN drive_files d ON d.file_id = f.file_id
+            {_DRIVE_JOIN}
+            ORDER BY f.rrf_score DESC, lower(d.name)
+            LIMIT %(k)s
+            """,
+            {
+                "vec": HalfVector(query_embedding),
+                "text": query_text,
+                "folder": FOLDER_MIME,
+                "dense_pool": dense_pool,
+                "lexical_pool": lexical_pool,
+                "rrf_k": config.RRF_K,
+                "w_lex": (config.DRIVE_RRF_LEXICAL_WEIGHT
+                          if lexical_weight is None else lexical_weight),
+                "k": k,
+            },
+        )
+        return cur.fetchall()
