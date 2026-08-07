@@ -1,31 +1,104 @@
 """
-Drive Exploration Agent CLI entry point.
+Drive browsing agent CLI: find books in the Drive library worth reading next.
 
-The actual tool-use loop and system prompt live in agent/loop.py, the tools
-in agent/tools.py, the estimation constants in agent/assumptions.py, and
-Drive auth/listing in drive/client.py. This file is just argument parsing.
+The tool-use loop and system prompt live in exploration/loop.py, the tools in
+exploration/tools.py, the estimation constants in exploration/assumptions.py,
+and Drive auth/listing in drive/client.py. This file is argument parsing plus
+rendering the event stream.
+
+It consumes the SAME generator the web route streams, so the two surfaces cannot
+drift apart in what they show.
 
 Run:
-    python explore.py            # uses cache.json if present
-    python explore.py --fresh    # bypasses cache, re-crawls Drive
-    python explore.py --quiet    # suppress the [agent] tool-call trail
+    python -m library_rag.cli.explore --ask "books on the Holy Spirit"
+    python -m library_rag.cli.explore              # prompts for the interest
 """
 import argparse
 import sys
 
 from dotenv import load_dotenv
 
-# Load before importing agent so ANTHROPIC_MODEL (read at import time) is set.
 load_dotenv()
 
+from library_rag import db  # noqa: E402
 from library_rag.drive.client import DriveAuthError  # noqa: E402
 from library_rag.exploration.loop import run  # noqa: E402
 
 
+def _render(event: dict, quiet: bool) -> None:
+    kind = event["type"]
+    if kind == "tool" and not quiet:
+        args = ", ".join(f"{k}={v!r}" for k, v in event["input"].items())
+        print(f"[agent] {event['name']}({args})")
+    elif kind == "results" and not quiet:
+        summary = ", ".join(f"{k}={v}" for k, v in event["summary"].items())
+        print(f"        -> {summary}")
+    elif kind == "tool_error":
+        print(f"[agent] {event['name']} FAILED -- {event['message']}", file=sys.stderr)
+    elif kind == "thinking" and not quiet:
+        print(f"[agent] {event['text']}")
+    elif kind == "recommendations":
+        print()
+        for i, b in enumerate(event["books"], 1):
+            if b.get("unknown"):
+                print(f"{i}. (unknown file id {b['file_id']}) -- {b['error']}")
+                continue
+            size = f"{b['size_mb']} MB" if b["size_mb"] is not None else "size unknown"
+            print(f"{i}. {b['title']}  [{size}]")
+            print(f"   {b['why']}")
+            print(f"   add: python -m library_rag.cli.explore --add {b['file_id']}")
+            print(f"   {b['url']}")
+        print()
+    elif kind == "answer":
+        print(event["text"])
+    elif kind == "error":
+        print(f"\nerror: {event['message']}", file=sys.stderr)
+
+
+def run_browse(interest: str, quiet: bool) -> int:
+    with db.get_conn() as conn:
+        for event in run(interest, conn):
+            _render(event, quiet)
+    return 0
+
+
+def run_add(file_ids: list) -> int:
+    """Queue Drive books by file id, then drain them.
+
+    Deliberately the same two steps the web button performs -- upsert at
+    'discovered', then run the worker -- so a book added here is
+    indistinguishable from one added there.
+    """
+    from library_rag import ingest
+    from library_rag.drive import client as drive_client
+
+    service = drive_client.build_service()
+    with db.get_conn() as conn:
+        for file_id in file_ids:
+            meta = drive_client.get_file(service, file_id)
+            size = meta.get("size")
+            db.upsert_book(
+                conn, file_id, meta.get("name", ""), meta.get("md5Checksum"),
+                int(size) if size is not None else None, source="drive",
+            )
+            book = db.fetch_book_by_source_id(conn, file_id)
+            print(f"[{book['id']}] {book['title']}: {book['status']}")
+    processed = ingest.process_queue(source="drive")
+    print(f"Done. Processed {processed} book(s) this run.")
+    return 0
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
-        "--fresh", action="store_true", help="Bypass cache.json and re-crawl Drive."
+        "--ask", metavar="INTEREST",
+        help="What you want to study. Omit to be prompted.",
+    )
+    parser.add_argument(
+        "--add", nargs="+", metavar="FILE_ID",
+        help="Skip browsing: queue these Drive file ids and index them.",
     )
     parser.add_argument(
         "--quiet", action="store_true", help="Suppress the [agent] tool-call trail."
@@ -33,7 +106,13 @@ def main():
     args = parser.parse_args()
 
     try:
-        sys.exit(run(fresh=args.fresh, verbose=not args.quiet))
+        if args.add:
+            sys.exit(run_add(args.add))
+        interest = args.ask or input("What do you want to study? ").strip()
+        if not interest:
+            print("Nothing to look for.", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(run_browse(interest, args.quiet))
     except DriveAuthError as e:
         print(f"\nDrive auth error: {e}", file=sys.stderr)
         sys.exit(1)

@@ -1,39 +1,90 @@
 """
-The hand-written Anthropic tool-use loop: system prompt, tool schemas, and
-the run() function that drives the conversation until the model stops
-calling tools and produces its final recommendation.
+The browsing agent's tool-use loop: system prompt, tool schemas, and a run()
+that drives the conversation until the model stops calling tools.
+
+This is the "walk into a bookstore" agent. The Drive behind this library holds
+~57,500 PDFs across ~8,200 folders; the indexed library holds a few dozen.
+Deciding what to read next used to mean scrolling Drive by hand.
+
+Phase 0 used this same loop to answer a one-time infrastructure question -- pick
+a pilot folder under 5 GB and $5 -- so its tools returned size statistics and 8
+sample filenames. Browsing inverts that: titles are the payload. estimate_pipeline
+survives unchanged because "what would ingesting this cost" is still a real
+question, just no longer the only one.
+
+run() is a generator of events, the same shape retrieval/loop.py uses, so the web
+route can stream the trail and the CLI can print it without a second
+implementation. Watching which searches it ran is most of the value -- a list of
+book titles with no visible provenance is indistinguishable from a hallucination.
 """
 import json
 import os
-import sys
 
 from anthropic import Anthropic
 
-from library_rag.drive.client import DriveAuthError
+from library_rag import config
 from library_rag.exploration import assumptions, tools
 
-ROOT_FOLDER_ID = "1jOO-7ZAEosq2mAtuVzTTq9uAekrypVfq"
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-MAX_ITERATIONS = 25
+ROOT_FOLDER_ID = config.DRIVE_ROOT_FOLDER_ID
+MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
+MAX_ITERATIONS = 12
 
 TOOL_SCHEMAS = [
     {
-        "name": "list_folder",
+        "name": "search_drive",
         "description": (
-            "List the immediate children of a Google Drive folder. ONE level "
-            "only -- never recursive. Returns the folder's own name/url, its "
-            "direct subfolders (id/name/url), and aggregate stats over the "
-            "PDFs directly inside it (count, total/min/median/max size in MB, "
-            "count of non-PDF junk files, and up to 8 sample PDFs). Automatically "
-            "cached to disk, so calling this again on the same folder is free."
+            "Search every book in the drive by MEANING and by words together. "
+            "Ranks ~57,000 titles and their folder paths -- a search for 'the "
+            "end times' surfaces Revelation and eschatology even though neither "
+            "phrase appears in the query. Titles and folders only; it does NOT "
+            "read inside the books. Instant. Prefer this over browsing folder by "
+            "folder. Returns each match with its title, size, folder path, Drive "
+            "URL, and whether it is already in the reader's library."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "folder_id": {
+                "query": {
                     "type": "string",
-                    "description": "The Google Drive folder ID to list.",
-                }
+                    "description": (
+                        "Describe the SUBJECT, in whatever words are natural -- "
+                        "'the end times', 'how to pray', 'Paul writing from "
+                        "prison'. You do not need to guess words from the title. "
+                        "An author's surname works too, and is the reliable way "
+                        "to find a specific known book."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": f"Max results (1-{tools.MAX_LIMIT}, default "
+                                   f"{tools.DEFAULT_LIMIT}).",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "browse_folder",
+        "description": (
+            "List ONE level of a Drive folder: its subfolders, and the PDFs "
+            "directly inside it by title. Never recursive. Use this to explore a "
+            "shelf when you do not yet know what words to search for. Folders "
+            "here are large -- always check `truncated` and `total_pdfs` before "
+            "concluding what a folder contains."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "folder_id": {"type": "string", "description": "Drive folder ID."},
+                "name_contains": {
+                    "type": "string",
+                    "description": "Optional filter on title within this folder.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": f"Max PDFs to list (1-{tools.MAX_LIMIT}, "
+                                   f"default {tools.DEFAULT_LIMIT}).",
+                },
             },
             "required": ["folder_id"],
         },
@@ -41,176 +92,173 @@ TOOL_SCHEMAS = [
     {
         "name": "estimate_pipeline",
         "description": (
-            "Deterministically estimate cost and time for the FULL ingestion "
-            "pipeline (download -> extract/OCR -> chunk -> embed -> store) for "
-            "a candidate set of PDFs. All arithmetic happens here -- do not try "
-            "to compute costs yourself, always call this tool. Returns a "
-            "stage-by-stage breakdown as (low, high) ranges, including both an "
-            "OCR-API cost path and a rented-GPU cost path for the scanned-page "
-            "extraction stage."
+            "Deterministically estimate cost and time to ingest a candidate set "
+            "of PDFs (download -> extract/OCR -> chunk -> embed -> store). All "
+            "arithmetic happens here -- never compute costs yourself. Call this "
+            "ONLY when the user asks about cost, time, or size; a reader "
+            "choosing what to study does not need it."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "pdf_count": {
-                    "type": "integer",
-                    "description": "Number of PDFs in the candidate set.",
-                },
-                "total_mb": {
-                    "type": "number",
-                    "description": "Total size in MB of the candidate set's PDFs.",
-                },
+                "pdf_count": {"type": "integer"},
+                "total_mb": {"type": "number"},
                 "scanned_ratio": {
                     "type": "number",
                     "description": (
-                        "Your judgment: fraction (0.0-1.0) of the content that is "
-                        "scanned images vs digital-native text, inferred from the "
-                        "file-size distribution seen in list_folder results "
-                        "(median file size 50MB+ suggests scans; <10MB suggests "
-                        "digital-native text)."
+                        "Fraction (0.0-1.0) that is scanned images vs digital "
+                        "text, inferred from size: median 50MB+ suggests scans, "
+                        "under 10MB suggests digital-native text."
                     ),
                 },
             },
             "required": ["pdf_count", "total_mb", "scanned_ratio"],
         },
     },
+    {
+        "name": "recommend",
+        "description": (
+            "Submit your final picks. Call this ONCE, after you have finished "
+            "looking and BEFORE you write your closing summary. Every file_id "
+            "must be one that search_drive or browse_folder actually returned to "
+            "you in this conversation -- do not construct or guess ids. This is "
+            "how the picks reach the user's screen as something they can add to "
+            "their library."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "picks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "file_id": {"type": "string"},
+                            "why": {
+                                "type": "string",
+                                "description": (
+                                    "One sentence on why THIS book fits what the "
+                                    "reader asked for. Concrete, not generic."
+                                ),
+                            },
+                        },
+                        "required": ["file_id", "why"],
+                    },
+                }
+            },
+            "required": ["picks"],
+        },
+    },
 ]
 
-SYSTEM_PROMPT = f"""You are a Drive-exploration agent. Your job: scout a shared \
-Google Drive library (a future RAG "library tutor" chatbot's source corpus, \
-~130GB of PDF books) to pick ONE pilot folder for testing a PDF -> RAG \
-ingestion pipeline (download -> extract/OCR -> chunk -> embed -> store -> \
-ready for retrieval), and to budget that pilot run in time and dollars.
+SYSTEM_PROMPT = f"""You help someone choose their next book from a large Google \
+Drive library of Bible study guides, commentaries, doctrine books, dissertations \
+and articles. Think of yourself as a librarian who knows the shelves: they tell \
+you what they want to study, you go find the candidates.
 
-You have exactly two tools: list_folder (one level, never recursive, metadata \
-only -- you must NEVER download or read file content) and estimate_pipeline \
-(deterministic math -- you must NEVER compute costs yourself, always call it).
+The root folder is {ROOT_FOLDER_ID}. It holds ~57,500 PDFs across ~8,200 \
+folders. Top level: Books (the main collection), Dissertations, Articles (mostly \
+journal issues, so short pieces rather than book-length treatments), Transcripts. \
+Expect .DS_Store and index.html throughout; the tools already filter those out.
 
-The root folder ID is {ROOT_FOLDER_ID}. Known top level: folders Articles, \
-Books, Dissertations, Transcripts, plus junk files (.DS_Store, index.html, \
-index.php). Expect junk throughout the tree -- only mimeType='application/pdf' \
-files matter; list_folder already filters/aggregates this for you.
+HOW TO LOOK
 
-PILOT CAPS:
-- Hard cap A: candidate folder's total PDF size must be UNDER {assumptions.PILOT_MAX_GB} GB.
-- Hard cap B: estimated TOTAL pipeline cost for the pilot must be UNDER \
-${assumptions.PILOT_MAX_COST_USD}, judged at the HIGH end of the estimate range \
-(use the cheaper of the OCR-API-path vs GPU-path totals when checking this).
-- Ideal candidate: 10-100 PDFs, real books (representative of the main corpus).
+Start with search_drive. It ranks titles and folder paths by MEANING as well as \
+by words, so describe the subject rather than guessing filename words -- "the end \
+times" reaches Revelation and eschatology on its own. Run two or three searches \
+from different angles (the subject, a narrower aspect, an author you expect) \
+rather than one long one; each gives you a different slice of a 57,000-book \
+collection.
 
-If a candidate folder busts the $5 cap on the OCR API path, check whether the \
-rented-GPU/local-Marker path fits under $5 before giving up on it. You MUST \
-ALWAYS produce a recommendation -- never conclude "nothing fits" or "no \
-suitable folder found". If literally no folder satisfies BOTH caps, recommend \
-the SMALLEST folder that actually contains PDFs (by total GB) as the primary \
-pick, and state plainly which cap it violates and by how much.
+Use browse_folder when a search comes back thin and you need to see what is \
+actually on a shelf, or when the reader names a topic area rather than a subject.
 
-SCANNED-RATIO HEURISTIC: PDFs where the median file size is large (50MB+) are \
-likely image scans (large per-page raster images); PDFs with small median file \
-size (<10MB) are likely digital-native text. Infer a scanned_ratio (0.0-1.0) \
-per candidate from the size distribution (min/median/max, sample_pdfs) returned \
-by list_folder, and explicitly state what you assumed and why.
+Stop when you have enough to choose well. Three or four searches is usually \
+plenty. Exhaustiveness is not the goal -- a good short list is.
 
-HOW TO EXPLORE: Start at the root. Drill into promising folders (Books is the \
-most representative of the real corpus). Skip folders that are obviously wrong \
-(e.g. pure-junk folders, folders of Articles/Transcripts if Books gives you \
-better candidates) -- do not exhaustively enumerate the whole tree. Stop once \
-you're confident in a recommendation. Call estimate_pipeline for every serious \
-candidate (2-4 folders), not just the winner, so alternatives are comparable. \
-Also call estimate_pipeline ONCE with totals summed across the top-level \
-folders (the whole ~130GB corpus) so your final answer includes a full-corpus \
-extrapolation for planning purposes.
+WHAT TO RECOMMEND
 
-FINAL ANSWER (required, in this exact block format, all numbers as estimated \
-ranges):
+3 to 6 books. For each, say concretely why it fits what they asked, based on the \
+title and what you can reasonably infer from it. If a title is ambiguous, say so \
+rather than inventing a description of contents you have not read.
 
-==================== RECOMMENDATION ====================
-Option A (RECOMMENDED): <folder name/path> -- <size>, <PDF count>, ~<pages> pages
-  <one line: why this option>
-  URL: <drive url>
+You can only see filenames and sizes. You have NOT read these books. Do not \
+describe their arguments, chapters or conclusions as if you had.
 
-  Download          <time>        <cost>
-  Extract + OCR     <time>        <cost range, API path> or <cost, GPU path>
-  Chunk + embed     <time>        <cost>
-  Store (Postgres)  <time>        <GB>, laptop-friendly y/n
-  TOTAL             <time range>  <cost range>
+Books already in the reader's library come back with `indexed: true`. Do NOT \
+recommend those -- they already have them. If a search turns up an indexed book \
+that is genuinely the best fit, mention it in your prose as something they \
+already own, but keep it out of your picks.
 
-Option B: <folder> -- <size>, <count>, est. <cost>, <time>
-  <one line>
-Option C: <folder> -- <size>, <count>, est. <cost>, <time>
-  <one line>
+Prefer variety across your picks: a study guide and a fuller treatment beats two \
+near-identical study guides. Note when something looks like a scan (very large \
+file, tens of MB) since those cost more to index and extract less cleanly.
 
-Full-corpus extrapolation (all ~130 GB, for planning only):
-  est. <pages> pages -> OCR <cost API> / <cost GPU>,
-  embedding <cost>, total wall-clock <time>.
-=========================================================
+If nothing good turns up, say so plainly and suggest what to search instead. \
+Never pad the list to reach a number.
 
-Before that block, briefly show your reasoning: which folders you checked, the \
-scanned_ratio you assumed for each and why, and how each candidate compares \
-against the two caps. Keep this brief -- the block above is the actual \
-deliverable.
-"""
+FINISHING
+
+Call `recommend` with your picks, then write a short closing paragraph: what you \
+searched, what the collection turned out to have, and which one you would start \
+with and why. Plain prose, conversational, no headings, no bullet lists. Do not \
+restate the request back to them.
+
+Cost estimation via estimate_pipeline is available but off by default -- use it \
+only if they ask about cost, time, or storage. Pilot caps of \
+${assumptions.PILOT_MAX_COST_USD} / {assumptions.PILOT_MAX_GB} GB were a Phase 0 \
+constraint and no longer apply to choosing a book to read."""
 
 
-def log(msg: str, verbose: bool):
-    if verbose:
-        print(f"[agent] {msg}")
-
-
-def summarize_result(tool_name: str, result: dict) -> str:
-    if tool_name == "list_folder":
-        f = result["files"]
-        return (
-            f"{len(result['subfolders'])} subfolders, {f['pdf_count']} PDFs, "
-            f"{f['pdf_total_mb']:.1f} MB, {f['other_count']} junk files"
-        )
+def _summarize(tool_name: str, result: dict) -> dict:
+    """A compact, renderable summary of a tool result for the event stream."""
+    if tool_name == "search_drive":
+        return {
+            "returned": result["returned"],
+            "already_indexed": sum(1 for m in result["matches"] if m["indexed"]),
+            "hit_limit": result["hit_limit"],
+        }
+    if tool_name == "browse_folder":
+        return {
+            "folder": result["folder"]["name"],
+            "subfolders": len(result["subfolders"]),
+            "returned": len(result["pdfs"]),
+            "total_pdfs": result["total_pdfs"],
+            "truncated": result["truncated"],
+        }
     if tool_name == "estimate_pipeline":
         t = result["totals"]
-        return (
-            f"API path {t['api_path']['cost_label']} / {t['api_path']['time_label']}; "
-            f"GPU path {t['gpu_path']['cost_label']} / {t['gpu_path']['time_label']}"
-        )
-    return "ok"
-
-
-def execute_tool(name: str, tool_input: dict, fresh: bool, verbose: bool) -> dict:
-    if name == "list_folder":
-        log(f"list_folder({tool_input['folder_id']})", verbose)
-        result = tools.list_folder(tool_input["folder_id"], fresh=fresh)
-    elif name == "estimate_pipeline":
-        log(
-            f"estimate_pipeline(pdf_count={tool_input['pdf_count']}, "
-            f"total_mb={tool_input['total_mb']}, "
-            f"scanned_ratio={tool_input['scanned_ratio']})",
-            verbose,
-        )
-        result = tools.estimate_pipeline(
-            tool_input["pdf_count"], tool_input["total_mb"], tool_input["scanned_ratio"]
-        )
-    else:
-        result = {"error": f"unknown tool: {name}"}
-    log(f"  -> {summarize_result(name, result)}", verbose)
-    return result
-
-
-def run(fresh: bool, verbose: bool):
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("ERROR: ANTHROPIC_API_KEY is not set.", file=sys.stderr)
-        sys.exit(1)
-
-    client = Anthropic(api_key=api_key)
-    messages = [
-        {
-            "role": "user",
-            "content": (
-                f"Explore the Drive library starting at root folder "
-                f"{ROOT_FOLDER_ID} and produce your recommendation."
-            ),
+        return {
+            "api_path": t["api_path"]["cost_label"],
+            "gpu_path": t["gpu_path"]["cost_label"],
         }
-    ]
+    if tool_name == "recommend":
+        return {"picks": len(result["recommendations"])}
+    return {}
 
-    for iteration in range(1, MAX_ITERATIONS + 1):
+
+def run(interest: str, conn, *, client=None, max_iterations: int = MAX_ITERATIONS):
+    """Yield events: {"type": "tool"|"results"|"thinking"|"recommendations"
+    |"answer"|"done", ...}.
+
+    `client` is injectable for the same reason conn/voyage/download_file are
+    everywhere else here: tests drive the loop with a scripted fake and no
+    network.
+    """
+    if client is None:
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise RuntimeError("ANTHROPIC_API_KEY is not set")
+        client = Anthropic()
+
+    # Every Drive item this run has actually seen, file_id -> raw resource.
+    # recommend() checks picks against it, which is what turns a hallucinated
+    # file_id into a flagged pick instead of a dead Drive link on the user's
+    # screen.
+    seen = {}
+    recommendations = []
+    messages = [{"role": "user", "content": interest}]
+
+    for iteration in range(1, max_iterations + 1):
         response = client.messages.create(
             model=MODEL,
             max_tokens=4096,
@@ -218,25 +266,42 @@ def run(fresh: bool, verbose: bool):
             tools=TOOL_SCHEMAS,
             messages=messages,
         )
-
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason != "tool_use":
-            final_text = "\n".join(
-                block.text for block in response.content if block.type == "text"
-            )
-            print(final_text)
-            return 0
+            answer = "".join(b.text for b in response.content if b.type == "text")
+            yield {"type": "answer", "text": answer}
+            yield {
+                "type": "done",
+                "recommendations": recommendations,
+                "iterations": iteration,
+            }
+            return
+
+        note = "".join(b.text for b in response.content if b.type == "text").strip()
+        if note:
+            yield {"type": "thinking", "text": note}
 
         tool_results = []
         for block in response.content:
             if block.type != "tool_use":
                 continue
+            yield {"type": "tool", "name": block.name, "input": block.input}
             try:
-                result = execute_tool(block.name, block.input, fresh, verbose)
-            except DriveAuthError as e:
-                print(f"\nDrive auth error: {e}", file=sys.stderr)
-                sys.exit(1)
+                result = _execute(block.name, block.input, conn, seen)
+            except Exception as e:  # noqa: BLE001 -- the model can recover from a
+                # tool error if it is told; killing the run gives it no chance.
+                result = {"error": f"{type(e).__name__}: {e}"}
+                yield {"type": "tool_error", "name": block.name, "message": str(e)}
+            else:
+                yield {
+                    "type": "results",
+                    "name": block.name,
+                    "summary": _summarize(block.name, result),
+                }
+                if block.name == "recommend":
+                    recommendations = result["recommendations"]
+                    yield {"type": "recommendations", "books": recommendations}
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,
@@ -245,10 +310,56 @@ def run(fresh: bool, verbose: bool):
 
         messages.append({"role": "user", "content": tool_results})
 
-    print(
-        f"\n[agent] Hit the {MAX_ITERATIONS}-iteration leash without a final "
-        "answer. Partial findings from this run are cached in cache.json; "
-        "re-run to let the agent continue reasoning over them.",
-        file=sys.stderr,
-    )
-    return 1
+    yield {
+        "type": "answer",
+        "text": (
+            f"Stopped after {max_iterations} rounds without settling on a "
+            "shortlist. Anything found so far is listed below."
+        ),
+    }
+    yield {
+        "type": "done",
+        "recommendations": recommendations,
+        "iterations": max_iterations,
+        "exhausted": True,
+    }
+
+
+def _execute(name: str, tool_input: dict, conn, seen: dict) -> dict:
+    if name == "search_drive":
+        result = tools.search_drive(
+            conn, tool_input["query"], tool_input.get("limit", tools.DEFAULT_LIMIT)
+        )
+        _remember(seen, result["matches"])
+        return result
+    if name == "browse_folder":
+        result = tools.browse_folder(
+            conn,
+            tool_input["folder_id"],
+            name_contains=tool_input.get("name_contains"),
+            limit=tool_input.get("limit", tools.DEFAULT_LIMIT),
+        )
+        _remember(seen, result["pdfs"])
+        return result
+    if name == "estimate_pipeline":
+        return tools.estimate_pipeline(
+            tool_input["pdf_count"],
+            tool_input["total_mb"],
+            tool_input["scanned_ratio"],
+        )
+    if name == "recommend":
+        return tools.recommend(conn, tool_input.get("picks", []), seen)
+    return {"error": f"unknown tool: {name}"}
+
+
+def _remember(seen: dict, pdfs: list) -> None:
+    """Record the Drive resources a tool returned, in the raw shape _as_pdf()
+    consumes, so recommend() can re-derive a full card from a file_id alone."""
+    for p in pdfs:
+        size = p.get("size_mb")
+        seen[p["file_id"]] = {
+            "id": p["file_id"],
+            "name": p["title"],
+            "webViewLink": p["url"],
+            "size": None if size is None else str(int(size * 1024 * 1024)),
+        }

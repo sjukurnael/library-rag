@@ -4,159 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>library-rag</title>
-<style>
-  :root {
-    --bg: #fbfaf8; --panel: #fff; --ink: #1c1b19; --muted: #6b6862;
-    --line: #e5e1da; --accent: #7c4a2d; --accent-soft: #f2e9e2;
-    --good: #2d6a4f; --warn: #9a6a00; --bad: #8a3a3a;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #16150f; --panel: #1e1d17; --ink: #ece8e1; --muted: #9a958c;
-      --line: #302e26; --accent: #d3a17a; --accent-soft: #2a241d;
-      --good: #6fbf94; --warn: #d9ab4a; --bad: #d98a8a;
-    }
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--ink);
-    font: 15px/1.6 ui-serif, Georgia, "Times New Roman", serif;
-  }
-  header {
-    border-bottom: 1px solid var(--line); padding: 18px 24px;
-    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
-  }
-  h1 { font-size: 19px; margin: 0; letter-spacing: -0.01em; }
-  .sub { color: var(--muted); font-size: 13px; }
-  main { max-width: 900px; margin: 0 auto; padding: 24px; }
-  form { display: flex; gap: 10px; margin-bottom: 8px; }
-  input[type=text] {
-    flex: 1; padding: 12px 14px; font: inherit; color: var(--ink);
-    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-  }
-  input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-  button {
-    padding: 12px 20px; font: inherit; font-weight: 600; cursor: pointer;
-    background: var(--accent); color: #fff; border: 0; border-radius: 8px;
-  }
-  button:disabled { opacity: .5; cursor: default; }
-  .examples { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 26px; }
-  .examples button {
-    background: transparent; color: var(--muted); border: 1px solid var(--line);
-    font-size: 13px; font-weight: 400; padding: 6px 11px; border-radius: 999px;
-  }
-  .examples button:hover { color: var(--ink); border-color: var(--accent); }
-  .card {
-    background: var(--panel); border: 1px solid var(--line);
-    border-radius: 10px; padding: 20px 22px; margin-bottom: 18px;
-  }
-  .answer p { margin: 0 0 14px; }
-  .answer p:last-child, .answer ul:last-child, .answer ol:last-child { margin-bottom: 0; }
-  .answer .mdh {
-    font-family: ui-sans-serif, system-ui, sans-serif; font-size: 15px;
-    font-weight: 700; margin: 22px 0 10px; letter-spacing: -0.01em;
-    text-transform: none; color: var(--ink);
-  }
-  .answer .mdh:first-child { margin-top: 0; }
-  .answer ul, .answer ol { margin: 0 0 14px; padding-left: 22px; }
-  .answer li { margin: 4px 0; }
-  .answer blockquote {
-    margin: 0 0 14px; padding-left: 14px; border-left: 3px solid var(--accent-soft);
-    color: var(--muted);
-  }
-  .answer code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em;
-    background: var(--accent-soft); padding: 1px 5px; border-radius: 4px;
-  }
-  .answer strong { font-weight: 700; }
-  .answer cite {
-    font-style: normal; background: var(--accent-soft); color: var(--accent);
-    padding: 1px 6px; border-radius: 999px; font-size: 11px; font-weight: 700;
-    cursor: pointer; user-select: none; border: 1px solid transparent;
-    vertical-align: 2px; margin: 0 1px;
-    font-family: ui-sans-serif, system-ui, sans-serif;
-  }
-  .answer cite:hover { border-color: var(--accent); }
-  .answer cite.on { background: var(--accent); color: #fff; }
-  /* Citation popover */
-  #pop {
-    position: absolute; z-index: 50; max-width: 560px; width: calc(100vw - 40px);
-    background: var(--panel); border: 1px solid var(--accent);
-    border-radius: 10px; box-shadow: 0 12px 32px rgba(0,0,0,.22);
-    padding: 16px 18px; display: none;
-  }
-  #pop.show { display: block; }
-  #pop .meta {
-    font-family: ui-sans-serif, system-ui, sans-serif; font-size: 12px;
-    color: var(--muted); display: grid; grid-template-columns: auto 1fr;
-    gap: 3px 12px; margin-bottom: 12px;
-  }
-  #pop .meta dt { color: var(--muted); }
-  #pop .meta dd { margin: 0; color: var(--ink); }
-  #pop .quote {
-    font-size: 14px; max-height: 300px; overflow-y: auto;
-    border-left: 3px solid var(--accent-soft); padding-left: 12px;
-    white-space: pre-wrap;
-  }
-  #pop .close {
-    position: absolute; top: 10px; right: 12px; cursor: pointer;
-    color: var(--muted); background: none; border: 0; font-size: 18px; padding: 0;
-  }
-  #pop .title {
-    font-weight: 700; font-size: 14px; margin: 0 24px 8px 0;
-    font-family: ui-sans-serif, system-ui, sans-serif;
-  }
-  h2 {
-    font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
-    color: var(--muted); margin: 0 0 14px; font-weight: 600;
-    font-family: ui-sans-serif, system-ui, sans-serif;
-  }
-  .badge {
-    font-size: 11px; font-family: ui-sans-serif, system-ui, sans-serif;
-    border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px;
-    color: var(--muted);
-  }
-  .status { color: var(--muted); font-size: 14px; }
-  .trace { font-family: ui-sans-serif, system-ui, sans-serif; font-size: 13px; }
-  .step { padding: 9px 0; border-top: 1px dashed var(--line); }
-  .step:first-child { border-top: 0; }
-  .step .q { font-weight: 600; color: var(--ink); }
-  .step .lbl {
-    display: inline-block; min-width: 74px; color: var(--muted);
-    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-  }
-  .step .think { color: var(--muted); font-style: italic; font-family: inherit; }
-  .hits { margin: 6px 0 0 74px; color: var(--muted); font-size: 12px; }
-  .hits div { padding: 1px 0; }
-  .hits .w { opacity: .5; }
-  .hits b { color: var(--accent); font-weight: 700; }
-  .err { color: var(--bad); }
-  details summary { cursor: pointer; color: var(--muted); font-size: 13px;
-    font-family: ui-sans-serif, system-ui, sans-serif; }
-  .lib { margin-top: 8px; font-size: 13px; color: var(--muted); }
-  .lib li { margin: 3px 0; }
-  .upload { display: flex; align-items: center; gap: 12px; margin-top: 14px;
-            padding-top: 14px; border-top: 1px solid var(--line); flex-wrap: wrap; }
-  .uploadbtn { cursor: pointer; font-size: 13px; padding: 7px 14px; border-radius: 7px;
-               border: 1px solid var(--line); color: var(--dim); transition: .15s; }
-  .uploadbtn:hover { color: var(--ink); border-color: var(--accent); }
-  .uploadnote { font-size: 12.5px; color: var(--dim); }
-  .uploadnote.err { color: #d2544a; }
-  .lib li { display: flex; align-items: baseline; gap: 8px; }
-  .lib .del { margin-left: auto; cursor: pointer; border: 0; background: none;
-              color: var(--dim); font-size: 15px; line-height: 1; padding: 0 4px;
-              opacity: 0; transition: .15s; }
-  .lib li:hover .del { opacity: 1; }
-  .lib .del:hover { color: #d2544a; }
-  .lib.pending li { color: var(--dim); }
-  .lib.pending li.failed { color: #d2544a; }
-  @keyframes pulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
-  .loading { animation: pulse 1.4s ease-in-out infinite; }
-</style>
+<link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 <header>
   <h1>library-rag</h1>
+  <nav>
+    <a href="/" class="on">Research</a>
+    <a href="/library">Browse the drive</a>
+  </nav>
   <span class="sub" id="libsummary">loading index…</span>
 </header>
 
@@ -189,6 +45,21 @@
       <span class="uploadnote" id="uploadnote"></span>
     </div>
   </details>
+
+  <details class="card" id="browsecard">
+    <summary>Find a book to read next</summary>
+    <form id="bf">
+      <input type="text" id="bq" autocomplete="off"
+             placeholder="What do you want to study? e.g. the parables, church history…">
+      <button type="submit" id="bgo">Browse</button>
+    </form>
+    <div class="sub browsehint">
+      Searches ~57,500 books by meaning, not just title. Books you already have
+      are excluded.
+    </div>
+    <div id="btrail"></div>
+    <div id="bout"></div>
+  </details>
 </main>
 
 <div id="pop">
@@ -198,9 +69,20 @@
   <div class="quote" id="popquote"></div>
 </div>
 
+<script src="/static/app.js"></script>
 <script>
-const $ = s => document.querySelector(s);
-const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function stage(b) {
+  const base = STAGE[b.status] || b.status;
+  // page_count is written by mark_extracted, so it is only meaningful once the
+  // book has been read; before that it is NULL (or a leftover from a prior run).
+  const known = b.pages && (b.status === 'extracted' || b.status === 'chunked');
+  return known ? `${base}, ${b.pages} pages` : base;
+}
+
+function terminalLabel(b) {
+  if (b.status === 'needs_ocr') return 'needs OCR — this PDF has no text layer';
+  return `failed — ${esc(b.error || 'unknown error')}`;
+}
 
 // Poll while anything is mid-pipeline. Ingestion takes minutes, so the upload
 // response only confirms the book was QUEUED -- this is what reports progress.
@@ -216,22 +98,21 @@ function loadBooks() {
 
     const pending = d.pending || [];
     $('#pending').innerHTML = pending.map(b => {
-      const failed = b.status === 'failed';
-      const label = failed ? `failed — ${esc(b.error || 'unknown error')}`
-                           : `${esc(b.status)}…`;
-      // A failed book gets a delete control too -- otherwise the only way out of
+      const terminal = TERMINAL.has(b.status);
+      const label = terminal ? terminalLabel(b) : `${esc(stage(b))}…${age(b.claim_age_s)}`;
+      // A stuck book gets a delete control too -- otherwise the only way out of
       // a bad upload is SQL.
-      const del = failed
+      const del = terminal
         ? `<button class="del" data-id="${b.id}" data-title="${esc(b.title)}">&times;</button>`
         : '';
-      return `<li class="${failed ? 'failed' : 'loading'}">` +
+      return `<li class="${terminal ? 'failed' : 'loading'}">` +
              `<span>${esc(b.title)} — ${label}</span>${del}</li>`;
     }).join('');
 
     // Only a book actually moving through the pipeline justifies polling; one
-    // sitting at 'failed' never changes on its own, and polling it forever
-    // would be a request loop with no possible outcome.
-    const working = pending.some(b => b.status !== 'failed');
+    // sitting at a terminal status never changes on its own, and polling it
+    // forever would be a request loop with no possible outcome.
+    const working = pending.some(b => !TERMINAL.has(b.status));
     clearTimeout(pollTimer);
     if (working) pollTimer = setTimeout(loadBooks, 3000);
   }).catch(() => $('#libsummary').textContent = 'index unavailable');
@@ -407,20 +288,13 @@ $('#f').addEventListener('submit', async e => {
       body: JSON.stringify({ question, k: 8 })
     });
     if (!r.ok) throw new Error(r.statusText);
-    const reader = r.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '', answerHtml = '', rawAnswer = '', sources = null;
+    let answerHtml = '', rawAnswer = '', sources = null;
     steps.length = 0;
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const parts = buf.split('\n\n'); buf = parts.pop();
-      for (const p of parts) {
-        if (!p.startsWith('data: ')) continue;
-        const e = JSON.parse(p.slice(6));
-        if (e.type === 'thinking') {
+    // `terminal: 'done'` is what turns a dropped connection into an error. A
+    // stream that just stops leaves the trail half-drawn and the page silent.
+    await readEventStream(r, e => {
+      if (e.type === 'thinking') {
           steps.push({ t: 'think', html: `<div class="step"><span class="lbl">reasoning</span><span class="think">${esc(e.text)}</span></div>` });
         } else if (e.type === 'search') {
           steps.push({ t: 'search', html: e.query
@@ -437,16 +311,146 @@ $('#f').addEventListener('submit', async e => {
           sources = e.sources.map(s => ({ ...s, relevant: s.distance <= 0.70 }));
           SOURCES = Object.fromEntries(sources.map(x => [String(x.n), x]));
           answerHtml = citeify(rawAnswer);
-        } else if (e.type === 'error') {
-          throw new Error(e.message);
-        }
-        paint(answerHtml, sources);
+      } else if (e.type === 'error') {
+        throw new Error(e.message);
       }
-    }
+      paint(answerHtml, sources);
+    }, {
+      terminal: 'done',
+      // Not a timeout -- a hard question legitimately runs for a minute, and
+      // killing one that is merely slow is worse than waiting. This only
+      // changes what the user is told.
+      onStall: secs => {
+        steps.push({ t: 'x', html: `<div class="step status warn"><span class="lbl">waiting</span>` +
+          `no update for ${secs}s — still connected, but the model may be stuck.</div>` });
+        paint(answerHtml, sources);
+      },
+    });
   } catch (err) {
     $('#out').insertAdjacentHTML('beforeend', `<div class="card err">${esc(String(err.message || err))}</div>`);
   } finally {
     $('#go').disabled = false;
+  }
+});
+
+// ------------------------------------------------------------------ browse --
+// Same SSE contract as /api/research: `data: {json}\n\n` frames off a reader.
+// Streamed because the agent runs several Drive searches over tens of seconds,
+// and showing which ones it chose is what separates a shortlist you can trust
+// from a list of plausible-looking titles.
+
+const TOOL_LABEL = {
+  search_drive: 'search', browse_folder: 'browse',
+  estimate_pipeline: 'estimate', recommend: 'shortlist',
+};
+
+function toolLine(e) {
+  const i = e.input || {};
+  const arg = i.query || i.name_contains || i.folder_id || '';
+  return `<div class="bstep"><span class="lbl">${esc(TOOL_LABEL[e.name] || e.name)}</span>` +
+         `${arg ? `“${esc(String(arg))}”` : ''}</div>`;
+}
+
+function resultLine(s) {
+  const bits = [];
+  if (s.returned != null) bits.push(`${s.returned} found`);
+  if (s.total_pdfs != null && s.truncated) bits.push(`of ${s.total_pdfs}`);
+  if (s.already_indexed) bits.push(`${s.already_indexed} already yours`);
+  if (s.hit_limit) bits.push('hit the limit');
+  if (s.picks != null) bits.push(`${s.picks} picked`);
+  return bits.length
+    ? `<div class="bstep"><span class="lbl"></span>${esc(bits.join(' · '))}</div>` : '';
+}
+
+function recCard(b, i) {
+  // A pick whose file_id the agent never actually saw is shown as an error, not
+  // rendered as a card -- a dead Drive link that looks real is worse than none.
+  if (b.unknown) {
+    return `<div class="rec bad"><div class="body"><div class="t">Unusable suggestion</div>` +
+           `<div class="why">${esc(b.error)}</div></div></div>`;
+  }
+  const size = b.size_mb != null ? `${b.size_mb} MB` : 'size unknown';
+  const action = b.indexed
+    ? `<span class="badge">already yours</span>`
+    : `<button class="add" data-i="${i}">Add to library</button>`;
+  return `<div class="rec${b.indexed ? ' owned' : ''}">` +
+    `<div class="body"><div class="t">${esc(b.title)}</div>` +
+    `<div class="why">${esc(b.why || '')}</div>` +
+    `<div class="m">${esc(size)} · <a href="${esc(b.url)}" target="_blank" rel="noopener">view in Drive</a></div>` +
+    `</div>${action}</div>`;
+}
+
+let recs = [];
+
+$('#bf').addEventListener('submit', async e => {
+  e.preventDefault();
+  const interest = $('#bq').value.trim();
+  if (!interest) return;
+  $('#bgo').disabled = true;
+  $('#btrail').innerHTML = '<div class="bstep">looking…</div>';
+  $('#bout').innerHTML = '';
+  recs = [];
+
+  const trail = [];
+  try {
+    const r = await fetch('/api/browse', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ interest })
+    });
+    if (!r.ok) throw new Error(r.statusText);
+    await readEventStream(r, ev => {
+        if (ev.type === 'tool') trail.push(toolLine(ev));
+        else if (ev.type === 'results') trail.push(resultLine(ev.summary));
+        else if (ev.type === 'tool_error') {
+          trail.push(`<div class="bstep berr">${esc(ev.name)} failed — ${esc(ev.message)}</div>`);
+        } else if (ev.type === 'recommendations') {
+          recs = ev.books;
+          $('#bout').innerHTML = recs.map(recCard).join('');
+        } else if (ev.type === 'answer') {
+          $('#bout').insertAdjacentHTML('beforeend',
+            `<div class="why" style="margin-top:10px">${esc(ev.text)}</div>`);
+        } else if (ev.type === 'error') {
+          $('#bout').insertAdjacentHTML('beforeend', `<div class="berr">${esc(ev.message)}</div>`);
+        }
+        $('#btrail').innerHTML = trail.join('');
+    }, {
+      terminal: 'done',
+      onStall: secs => {
+        trail.push(`<div class="bstep">no update for ${secs}s — still connected.</div>`);
+        $('#btrail').innerHTML = trail.join('');
+      },
+    });
+  } catch (err) {
+    $('#bout').innerHTML = `<div class="berr">${esc(String(err.message || err))}</div>`;
+  } finally {
+    $('#bgo').disabled = false;
+  }
+});
+
+// The agent recommends; the button acts. Nothing the agent does writes to the
+// library -- adding a book is always an explicit choice made here.
+$('#bout').addEventListener('click', async e => {
+  const btn = e.target.closest('.add');
+  if (!btn) return;
+  const book = recs[Number(btn.dataset.i)];
+  btn.disabled = true;
+  btn.textContent = 'adding…';
+  try {
+    const r = await fetch('/api/library/drive', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ file_ids: [book.file_id] })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || `failed (${r.status})`);
+    btn.textContent = d.added.length ? 'queued' : 'already yours';
+    // The pending list and its stage labels report the ingest from here on --
+    // no second progress mechanism needed.
+    $('details.card').open = true;
+    loadBooks();
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'retry';
+    $('#bout').insertAdjacentHTML('beforeend', `<div class="berr">${esc(String(err.message || err))}</div>`);
   }
 });
 

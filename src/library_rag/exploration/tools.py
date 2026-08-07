@@ -1,44 +1,84 @@
 """
-The agent's tools. Kept deliberately dumb: mechanical Drive listing and
-mechanical arithmetic. All judgment (which folder looks promising, what
-scanned_ratio to assume, which candidate wins) belongs in agent/loop.py's
-system prompt / the LLM, not here.
+The browsing agent's tools. Kept deliberately dumb: mechanical Drive listing,
+a mechanical "do I already own this" lookup, and mechanical arithmetic. All
+judgment (which shelf looks promising, which book fits the reader's interest,
+what scanned_ratio to assume) belongs in loop.py's system prompt / the LLM.
+
+These used to answer "how big is this folder" -- Phase 0 picked a pilot folder
+by size. Browsing asks the opposite question: TITLES are the payload and size is
+a footnote, so the folder tools return names and let the caller page through
+them rather than returning aggregate statistics over an 8-file sample.
 """
 import json
-import os
-import random
 import statistics
 
+from library_rag import config, db
 from library_rag.drive import client as drive_client
 from library_rag.exploration import assumptions
+from library_rag.pipeline import embed as embed_mod
 
-CACHE_FILE = "cache.json"
 FOLDER_MIME = "application/vnd.google-apps.folder"
 PDF_MIME = "application/pdf"
+
+DEFAULT_LIMIT = 50
+MAX_LIMIT = 120
 
 
 # ---------------------------------------------------------------- caching --
 
 def _load_cache() -> dict:
-    if not os.path.exists(CACHE_FILE):
+    path = config.DRIVE_CACHE_FILE
+    if not path.exists():
         return {}
     try:
-        with open(CACHE_FILE, "r") as f:
-            return json.load(f)
+        return json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return {}
 
 
 def _save_cache(cache: dict) -> None:
-    with open(CACHE_FILE, "w") as f:
-        json.dump(cache, f, indent=2)
+    config.DRIVE_CACHE_FILE.write_text(json.dumps(cache, indent=2))
 
 
-# ------------------------------------------------------------ list_folder --
+# ----------------------------------------------------------- own-library --
 
-def list_folder(folder_id: str, fresh: bool = False) -> dict:
-    """List ONE level of a Drive folder. Never recurses. Caches to cache.json
-    keyed by folder_id; pass fresh=True (--fresh at the CLI) to bypass cache.
+def indexed_ids(conn) -> dict:
+    """Drive file id -> {book_id, title, status} for every Drive book we hold.
+
+    The single most useful thing the agent can know. Without it the obvious
+    failure is recommending a book already sitting in the library -- which reads
+    as the agent not knowing what it is looking at. Keyed on source_id because
+    that IS the Drive file id for source='drive' (see 0002_book_sources.sql).
+    """
+    rows = conn.execute(
+        "SELECT source_id, id, title, status FROM books WHERE source = 'drive'"
+    ).fetchall()
+    return {r[0]: {"book_id": r[1], "title": r[2], "status": r[3]} for r in rows}
+
+
+def _as_pdf(item: dict, owned: dict) -> dict:
+    """One Drive file resource -> the shape the agent and the UI both consume."""
+    size = item.get("size")
+    have = owned.get(item["id"])
+    return {
+        "file_id": item["id"],
+        "title": item.get("name", ""),
+        "url": item.get("webViewLink", ""),
+        "size_mb": round(int(size) / (1024 * 1024), 1) if size is not None else None,
+        "indexed": have is not None,
+        # Only present when indexed, so an absent key is unambiguous rather than
+        # a null the model has to interpret.
+        **({"book_id": have["book_id"], "status": have["status"]} if have else {}),
+    }
+
+
+# ---------------------------------------------------------- browse_folder --
+
+def _raw_folder(folder_id: str, fresh: bool = False) -> dict:
+    """The cached Drive listing for one folder, normalised but not filtered.
+
+    Cached because folder contents are stable and a shelf gets revisited within
+    a single browse; keyed by folder_id.
     """
     cache = _load_cache()
     if not fresh and folder_id in cache:
@@ -48,66 +88,152 @@ def list_folder(folder_id: str, fresh: bool = False) -> dict:
     folder_meta = drive_client.get_folder_name(service, folder_id)
     children = drive_client.list_children(service, folder_id)
 
-    subfolders = []
-    pdfs = []  # each: {name, id, url, size_mb}
-    other_count = 0
-
+    subfolders, pdfs, other_count = [], [], 0
     for item in children:
         mime = item.get("mimeType", "")
         if mime == FOLDER_MIME:
             subfolders.append({
-                "id": item["id"],
+                "folder_id": item["id"],
                 "name": item.get("name", ""),
                 "url": item.get("webViewLink", ""),
             })
         elif mime == PDF_MIME and item.get("size") is not None:
-            pdfs.append({
-                "name": item.get("name", ""),
-                "id": item["id"],
-                "url": item.get("webViewLink", ""),
-                "size_mb": int(item["size"]) / (1024 * 1024),
-            })
+            pdfs.append(item)
         else:
-            # Non-PDF junk, AND PDFs missing a size field (can't include them
-            # in size stats, so they're bucketed as "other" per spec).
+            # Non-PDF junk (.DS_Store, index.html), AND PDFs with no size field.
             other_count += 1
 
-    sizes = [p["size_mb"] for p in pdfs]
     result = {
         "folder": {
             "name": folder_meta.get("name", ""),
             "url": folder_meta.get("webViewLink", ""),
         },
         "subfolders": subfolders,
-        "files": {
-            "pdf_count": len(pdfs),
-            "pdf_total_mb": round(sum(sizes), 1) if sizes else 0.0,
-            "pdf_size_min_mb": round(min(sizes), 1) if sizes else 0.0,
-            "pdf_size_median_mb": round(statistics.median(sizes), 1) if sizes else 0.0,
-            "pdf_size_max_mb": round(max(sizes), 1) if sizes else 0.0,
-            "other_count": other_count,
-            "sample_pdfs": _sample_pdfs(pdfs),
-        },
+        "pdfs": pdfs,
+        "other_count": other_count,
     }
-
     cache[folder_id] = result
     _save_cache(cache)
     return result
 
 
-def _sample_pdfs(pdfs: list, n: int = 8) -> list:
-    """Up to n PDFs: a mix of the largest (interesting for OCR-cost judgment)
-    plus a random sample of the rest, deduped."""
-    if len(pdfs) <= n:
-        return sorted(pdfs, key=lambda p: -p["size_mb"])
+def browse_folder(
+    conn, folder_id: str, name_contains=None, limit=DEFAULT_LIMIT, fresh=False
+) -> dict:
+    """One shelf: its subfolders, and the PDFs on it by title.
 
-    n_largest = max(1, n // 2)
-    by_size = sorted(pdfs, key=lambda p: -p["size_mb"])
-    largest = by_size[:n_largest]
-    largest_ids = {p["id"] for p in largest}
-    remainder = [p for p in pdfs if p["id"] not in largest_ids]
-    random_pick = random.sample(remainder, min(n - n_largest, len(remainder)))
-    return largest + random_pick
+    ONE level, never recursive. `name_contains` filters within the folder and
+    `limit` caps the page, because folders here are not small -- `Books` holds
+    5,024 PDFs directly alongside 204 subfolders, and returning all of them
+    would bury the answer in the question.
+
+    `truncated` and `total_pdfs` are always reported. A silently-cut list is
+    indistinguishable from a complete one, and an agent that cannot tell the
+    difference will confidently say "that folder only has 50 books".
+    """
+    raw = _raw_folder(folder_id, fresh=fresh)
+    owned = indexed_ids(conn)
+
+    pdfs = raw["pdfs"]
+    if name_contains:
+        needle = name_contains.lower()
+        pdfs = [p for p in pdfs if needle in p.get("name", "").lower()]
+
+    limit = max(1, min(int(limit or DEFAULT_LIMIT), MAX_LIMIT))
+    shown = sorted(pdfs, key=lambda p: p.get("name", "").lower())[:limit]
+    sizes = [int(p["size"]) / (1024 * 1024) for p in raw["pdfs"]]
+
+    return {
+        "folder": raw["folder"],
+        "subfolders": raw["subfolders"],
+        "pdfs": [_as_pdf(p, owned) for p in shown],
+        "total_pdfs": len(pdfs),
+        "truncated": len(pdfs) > len(shown),
+        "junk_files": raw["other_count"],
+        # Retained from Phase 0: still the input estimate_pipeline needs, and
+        # still the only signal for "are these scans or digital text".
+        "size_median_mb": round(statistics.median(sizes), 1) if sizes else 0.0,
+        "size_total_mb": round(sum(sizes), 1) if sizes else 0.0,
+    }
+
+
+# ----------------------------------------------------------- search_drive --
+
+def search_drive(conn, query: str, limit=DEFAULT_LIMIT, *, voyage=None) -> dict:
+    """Rank the whole drive by meaning and by words, from the local mirror.
+
+    This used to call Drive's `name contains`, which matches a word PREFIX --
+    measured on this corpus, 'parab' hit and 'arable' returned zero. That forced
+    the agent to guess exact title words, and its own trail showed the workaround:
+    after topic searches it fell back to author surnames (Jeremias, Blomberg,
+    Bailey) because that was the only way to reach a book whose title it could
+    not predict. Against the mirror, "the end times" reaches Revelation.
+
+    Falls back to the live Drive call when the mirror is empty, so a fresh
+    install still works before anyone has run drive_sync.
+    """
+    limit = max(1, min(int(limit or DEFAULT_LIMIT), MAX_LIMIT))
+    if db.drive_sync_status(conn)["files"] == 0:
+        service = drive_client.build_service()
+        items = drive_client.search_files(service, query, limit=limit)
+        owned = indexed_ids(conn)
+        return {
+            "query": query, "source": "drive-live",
+            "matches": [_as_pdf(i, owned) for i in items],
+            "returned": len(items), "hit_limit": len(items) >= limit,
+        }
+
+    voyage = voyage or embed_mod.build_client()
+    vec = embed_mod.embed_query(query, voyage)
+    rows = db.search_drive_files(conn, vec, query, limit)
+    return {
+        "query": query,
+        "source": "mirror",
+        "matches": [
+            {
+                "file_id": r["file_id"], "title": r["title"], "url": r["url"],
+                "size_mb": r["size_mb"], "path": r["path"],
+                "indexed": r["indexed"],
+                **({"book_id": r["book_id"], "status": r["status"]}
+                   if r["indexed"] else {}),
+            }
+            for r in rows
+        ],
+        "returned": len(rows),
+        # The agent must be able to tell "few results" from "hit the ceiling",
+        # or it will narrow a query that was actually already too broad.
+        "hit_limit": len(rows) >= limit,
+    }
+
+
+# -------------------------------------------------------------- recommend --
+
+def recommend(conn, picks: list, seen: dict) -> dict:
+    """The agent's OUTPUT channel, not a side effect. Nothing is written here.
+
+    The agent supplies {file_id, why}; this re-attaches the Drive metadata
+    already fetched during the browse so the UI can render a real card (title,
+    size, link, Add button) instead of regex-parsing prose for Drive URLs.
+
+    `seen` is the run's file_id -> Drive item map. A file_id the agent never
+    actually looked at comes back flagged rather than silently dropped -- a
+    hallucinated id is exactly the failure worth surfacing.
+    """
+    owned = indexed_ids(conn)
+    out = []
+    for pick in picks:
+        fid = pick.get("file_id", "")
+        item = seen.get(fid)
+        if item is None:
+            out.append({
+                "file_id": fid,
+                "why": pick.get("why", ""),
+                "unknown": True,
+                "error": "no such file_id was returned by any search this run",
+            })
+            continue
+        out.append({**_as_pdf(item, owned), "why": pick.get("why", "")})
+    return {"recommendations": out}
 
 
 # -------------------------------------------------------- estimate_pipeline --

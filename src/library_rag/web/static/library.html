@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>library — browse the drive</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  main.wide { max-width: 1180px; }
+  nav a { color: var(--muted); text-decoration: none; font-size: 13px; margin-right: 14px; }
+  nav a:hover, nav a.on { color: var(--ink); }
+  nav a.on { border-bottom: 2px solid var(--accent); padding-bottom: 2px; }
+
+  .banner { background: var(--accent-soft); border: 1px solid var(--line);
+            border-radius: 9px; padding: 11px 14px; margin-bottom: 16px;
+            font-size: 13px; display: flex; align-items: center; gap: 12px; }
+  .banner button { font-size: 12.5px; padding: 6px 13px; }
+  .banner .msg { color: var(--muted); }
+
+  .split { display: grid; grid-template-columns: 290px 1fr; gap: 22px; align-items: start; }
+  @media (max-width: 780px) { .split { grid-template-columns: 1fr; } }
+
+  .tree { font-size: 13.5px; max-height: 74vh; overflow: auto; }
+  .tree ul { list-style: none; margin: 0; padding-left: 15px; }
+  .tree > ul { padding-left: 0; }
+  .tree li { margin: 1px 0; }
+  .tree .row { display: flex; align-items: center; gap: 5px; cursor: pointer;
+               padding: 3px 6px; border-radius: 6px; color: var(--muted); }
+  .tree .row:hover { background: var(--accent-soft); color: var(--ink); }
+  .tree .row.on { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
+  .tree .tw { width: 12px; flex: none; font-size: 10px; opacity: .65; }
+  .tree .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .crumb { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
+  .crumb a { color: var(--muted); text-decoration: none; }
+  .crumb a:hover { color: var(--ink); }
+
+  .files { display: flex; flex-direction: column; gap: 8px; }
+  .f { border: 1px solid var(--line); background: var(--panel); border-radius: 9px;
+       padding: 10px 13px; display: flex; gap: 12px; align-items: center; }
+  .f .body { flex: 1; min-width: 0; }
+  .f .t { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .f .m { font-size: 12px; color: var(--dim, var(--muted)); margin-top: 2px; }
+  .f .m a { color: var(--muted); }
+  .f .why { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+  .f button { font-size: 12.5px; padding: 6px 13px; white-space: nowrap;
+              background: none; color: var(--muted); border: 1px solid var(--line); }
+  .f button:hover:not(:disabled) { color: var(--ink); border-color: var(--accent); }
+  .f.have { border-color: var(--good); }
+  .f .badge { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+              white-space: nowrap; color: var(--good); }
+  .f .badge.work { color: var(--warn); }
+  .f .badge.bad { color: var(--bad); }
+  .empty { color: var(--muted); font-size: 13px; padding: 20px 0; }
+  .modes { display: flex; gap: 8px; align-items: center; margin: 8px 0 16px;
+           font-size: 12.5px; color: var(--muted); }
+  .modes button { background: transparent; color: var(--muted); border: 1px solid var(--line);
+                  font-size: 12px; font-weight: 400; padding: 4px 10px; border-radius: 999px; }
+  .modes button.on { color: var(--ink); border-color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>library</h1>
+  <nav>
+    <a href="/">Research</a>
+    <a href="/library" class="on">Browse the drive</a>
+  </nav>
+  <span class="sub" id="stat">loading…</span>
+</header>
+
+<main class="wide">
+  <div class="banner" id="authbanner" hidden>
+    <span class="msg" id="amsg"></span>
+    <button id="connect">Connect Google Drive</button>
+  </div>
+
+  <div class="banner" id="banner" hidden>
+    <span class="msg" id="bmsg"></span>
+    <button id="sync">Sync from Drive</button>
+  </div>
+
+  <form id="sf">
+    <input type="text" id="sq" autocomplete="off"
+           placeholder="Search every book by meaning — “the end times”, “how to pray”, “Paul in prison”…">
+    <button type="submit">Search</button>
+  </form>
+  <div class="modes" id="modes">
+    <span>ranking</span>
+    <button data-mode="hybrid" class="on">hybrid</button>
+    <button data-mode="dense">meaning</button>
+    <button data-mode="lexical">words</button>
+    <button id="clear" style="margin-left:auto">clear search</button>
+  </div>
+
+  <div class="split">
+    <div class="card tree" id="tree">loading…</div>
+    <div>
+      <div class="crumb" id="crumb"></div>
+      <div class="files" id="files"></div>
+    </div>
+  </div>
+</main>
+
+<script src="/static/app.js"></script>
+<script>
+let mode = 'hybrid';
+let current = null;          // folder id being viewed, null = roots
+let searching = false;
+let pollTimer = null;
+
+// ---------------------------------------------------------------- status --
+
+async function refreshStatus() {
+  let s;
+  try {
+    s = await fetchJSON('/api/drive/sync/progress', {}, 15000);
+  } catch (err) {
+    $('#stat').textContent = 'server unreachable';
+    return {};
+  }
+  $('#stat').textContent = s.files
+    ? `${s.files.toLocaleString()} PDFs · ${s.folders.toLocaleString()} folders · ` +
+      `${s.embedded.toLocaleString()} searchable`
+    : 'mirror is empty';
+  // The banner appears only when there is something to act on: an empty mirror,
+  // titles still unembedded (so search is partial), or a sync in flight.
+  const need = !s.files || s.pending > 0 || s.running;
+  $('#banner').hidden = !need;
+  if (need) {
+    $('#bmsg').textContent = s.running
+      ? `Syncing… ${s.message || ''}`
+      : !s.files
+        ? 'No Drive metadata yet. Sync to browse and search the whole library.'
+        : `${s.pending.toLocaleString()} title(s) not yet searchable by meaning.`;
+    $('#sync').disabled = !!s.running;
+  }
+  if (s.running) setTimeout(refreshStatus, 2000);
+  return s;
+}
+
+// Drive access is checked on load and after every failed action, so an expired
+// token shows as a banner you can act on rather than a 503 you have to decode.
+// Only ADDING a book needs Drive -- browsing and searching run off the local
+// mirror -- so this must not block the page.
+// True while a consent flow is in flight. The poller must not repaint #amsg
+// while it is, or it overwrites the sign-in link every 3 seconds -- the link
+// would appear and vanish faster than anyone could click it.
+let connecting = false;
+
+async function refreshAuth() {
+  let a;
+  try { a = await fetchJSON('/api/drive/auth/status', {}, 15000); }
+  catch { return; }
+  $('#authbanner').hidden = a.ok;
+  if (!a.ok && !connecting) {
+    $('#amsg').textContent = {
+      not_connected: 'Not connected to Google Drive yet. Browsing works; indexing a book needs access.',
+      revoked: 'Google access expired. Reconnect to index new books — your library is unaffected.',
+      no_refresh_token: 'Google access cannot be renewed. Reconnect to index new books.',
+      unreadable: 'The stored Google credentials are unreadable. Reconnect.',
+      missing_client: a.detail,
+    }[a.reason] || a.detail || 'Google Drive is not available.';
+    $('#connect').hidden = a.reason === 'missing_client';
+  }
+  return a;
+}
+
+$('#connect').addEventListener('click', async () => {
+  // Opened SYNCHRONOUSLY, before any await. A window.open() that runs after an
+  // await has lost its user-gesture context, and popup blockers suppress it
+  // with no error and no console warning -- which is exactly how this button
+  // came to do nothing at all while the server happily issued consent URLs.
+  //
+  // Also deliberately WITHOUT 'noopener': that makes window.open return null by
+  // spec, leaving no handle to point at the URL once we have it. The target is
+  // accounts.google.com, so the opener reference it gains is acceptable.
+  const tab = window.open('', '_blank');
+  connecting = true;
+  $('#connect').disabled = true;
+  try {
+    const d = await fetchJSON('/api/drive/auth/start', {}, 15000);
+    if (tab && !tab.closed) tab.location = d.url;
+
+    // Always offer the link too. If the popup was blocked anyway, or the user
+    // closed the tab, this is the difference between "press it again and hope"
+    // and a thing they can click. Its click IS a fresh gesture, so it always
+    // navigates.
+    $('#amsg').innerHTML =
+      (tab ? 'Approve access in the new tab, then come back — this page checks every few seconds. '
+           : 'Your browser blocked the new tab. ') +
+      `<a href="${esc(d.url)}" target="_blank" rel="noopener">Open the Google sign-in page</a>`;
+
+    // Poll rather than ask the user to refresh: the callback lands in the OTHER
+    // tab, so this one has no other way to learn it succeeded.
+    const started = Date.now();
+    const poll = setInterval(async () => {
+      const a = await refreshAuth();
+      if ((a && a.ok) || Date.now() - started > 300000) {
+        clearInterval(poll);
+        connecting = false;
+        $('#connect').disabled = false;
+        if (a && a.ok) refreshStatus();
+      }
+    }, 3000);
+  } catch (err) {
+    if (tab && !tab.closed) tab.close();
+    connecting = false;
+    $('#connect').disabled = false;
+    $('#amsg').textContent = `Could not start sign-in — ${err.message || err}`;
+  }
+});
+
+$('#sync').addEventListener('click', async () => {
+  $('#sync').disabled = true;
+  await fetch('/api/drive/sync', { method: 'POST' });
+  refreshStatus();
+});
+
+// ------------------------------------------------------------------ tree --
+
+async function children(parent) {
+  const u = parent ? `/api/drive/children?parent=${encodeURIComponent(parent)}`
+                   : '/api/drive/children';
+  // 15s, not 30: this is one indexed SQL lookup. Anything approaching a second
+  // means the mirror is missing its index or the database is gone, and waiting
+  // half a minute to say so helps nobody.
+  return fetchJSON(u, {}, 15000);
+}
+
+function folderRow(f) {
+  return `<li data-id="${esc(f.file_id)}">` +
+    `<div class="row"><span class="tw">▸</span>` +
+    `<span class="nm" title="${esc(f.title)}">${esc(f.title)}</span></div></li>`;
+}
+
+async function buildTree() {
+  const p = progress($('#tree'), { label: 'Loading the library', normal: 4 });
+  try {
+    const d = await children(null);
+    p.stop();
+    $('#tree').innerHTML = d.folders.length
+      ? `<ul>${d.folders.map(folderRow).join('')}</ul>`
+      : '<span class="empty">Nothing mirrored yet — press Sync from Drive above.</span>';
+    open(null, d);
+  } catch (err) {
+    p.stop();
+    failed($('#tree'), `Could not load the library — ${err.message || err}`, buildTree);
+  }
+}
+
+// Lazy: a folder's children are fetched the first time it is expanded. Eagerly
+// building 8,000+ nodes would be one enormous query to render a view where all
+// but a handful of rows are collapsed.
+$('#tree').addEventListener('click', async e => {
+  const row = e.target.closest('.row');
+  if (!row) return;
+  const li = row.parentElement;
+  const id = li.dataset.id;
+  document.querySelectorAll('.tree .row.on').forEach(r => r.classList.remove('on'));
+  row.classList.add('on');
+
+  let sub = li.querySelector('ul');
+  if (sub) {
+    const showing = sub.hidden = !sub.hidden;
+    row.querySelector('.tw').textContent = showing ? '▸' : '▾';
+  } else {
+    const d = await children(id);
+    if (d.folders.length) {
+      li.insertAdjacentHTML('beforeend', `<ul>${d.folders.map(folderRow).join('')}</ul>`);
+      row.querySelector('.tw').textContent = '▾';
+    } else {
+      row.querySelector('.tw').textContent = '·';
+    }
+    open(id, d);
+    return;
+  }
+  open(id);
+});
+
+// ------------------------------------------------------------------ files --
+
+function fileCard(f, i) {
+  const has = f.indexed;
+  const working = has && !TERMINAL.has(f.status) && f.status !== 'done';
+  let right;
+  if (working) {
+    right = `<span class="badge work">${esc(STAGE[f.status] || f.status)}…</span>`;
+  } else if (has && f.status === 'done') {
+    right = `<span class="badge">in your library</span>`;
+  } else if (has) {
+    right = `<span class="badge bad">${esc(f.status)}</span>`;
+  } else {
+    right = `<button class="ix" data-i="${i}">Index</button>`;
+  }
+  const where = f.path ? f.path.split(' / ').slice(0, -1).join(' / ') : '';
+  return `<div class="f${has ? ' have' : ''}">` +
+    `<div class="body"><div class="t" title="${esc(f.title)}">${esc(f.title)}</div>` +
+    `<div class="m">${esc(mb(f.size_mb))}${where ? ' · ' + esc(where) : ''} · ` +
+    `<a href="${esc(f.url)}" target="_blank" rel="noopener">Drive</a></div></div>` +
+    right + `</div>`;
+}
+
+let shown = [];
+
+function render(files, crumb) {
+  shown = files;
+  $('#crumb').innerHTML = crumb === undefined ? $('#crumb').innerHTML
+    : (crumb.length
+        ? '<a href="#" data-id="">All</a> / ' +
+          crumb.map(c => `<a href="#" data-id="${esc(c.file_id)}">${esc(c.name)}</a>`).join(' / ')
+        : 'All');
+  $('#files').innerHTML = files.length
+    ? files.map(fileCard).join('')
+    : '<div class="empty">No PDFs directly in this folder — open a subfolder on the left.</div>';
+
+  // Poll only while something is genuinely mid-pipeline, for the same reason
+  // the index page does: a finished or failed book never changes on its own.
+  clearTimeout(pollTimer);
+  if (files.some(f => f.indexed && f.status !== 'done' && !TERMINAL.has(f.status))) {
+    pollTimer = setTimeout(() => searching ? null : open(current), 3000);
+  }
+}
+
+async function open(id, prefetched) {
+  searching = false;
+  current = id;
+  if (prefetched) return render(prefetched.files, prefetched.breadcrumb || []);
+  const p = progress($('#files'), { label: 'Opening folder', normal: 3 });
+  try {
+    const d = await children(id);
+    p.stop();
+    render(d.files, d.breadcrumb || []);
+  } catch (err) {
+    p.stop();
+    failed($('#files'), `Could not open that folder — ${err.message || err}`,
+           () => open(id));
+  }
+}
+
+$('#crumb').addEventListener('click', e => {
+  const a = e.target.closest('a');
+  if (!a) return;
+  e.preventDefault();
+  open(a.dataset.id || null);
+});
+
+// ---------------------------------------------------------------- search --
+
+// Failures offer the action that resolves them. A dead end with no way forward
+// is what makes a page feel broken rather than merely slow.
+function failed(el, message, retry) {
+  el.innerHTML = `<div class="failnote">${esc(message)}` +
+    (retry ? `<button class="retry">Try again</button>` : '') + `</div>`;
+  if (retry) el.querySelector('.retry').addEventListener('click', retry);
+}
+
+async function runSearch() {
+  const q = $('#sq').value.trim();
+  if (!q) return;
+  searching = true;
+  clearTimeout(pollTimer);
+  $('#crumb').textContent = '';
+  // A title search embeds the query over the network first, so ~1s is normal
+  // and 8s already means something is wrong upstream of us.
+  const p = progress($('#files'), {
+    label: `Searching 57,000 books for “${q}”`,
+    normal: 8,
+    hint: 'Embedding the query — this normally takes about a second.',
+  });
+  try {
+    const d = await fetchJSON(
+      `/api/drive/search?q=${encodeURIComponent(q)}&mode=${mode}`, {}, 30000);
+    p.stop();
+    $('#crumb').innerHTML =
+      `${d.results.length} result(s) for “${esc(q)}” across the whole drive` +
+      ` · ${p.seconds()}s`;
+    shown = d.results;
+    $('#files').innerHTML = d.results.length
+      ? d.results.map(fileCard).join('')
+      : '<div class="empty">Nothing matched. Try fewer or more general words.</div>';
+  } catch (err) {
+    p.stop();
+    failed($('#files'), `Search failed after ${p.seconds()}s — ${err.message || err}`,
+           runSearch);
+  }
+}
+
+$('#sf').addEventListener('submit', e => { e.preventDefault(); runSearch(); });
+$('#modes').addEventListener('click', e => {
+  const b = e.target.closest('button[data-mode]');
+  if (!b) return;
+  mode = b.dataset.mode;
+  document.querySelectorAll('#modes button[data-mode]')
+    .forEach(x => x.classList.toggle('on', x === b));
+  if (searching) runSearch();
+});
+$('#clear').addEventListener('click', () => { $('#sq').value = ''; open(current); });
+
+// ----------------------------------------------------------------- index --
+
+// Same endpoint the browse agent's cards use. The page never writes to the
+// library except through this one explicit action.
+$('#files').addEventListener('click', async e => {
+  const btn = e.target.closest('.ix');
+  if (!btn) return;
+  const f = shown[Number(btn.dataset.i)];
+  btn.disabled = true;
+  btn.textContent = 'queueing…';
+  try {
+    // The route fetches this book's real metadata from Drive before queueing,
+    // so it is a network call, not a local insert.
+    const d = await fetchJSON('/api/library/drive', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ file_ids: [f.file_id] })
+    }, 30000);
+    btn.textContent = d.added.length ? 'queued' : 'already yours';
+    if (!searching) setTimeout(() => open(current), 1200);
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Index';
+    failed($('#crumb'), `Could not queue that book — ${err.message || err}`, null);
+    // Most likely cause by far, and the one with a fix the user can act on.
+    refreshAuth();
+  }
+});
+
+refreshAuth();
+refreshStatus();
+buildTree();
+</script>
+</body>
+</html>

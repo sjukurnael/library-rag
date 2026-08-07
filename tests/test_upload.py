@@ -35,8 +35,10 @@ def client(conn, test_database_url, monkeypatch):
     """
     monkeypatch.setattr(config, "DATABASE_URL", test_database_url)
     monkeypatch.setattr(config, "VOYAGE_API_KEY", "test-key-not-used")
+    # Records the SOURCE each drain was scoped to, not just that one happened --
+    # a drain aimed at the wrong queue is silently a no-op.
     drained = []
-    monkeypatch.setattr(api, "_drain_queue", lambda: drained.append(True))
+    monkeypatch.setattr(api, "_drain_queue", drained.append)
     c = TestClient(api.app)
     c.drained = drained
     return c
@@ -161,7 +163,9 @@ def test_a_valid_pdf_is_accepted_and_processing_is_scheduled(client):
     assert body["title"] == "Doctrine.pdf"
     assert body["status"] == "discovered"
     assert body["already_indexed"] is False
-    assert client.drained == [True], "ingestion was never kicked off"
+    assert client.drained == ["upload"], (
+        "ingestion was never kicked off, or was aimed at the wrong queue"
+    )
 
 
 def test_a_file_that_is_not_a_pdf_is_rejected_by_its_bytes(client):
@@ -229,6 +233,40 @@ def test_a_failed_book_stays_visible_with_its_error(client, conn):
     assert "no chunks" in pending[0]["error"], (
         "a failed upload that disappears tells the user it succeeded"
     )
+
+
+def test_pending_reports_page_count_and_claim_age(client, conn):
+    """The progress line needs both, and neither can come from the client.
+
+    claim_age_s is what separates 'working' from 'abandoned' -- eight books once
+    sat at 'discovered' for three days looking exactly like books mid-download.
+    It is computed in SQL so a skewed browser clock cannot render it negative.
+    """
+    r = _post(client, "slow.pdf", _pdf())
+    conn.execute(
+        "UPDATE books SET status = 'extracted', page_count = 248, "
+        "claimed_at = now() - interval '4 minutes' WHERE id = %s",
+        (r.json()["id"],),
+    )
+    conn.commit()
+
+    row = client.get("/api/books").json()["pending"][0]
+    assert row["pages"] == 248
+    assert 230 <= row["claim_age_s"] <= 250, row["claim_age_s"]
+
+
+def test_a_never_claimed_book_reports_no_claim_age(client, conn):
+    """NULL, not 0. A book nobody has claimed has no elapsed time, and rendering
+    one as '0s' would show a stalled queue as work that just started."""
+    r = _post(client, "queued.pdf", _pdf())
+    conn.execute(
+        "UPDATE books SET claimed_at = NULL WHERE id = %s", (r.json()["id"],)
+    )
+    conn.commit()
+
+    row = client.get("/api/books").json()["pending"][0]
+    assert row["claim_age_s"] is None
+    assert row["pages"] is None, "page_count is unknown until extraction runs"
 
 
 # -------------------------------------------------------------- delete --
