@@ -92,6 +92,7 @@ def sync(conn, service, *, progress=None) -> dict:
     conn.commit()
     counts["paths"] = materialise_paths(conn)
     counts["out_of_scope"] = prune_outside_root(conn)
+    counts["sizes"] = materialise_sizes(conn)
     return counts
 
 
@@ -170,6 +171,48 @@ def materialise_paths(conn) -> int:
             WHERE d.file_id = t.file_id
               AND d.path IS DISTINCT FROM t.path
             """
+        )
+        n = cur.rowcount
+    conn.commit()
+    return n
+
+
+def materialise_sizes(conn) -> int:
+    """Give every folder the summed size of the PDFs beneath it.
+
+    Drive reports no size for folders, so this is derived here, after prune,
+    from the two things the mirror does hold: each file's size_bytes and the
+    parent edges. Stored rather than computed per browse request because the
+    answer only changes when the mirror does -- same reasoning as `path`.
+
+    The recursive CTE pairs each folder with every node in its subtree (the
+    anchor pairs it with itself, so an empty folder still aggregates to 0 --
+    a folder whose size we computed is never NULL, only one never synced is).
+    Descendant folders contribute NULL size_bytes, which SUM ignores; only
+    files count, and the mirror only lists PDFs, so this is "PDFs under here".
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH RECURSIVE anc AS (
+                SELECT f.file_id AS folder_id, f.file_id AS node_id
+                FROM drive_files f
+                WHERE f.mime_type = %s
+              UNION ALL
+                SELECT a.folder_id, d.file_id
+                FROM drive_files d JOIN anc a ON d.parent_id = a.node_id
+            )
+            UPDATE drive_files f
+            SET subtree_bytes = s.total
+            FROM (
+                SELECT anc.folder_id, COALESCE(SUM(d.size_bytes), 0) AS total
+                FROM anc JOIN drive_files d ON d.file_id = anc.node_id
+                GROUP BY anc.folder_id
+            ) s
+            WHERE f.file_id = s.folder_id
+              AND f.subtree_bytes IS DISTINCT FROM s.total
+            """,
+            (FOLDER_MIME,),
         )
         n = cur.rowcount
     conn.commit()

@@ -11,6 +11,10 @@
 
   <aside class="side">
     <div class="brand"><span class="logo"></span>Library</div>
+    <button class="newchat" id="reset" hidden title="Clear this conversation">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      New chat
+    </button>
     <nav class="snav">
       <a href="/" class="on">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -29,6 +33,7 @@
       </button>
       <ul id="navbooks" hidden></ul>
     </div>
+    <div class="sideauth" id="sideauth" hidden></div>
     <div class="sidefoot" id="sidefoot">loading…</div>
   </aside>
 
@@ -173,12 +178,35 @@ const citeify = (text, ti) => md(text, html =>
     : m));
 
 // ---- The conversation ----
+// The conversation is DATA first, pixels second: every turn is stored in
+// sessionStorage as {question, run_id, status, events}, and all rendering is
+// derived by replaying those raw events through applyEvent -- the same
+// function that handles them live. That is what lets a page reload (chat ->
+// Drive -> chat) rebuild everything, and a still-running turn re-attach to
+// its server-side run and continue exactly where the buffer ends.
+// sessionStorage, not localStorage: "persistent over a session" -- a closed
+// tab is a finished conversation; New chat is the explicit reset within one.
+const CHAT_KEY = 'chat-v1';
+const CHAT = (() => {
+  try { return JSON.parse(sessionStorage.getItem(CHAT_KEY)) || { turns: [] }; }
+  catch { return { turns: [] }; }
+})();
+if (!Array.isArray(CHAT.turns)) CHAT.turns = [];
+function save() {
+  try { sessionStorage.setItem(CHAT_KEY, JSON.stringify(CHAT)); } catch { /* quota -- display still works */ }
+}
+
+const LIVE = new Set();  // AbortControllers of attached streams, for New chat
+
 const scrollDown = () => { const m = $('#msgs'); m.scrollTop = m.scrollHeight; };
 
 function addTurn(question) {
   const ti = TURNS.length;
   TURNS.push({});
-  $('#hello')?.remove();
+  const hello = $('#hello');
+  // Hidden, not removed: New chat brings it back, and removing it would
+  // orphan the suggestion-chip listener bound to #ex inside it.
+  if (hello) hello.hidden = true;
   $('#msgs').insertAdjacentHTML('beforeend',
     `<div class="turn" id="turn-${ti}">
        <div class="msg user">${esc(question)}</div>
@@ -189,8 +217,101 @@ function addTurn(question) {
          <div class="answer" id="ans-${ti}"></div>
        </div>
      </div>`);
+  updateReset();
   scrollDown();
   return ti;
+}
+
+function updateReset() {
+  $('#reset').hidden = CHAT.turns.length === 0;
+}
+
+// Per-turn rendering state. steps/searches/rawAnswer used to be closure-locals
+// of the submit handler, which made a turn unrebuildable after navigation --
+// now they live in a context any replay can reconstruct.
+function turnCtx(ti) {
+  return {
+    ti, steps: [], searches: 0, rawAnswer: '',
+    sum: $(`#tsum-${ti}`), trace: $(`#trace-${ti}`), ans: $(`#ans-${ti}`),
+    paint() { this.trace.innerHTML = this.steps.map(s => s.html).join(''); },
+  };
+}
+
+// One event, applied to one turn -- live and replayed events go through the
+// same code, so a restored turn is pixel-identical to the one that streamed.
+function applyEvent(ev, ctx) {
+  if (ev.type === 'thinking') {
+    ctx.steps.push({ html: `<div class="step"><span class="lbl">reasoning</span><span class="think">${esc(ev.text)}</span></div>` });
+  } else if (ev.type === 'search') {
+    if (ev.query) ctx.searches++;
+    ctx.sum.textContent = `Researching… ${ctx.searches} search${ctx.searches === 1 ? '' : 'es'}`;
+    ctx.steps.push({ html: ev.query
+      ? `<div class="step"><span class="lbl">search</span><span class="q">“${esc(ev.query)}”</span>${ev.book_id ? ` <span class="badge">book ${ev.book_id}</span>` : ''}</div>`
+      : `<div class="step"><span class="lbl">tool</span><span class="q">list_books</span></div>` });
+  } else if (ev.type === 'results') {
+    const last = ctx.steps[ctx.steps.length - 1];
+    if (last) last.html += `<div class="hits">${ev.hits.map(h =>
+      `<div class="${h.weak ? 'w' : ''}"><b>[${h.n}]</b> d=${h.distance} · ${esc(h.book).slice(0,40)} ${h.pages}${h.heading ? ' · ' + esc(h.heading).slice(0,54) : ''}</div>`
+    ).join('')}${ev.strong === 0 ? '<div class="w">— no strong matches; agent should rephrase</div>' : ''}</div>`;
+  } else if (ev.type === 'answer') {
+    ctx.rawAnswer = ev.text;
+  } else if (ev.type === 'done') {
+    TURNS[ctx.ti] = Object.fromEntries(ev.sources.map(s => [String(s.n), s]));
+    ctx.ans.innerHTML = citeify(ctx.rawAnswer, ctx.ti);
+    ctx.sum.textContent = `Researched · ${ctx.searches} search${ctx.searches === 1 ? '' : 'es'} · ${ev.sources.length} sources`;
+  } else if (ev.type === 'error') {
+    throw new Error(ev.message);
+  }
+}
+
+function renderFailure(ctx, message) {
+  ctx.sum.textContent = 'Research failed';
+  ctx.ans.innerHTML = `<p class="err">${esc(String(message))}</p>`;
+  scrollDown();
+}
+
+// Tail a run's event stream from wherever this turn's saved copy ends. The
+// server buffers everything, so a dropped or never-opened watcher loses
+// nothing -- `after` skips what was already applied from storage.
+async function attachStream(turn, ctx) {
+  const ctrl = new AbortController();
+  LIVE.add(ctrl);
+  try {
+    const r = await fetch(
+      `/api/research/${encodeURIComponent(turn.run_id)}/events?after=${turn.events.length}`,
+      { signal: ctrl.signal });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+
+    // `terminal: 'done'` is what turns a dropped connection into an error. A
+    // stream that just stops leaves the trail half-drawn and the page silent.
+    await readEventStream(r, ev => {
+      turn.events.push(ev);
+      applyEvent(ev, ctx);
+      save();
+      ctx.paint();
+      scrollDown();
+    }, {
+      terminal: 'done',
+      // Not a timeout -- a hard question legitimately runs for a minute, and
+      // killing one that is merely slow is worse than waiting. This only
+      // changes what the user is told.
+      onStall: secs => {
+        ctx.steps.push({ html: `<div class="step status warn"><span class="lbl">waiting</span>` +
+          `no update for ${secs}s — still connected, but the model may be stuck.</div>` });
+        ctx.paint();
+      },
+    });
+    turn.status = 'done';
+    save();
+  } catch (err) {
+    if (ctrl.signal.aborted) return;  // New chat cut it off deliberately
+    turn.status = 'failed';
+    turn.error = String(err.message || err);
+    save();
+    renderFailure(ctx, turn.error);
+  } finally {
+    LIVE.delete(ctrl);
+  }
 }
 
 $('#ex').addEventListener('click', e => {
@@ -204,69 +325,85 @@ $('#f').addEventListener('submit', async e => {
   $('#q').value = '';
   $('#go').disabled = true;
 
-  const ti = addTurn(question);
-  const steps = [];
-  const trace = $(`#trace-${ti}`), sum = $(`#tsum-${ti}`), ans = $(`#ans-${ti}`);
-  const paintTrace = () => { trace.innerHTML = steps.map(s => s.html).join(''); scrollDown(); };
-  let searches = 0;
-  steps.push({ html: `<div class="step status loading"><span class="lbl">start</span>thinking…</div>` });
-  paintTrace();
+  const turn = { question, run_id: null, status: 'running', events: [], error: null };
+  const ti = CHAT.turns.push(turn) - 1;
+  save();
+  addTurn(question);
+  const ctx = turnCtx(ti);
+  ctx.steps.push({ html: `<div class="step status loading"><span class="lbl">start</span>thinking…</div>` });
+  ctx.paint();
+  scrollDown();
 
   try {
-    const r = await fetch('/api/research', {
+    const d = await fetchJSON('/api/research', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ question })
-    });
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
-    let rawAnswer = '';
-    steps.length = 0;
-
-    // `terminal: 'done'` is what turns a dropped connection into an error. A
-    // stream that just stops leaves the trail half-drawn and the page silent.
-    await readEventStream(r, ev => {
-      if (ev.type === 'thinking') {
-        steps.push({ html: `<div class="step"><span class="lbl">reasoning</span><span class="think">${esc(ev.text)}</span></div>` });
-      } else if (ev.type === 'search') {
-        if (ev.query) searches++;
-        sum.textContent = `Researching… ${searches} search${searches === 1 ? '' : 'es'}`;
-        steps.push({ html: ev.query
-          ? `<div class="step"><span class="lbl">search</span><span class="q">“${esc(ev.query)}”</span>${ev.book_id ? ` <span class="badge">book ${ev.book_id}</span>` : ''}</div>`
-          : `<div class="step"><span class="lbl">tool</span><span class="q">list_books</span></div>` });
-      } else if (ev.type === 'results') {
-        const last = steps[steps.length - 1];
-        last.html += `<div class="hits">${ev.hits.map(h =>
-          `<div class="${h.weak ? 'w' : ''}"><b>[${h.n}]</b> d=${h.distance} · ${esc(h.book).slice(0,40)} ${h.pages}${h.heading ? ' · ' + esc(h.heading).slice(0,54) : ''}</div>`
-        ).join('')}${ev.strong === 0 ? '<div class="w">— no strong matches; agent should rephrase</div>' : ''}</div>`;
-      } else if (ev.type === 'answer') {
-        rawAnswer = ev.text;
-      } else if (ev.type === 'done') {
-        TURNS[ti] = Object.fromEntries(ev.sources.map(s => [String(s.n), s]));
-        ans.innerHTML = citeify(rawAnswer, ti);
-        sum.textContent = `Researched · ${searches} search${searches === 1 ? '' : 'es'} · ${ev.sources.length} sources`;
-      } else if (ev.type === 'error') {
-        throw new Error(ev.message);
-      }
-      paintTrace();
-    }, {
-      terminal: 'done',
-      // Not a timeout -- a hard question legitimately runs for a minute, and
-      // killing one that is merely slow is worse than waiting. This only
-      // changes what the user is told.
-      onStall: secs => {
-        steps.push({ html: `<div class="step status warn"><span class="lbl">waiting</span>` +
-          `no update for ${secs}s — still connected, but the model may be stuck.</div>` });
-        paintTrace();
-      },
-    });
+    }, 20000);
+    turn.run_id = d.run_id;
+    save();
+    ctx.steps.length = 0;  // replace the "thinking…" placeholder with the real trace
+    await attachStream(turn, ctx);
   } catch (err) {
-    sum.textContent = 'Research failed';
-    ans.innerHTML = `<p class="err">${esc(String(err.message || err))}</p>`;
-    scrollDown();
+    // attachStream reports its own failures; reaching here means the START
+    // failed -- the run never existed, so record and show that.
+    if (turn.status === 'running') {
+      turn.status = 'failed';
+      turn.error = String(err.message || err);
+      save();
+      renderFailure(ctx, turn.error);
+    }
   } finally {
     $('#go').disabled = false;
     $('#q').focus();
   }
 });
+
+$('#reset').addEventListener('click', () => {
+  for (const c of LIVE) c.abort();  // stop watching; orphaned runs just finish server-side
+  LIVE.clear();
+  try { sessionStorage.removeItem(CHAT_KEY); } catch { /* nothing to clear */ }
+  CHAT.turns = [];
+  TURNS.length = 0;
+  document.querySelectorAll('#msgs .turn').forEach(t => t.remove());
+  const hello = $('#hello');
+  if (hello) hello.hidden = false;
+  hidePanel();
+  $('#go').disabled = false;
+  updateReset();
+  $('#q').focus();
+});
+
+// ---- Restore on load ----
+// Rebuild every stored turn by replaying its events, then re-attach to any
+// run that was still going when the page was left. A stored error event
+// throws out of applyEvent exactly like it does live, so failed turns render
+// their real message rather than a generic one.
+for (let ti = 0; ti < CHAT.turns.length; ti++) {
+  const turn = CHAT.turns[ti];
+  addTurn(turn.question);
+  const ctx = turnCtx(ti);
+  let shownFailure = false;
+  for (const ev of turn.events) {
+    try { applyEvent(ev, ctx); }
+    catch (err) { renderFailure(ctx, String(err.message || err)); shownFailure = true; }
+  }
+  ctx.paint();
+  if (turn.status === 'failed' && !shownFailure) {
+    renderFailure(ctx, turn.error || 'Research failed');
+  } else if (turn.status === 'running') {
+    if (turn.run_id) {
+      $('#go').disabled = true;
+      attachStream(turn, ctx).finally(() => { $('#go').disabled = false; $('#q').focus(); });
+    } else {
+      turn.status = 'failed';
+      turn.error = 'Interrupted before the run started — ask again.';
+      save();
+      renderFailure(ctx, turn.error);
+    }
+  }
+}
+updateReset();
+scrollDown();
 
 refreshBooks();
 </script>

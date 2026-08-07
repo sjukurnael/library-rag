@@ -50,6 +50,14 @@ MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "64")) * 1024 * 1024
 # chooses freely.
 PDF_MAGIC = b"%PDF-"
 
+# ---- Folder indexing ----
+# The ceiling for "index this whole folder": a folder whose PDFs sum past this
+# cannot be bulk-queued, and the button says so. One misclick on the root would
+# otherwise put the entire drive (~143 GB, days of OCR and embedding spend)
+# into flight. 500 MB is a real subfolder -- roughly 50-150 books -- while
+# staying an order of magnitude short of the topic folders.
+FOLDER_INDEX_LIMIT_BYTES = int(os.environ.get("FOLDER_INDEX_LIMIT_MB", "500")) * 1024 * 1024
+
 # ---- Supabase Storage (optional) ----
 # When both are set, every successfully downloaded original is mirrored to the
 # bucket and the PDF viewer serves signed URLs from it; when either is empty,

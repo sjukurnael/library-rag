@@ -379,6 +379,163 @@ def test_a_drive_auth_failure_reports_how_to_fix_it(web, monkeypatch):
     assert "delete token.json" in r.json()["detail"]
 
 
+# --------------------------------------- POST /api/drive/folders/…/index --
+
+MB = 1024 * 1024
+PDF_MIME = "application/pdf"
+
+
+def _mirror_tree(conn):
+    """lib/ holds One.pdf and sub/, which holds Two.pdf and Three.pdf --
+    10 MB of PDFs across two levels, with subtree_bytes as a sync leaves it."""
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO drive_files (file_id, name, mime_type, parent_id,"
+            " size_bytes, md5, subtree_bytes) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            [
+                ("lib", "Library", db.FOLDER_MIME, None, None, None, 10 * MB),
+                ("sub", "Sub", db.FOLDER_MIME, "lib", None, None, 8 * MB),
+                ("f1", "One.pdf", PDF_MIME, "lib", 2 * MB, "md5-f1", None),
+                ("f2", "Two.pdf", PDF_MIME, "sub", 3 * MB, "md5-f2", None),
+                ("f3", "Three.pdf", PDF_MIME, "sub", 5 * MB, "md5-f3", None),
+            ],
+        )
+    conn.commit()
+
+
+def test_indexing_a_folder_queues_its_whole_subtree(web, conn):
+    _mirror_tree(conn)
+
+    r = web.post("/api/drive/folders/lib/index")
+
+    assert r.status_code == 200
+    assert r.json() == {"folder": "Library", "queued": 3, "already_indexed": 0}
+    book = db.fetch_book_by_source_id(conn, "f3")
+    assert book["status"] == "discovered"
+    assert book["md5"] == "md5-f3", "metadata must come from the mirror row"
+    assert web.drained == ["drive"]
+
+
+def test_folder_indexing_leaves_held_books_alone(web, conn):
+    _mirror_tree(conn)
+    db.upsert_book(conn, "f2", "Two.pdf", "md5-f2", 3 * MB, source="drive")
+    conn.execute("UPDATE books SET status = 'done' WHERE source_id = 'f2'")
+    conn.commit()
+
+    r = web.post("/api/drive/folders/lib/index")
+
+    assert r.json()["queued"] == 2
+    assert r.json()["already_indexed"] == 1
+    assert db.fetch_book_by_source_id(conn, "f2")["status"] == "done", (
+        "bulk-queueing must never reset a book that is done or mid-flight"
+    )
+
+
+def test_an_oversized_folder_is_refused_and_nothing_is_queued(web, conn, monkeypatch):
+    """The frontend disables the button, but THIS is the guard: one request
+    naming the root would otherwise put the whole drive into flight."""
+    _mirror_tree(conn)
+    monkeypatch.setattr(config, "FOLDER_INDEX_LIMIT_BYTES", 9 * MB)
+
+    r = web.post("/api/drive/folders/lib/index")
+
+    assert r.status_code == 413
+    assert "bulk-index limit" in r.json()["detail"]
+    assert conn.execute("SELECT count(*) FROM books").fetchone()[0] == 0
+    assert web.drained == []
+
+
+def test_a_subfolder_under_the_limit_still_qualifies(web, conn, monkeypatch):
+    _mirror_tree(conn)
+    monkeypatch.setattr(config, "FOLDER_INDEX_LIMIT_BYTES", 9 * MB)
+
+    r = web.post("/api/drive/folders/sub/index")
+
+    assert r.status_code == 200
+    assert r.json()["queued"] == 2
+
+
+def test_folder_indexing_refuses_files_and_unknown_ids(web, conn):
+    _mirror_tree(conn)
+    assert web.post("/api/drive/folders/f1/index").status_code == 400
+    assert web.post("/api/drive/folders/nope/index").status_code == 404
+    assert web.drained == []
+
+
+def test_folder_indexing_is_idempotent(web, conn):
+    _mirror_tree(conn)
+    web.post("/api/drive/folders/lib/index")
+
+    r = web.post("/api/drive/folders/lib/index")
+
+    assert r.json() == {"folder": "Library", "queued": 0, "already_indexed": 3}
+    assert web.drained == ["drive"], (
+        "the second click queued nothing, so it must not start a second drain"
+    )
+
+
+def test_children_payload_carries_the_limit_and_the_current_folder(web, conn):
+    """What the page's gate runs on: the ceiling, and the viewed folder's own
+    size for the breadcrumb's index-all button."""
+    _mirror_tree(conn)
+
+    d = web.get("/api/drive/children", params={"parent": "sub"}).json()
+
+    assert d["folder_limit_mb"] == config.FOLDER_INDEX_LIMIT_BYTES // MB
+    assert d["folder"]["file_id"] == "sub"
+    assert d["folder"]["size_mb"] == 8.0
+
+
+# ------------------------------------------- POST /api/drive/files/index --
+
+def test_indexing_a_list_of_results_queues_the_new_ones(web, conn):
+    """The "index all results" of a search: held books are skipped, folders
+    and unknown ids are ignored, everything else queues from mirror metadata."""
+    _mirror_tree(conn)
+    db.upsert_book(conn, "f1", "One.pdf", "md5-f1", 2 * MB, source="drive")
+    conn.commit()
+
+    r = web.post("/api/drive/files/index",
+                 json={"file_ids": ["f1", "f2", "f3", "sub", "nope"]})
+
+    assert r.status_code == 200
+    assert r.json() == {"queued": 2, "already_indexed": 1}
+    assert db.fetch_book_by_source_id(conn, "f2")["status"] == "discovered"
+    assert web.drained == ["drive"]
+
+
+def test_result_indexing_gates_on_the_unindexed_bytes_only(web, conn, monkeypatch):
+    """40 results where 39 are already yours is a small job, not a big one --
+    the ceiling applies to what would actually be queued."""
+    _mirror_tree(conn)
+    monkeypatch.setattr(config, "FOLDER_INDEX_LIMIT_BYTES", 6 * MB)
+    db.upsert_book(conn, "f3", "Three.pdf", "md5-f3", 5 * MB, source="drive")
+    conn.commit()
+
+    # f1 + f2 pending = 5 MB, under the 6 MB limit even though all three = 10.
+    r = web.post("/api/drive/files/index", json={"file_ids": ["f1", "f2", "f3"]})
+    assert r.status_code == 200
+    assert r.json()["queued"] == 2
+
+
+def test_oversized_result_lists_are_refused_with_nothing_queued(web, conn, monkeypatch):
+    _mirror_tree(conn)
+    monkeypatch.setattr(config, "FOLDER_INDEX_LIMIT_BYTES", 4 * MB)
+
+    r = web.post("/api/drive/files/index", json={"file_ids": ["f1", "f2", "f3"]})
+
+    assert r.status_code == 413
+    assert "bulk-index limit" in r.json()["detail"]
+    assert conn.execute("SELECT count(*) FROM books").fetchone()[0] == 0
+    assert web.drained == []
+
+
+def test_result_indexing_bounds_the_id_list(web):
+    r = web.post("/api/drive/files/index",
+                 json={"file_ids": [f"f{i}" for i in range(101)]})
+    assert r.status_code == 422
+
+
 # ------------------------------------------------------------ drive auth --
 
 def test_auth_status_never_starts_a_consent_flow(web, monkeypatch, tmp_path):

@@ -275,3 +275,109 @@ def test_missing_api_key_is_reported_only_when_building_a_real_client(monkeypatc
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
         list(research.run("q", FakeConn(), object()))
+
+
+# ------------------------------------------- detached runs over HTTP --
+# The chat page can navigate away mid-run and come back: POST only starts a
+# run, events buffer server-side in api._research_runs, and the events route
+# replays from any offset. These tests fake research.run itself -- the loop's
+# behaviour is the rest of this file's business.
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from library_rag.web import api  # noqa: E402
+
+EVENTS = [
+    {"type": "search", "tool": "search_library", "query": "q1", "book_id": None, "k": 8},
+    {"type": "answer", "text": "It is written [1]."},
+    {"type": "done", "sources": [], "searches": 1, "iterations": 1},
+]
+
+
+@pytest.fixture
+def chat(monkeypatch):
+    monkeypatch.setattr(api.config, "VOYAGE_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(api.embed_mod, "build_client", lambda: object())
+
+    class NoDb:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(api.db, "get_conn", lambda: NoDb())
+    monkeypatch.setattr(api.research, "run", lambda q, conn, voyage: iter(EVENTS))
+    api._research_runs.clear()
+    return TestClient(api.app)
+
+
+def _frames(text):
+    return [json.loads(p[len("data: "):]) for p in text.split("\n\n") if p.startswith("data: ")]
+
+
+def test_a_run_survives_its_starter_and_replays_in_full(chat):
+    """TestClient executes background tasks before returning, so by the time
+    POST answers, the whole run is buffered -- exactly the state a returning
+    page finds after navigating away for the run's duration."""
+    run_id = chat.post("/api/research", json={"question": "q"}).json()["run_id"]
+
+    r = chat.get(f"/api/research/{run_id}/events")
+    assert r.status_code == 200
+    assert _frames(r.text) == EVENTS
+    # And again: attaching consumes nothing, so a second visitor gets it all.
+    assert _frames(chat.get(f"/api/research/{run_id}/events").text) == EVENTS
+
+
+def test_after_skips_what_the_page_already_rendered(chat):
+    run_id = chat.post("/api/research", json={"question": "q"}).json()["run_id"]
+    assert _frames(chat.get(f"/api/research/{run_id}/events?after=2").text) == EVENTS[2:]
+
+
+def test_an_unknown_run_is_a_helpful_404(chat):
+    r = chat.get("/api/research/deadbeef/events")
+    assert r.status_code == 404
+    assert "restarted" in r.json()["detail"]
+
+
+def test_a_crashing_run_ends_as_an_error_event_not_a_wedge(chat, monkeypatch):
+    def boom(q, conn, voyage):
+        raise RuntimeError("model fell over")
+        yield  # unreachable -- its presence makes this a generator
+
+    monkeypatch.setattr(api.research, "run", boom)
+    run_id = chat.post("/api/research", json={"question": "q"}).json()["run_id"]
+
+    frames = _frames(chat.get(f"/api/research/{run_id}/events").text)
+    assert frames[-1]["type"] == "error"
+    assert "model fell over" in frames[-1]["message"]
+    assert api._research_runs[run_id]["done"] is True
+
+
+def test_the_stream_tails_a_live_run_lazily():
+    """No threads needed: the frame generator polls the record on demand, so
+    mutating the record between next() calls is exactly a run that progressed
+    while the watcher was mid-read."""
+    record = {"events": [EVENTS[0]], "done": False}
+    gen = api._research_event_frames(record, 0)
+
+    assert json.loads(next(gen)[len("data: "):-2]) == EVENTS[0]
+    record["events"].append(EVENTS[2])
+    record["done"] = True
+    assert json.loads(next(gen)[len("data: "):-2]) == EVENTS[2]
+    with pytest.raises(StopIteration):
+        next(gen)
+
+
+def test_finished_runs_are_pruned_but_live_ones_never_are(chat):
+    for i in range(api._RESEARCH_KEEP + 5):
+        chat.post("/api/research", json={"question": f"q{i}"})
+    assert len(api._research_runs) <= api._RESEARCH_KEEP
+
+    # A registry full of still-running runs must not evict any of them.
+    api._research_runs.clear()
+    for i in range(api._RESEARCH_KEEP):
+        api._research_runs[f"live{i}"] = {"question": "q", "events": [], "done": False}
+    chat.post("/api/research", json={"question": "one more"})
+    assert all(k in api._research_runs for k in [f"live{i}" for i in range(api._RESEARCH_KEEP)])

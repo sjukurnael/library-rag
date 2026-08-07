@@ -29,6 +29,7 @@
       </button>
       <ul id="navbooks" hidden></ul>
     </div>
+    <div class="sideauth" id="sideauth" hidden></div>
     <div class="sidefoot" id="sidefoot">loading…</div>
   </aside>
 
@@ -55,14 +56,7 @@
           <input type="text" id="sq" autocomplete="off"
                  placeholder="Search 57,000 books by meaning — “the end times”, “how to pray”, “Paul in prison”…">
         </form>
-      </div>
-
-      <div class="filters" id="modes">
-        <button class="chip on" data-mode="hybrid">Hybrid</button>
-        <button class="chip" data-mode="dense">Meaning</button>
-        <button class="chip" data-mode="lexical">Words</button>
         <button class="chip" id="librarianbtn">✦ Ask the librarian</button>
-        <span class="spacer"></span>
         <button class="chip" id="clear">Clear search</button>
       </div>
 
@@ -96,7 +90,6 @@
 
 <script src="/static/app.js"></script>
 <script>
-let mode = 'hybrid';
 let current = null;          // folder id being viewed, null = roots
 let searching = false;
 let pollTimer = null;
@@ -295,22 +288,40 @@ function fileRow(f, i) {
     `<div class="fact">${statusCell(f, i)}</div></div>`;
 }
 
+// "Index folder" queues the folder's whole subtree, so it is gated by size:
+// over the server's limit the button stays visible but dead, with the reason
+// on hover -- a hidden button would make the feature look arbitrary on the
+// folders where it does exist. The server enforces the same limit (413).
+function dirBtn(f, label) {
+  if (LIMIT_MB != null && f.size_mb != null && f.size_mb > LIMIT_MB)
+    return `<button class="btn ixdir" disabled title="${esc(mb(f.size_mb))} of PDFs — ` +
+      `over the ${LIMIT_MB} MB bulk-index limit">${esc(label)}</button>`;
+  return `<button class="btn ixdir" data-dir="${esc(f.file_id)}" ` +
+    `title="Queue every PDF in this folder for indexing">${esc(label)}</button>`;
+}
+
 function dirRow(f) {
   return `<div class="frow isfolder" data-open="${esc(f.file_id)}">` +
     `<div class="fname">${FOLDER_ICON}<span class="t" title="${esc(f.title)}">${esc(f.title)}</span></div>` +
-    `<div class="fwhere"></div><div class="fsize">—</div><div class="fact"></div></div>`;
+    `<div class="fwhere"></div><div class="fsize">${esc(mb(f.size_mb))}</div>` +
+    `<div class="fact">${dirBtn(f, 'Index folder')}</div></div>`;
 }
 
 let shown = [];
+let LIMIT_MB = null;   // the bulk-index ceiling, told to us by the children API
 
 function render(d, crumb) {
   shown = d.files;
+  if (d.folder_limit_mb != null) LIMIT_MB = d.folder_limit_mb;
   $('#crumb').innerHTML = crumb === undefined ? $('#crumb').innerHTML
     : (crumb.length
         ? '<a href="#" data-id="">All</a>' +
           crumb.slice(0, -1).map(c =>
             `<span class="sep">›</span><a href="#" data-id="${esc(c.file_id)}">${esc(c.name)}</a>`).join('') +
-          `<span class="sep">›</span><span class="here">${esc(crumb[crumb.length - 1].name)}</span>`
+          `<span class="sep">›</span><span class="here">${esc(crumb[crumb.length - 1].name)}</span>` +
+          // The folder being LOOKED AT has no row of its own, so its
+          // index-everything button lives on the trail instead.
+          (d.folder ? dirBtn(d.folder, 'Index all here') : '')
         : '<span class="here">All folders</span>');
   const folders = d.folders || [];
   const head = (folders.length || d.files.length)
@@ -354,10 +365,65 @@ $('#crumb').addEventListener('click', e => {
   open(a.dataset.id || null);
 });
 
-// Folder rows in the main pane open like Drive's do.
+// Folder rows in the main pane open like Drive's do -- unless the click was
+// the row's own Index-folder button, which queues rather than navigates.
 $('#files').addEventListener('click', e => {
+  if (e.target.closest('.ixdir')) return;
   const dir = e.target.closest('.frow.isfolder');
   if (dir) open(dir.dataset.open);
+});
+
+// ----------------------------------------------------------- index folder --
+
+// One handler, two homes: folder rows live in #files, the current folder's
+// "Index all here" lives on the breadcrumb.
+async function queueFolder(btn) {
+  btn.disabled = true;
+  btn.textContent = 'Queueing…';
+  try {
+    const d = await fetchJSON(`/api/drive/folders/${encodeURIComponent(btn.dataset.dir)}/index`,
+                              { method: 'POST' }, 30000);
+    btn.textContent = d.queued ? `Queued ${d.queued}` : 'Already yours';
+    refreshBooks();
+    // Give the "Queued N" a moment to be read, then re-render so any of the
+    // queued files visible in this view pick up their working badges.
+    if (d.queued && !searching) setTimeout(() => open(current), 2500);
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Index folder';
+    failed($('#crumb'), `Could not queue that folder — ${err.message || err}`, null);
+  }
+}
+
+for (const host of [$('#files'), $('#crumb')]) {
+  host.addEventListener('click', e => {
+    const btn = e.target.closest('.ixdir');
+    if (btn && !btn.disabled && btn.dataset.dir) queueFolder(btn);
+  });
+}
+
+// "Index all" on a search's result header: every result not yet in the
+// library, one request, same byte ceiling as folders.
+$('#crumb').addEventListener('click', async e => {
+  const btn = e.target.closest('.ixall');
+  if (!btn || btn.disabled) return;
+  const ids = shown.filter(f => !f.indexed).map(f => f.file_id);
+  if (!ids.length) return;
+  btn.disabled = true;
+  btn.textContent = 'Queueing…';
+  try {
+    const d = await fetchJSON('/api/drive/files/index', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ file_ids: ids })
+    }, 30000);
+    btn.textContent = d.queued ? `Queued ${d.queued}` : 'Already yours';
+    refreshBooks();
+    if (d.queued) setTimeout(runSearch, 2500);
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Index all';
+    failed($('#files'), `Could not queue those results — ${err.message || err}`, runSearch);
+  }
 });
 
 // ---------------------------------------------------------------- search --
@@ -385,11 +451,25 @@ async function runSearch() {
   });
   try {
     const d = await fetchJSON(
-      `/api/drive/search?q=${encodeURIComponent(q)}&mode=${mode}`, {}, 30000);
+      `/api/drive/search?q=${encodeURIComponent(q)}`, {}, 30000);
     p.stop();
+    // What the whole result set weighs, and the one-click way to take it all.
+    // The button covers only the un-indexed remainder, same byte ceiling as
+    // folders -- the server re-checks, this just saves the failed round trip.
+    const newOnes = d.results.filter(f => !f.indexed);
+    const newMb = Math.round(newOnes.reduce((a, f) => a + (f.size_mb || 0), 0) * 10) / 10;
+    const totalMb = Math.round(d.results.reduce((a, f) => a + (f.size_mb || 0), 0) * 10) / 10;
+    let ixall = '';
+    if (newOnes.length && LIMIT_MB != null && newMb > LIMIT_MB) {
+      ixall = `<button class="btn ixall" disabled title="${esc(mb(newMb))} of unindexed PDFs — ` +
+        `over the ${LIMIT_MB} MB bulk-index limit">Index all</button>`;
+    } else if (newOnes.length) {
+      ixall = `<button class="btn ixall" title="Queue the ${newOnes.length} result(s) not yet in your library">` +
+        `Index all (${newOnes.length})</button>`;
+    }
     $('#crumb').innerHTML =
       `<span class="here">${d.results.length} result(s) for “${esc(q)}”</span>` +
-      `<span class="sep">·</span> across the whole drive · ${p.seconds()}s`;
+      `<span class="sep">·</span> ${esc(mb(totalMb))} total · across the whole drive · ${p.seconds()}s ${ixall}`;
     shown = d.results;
     $('#files').innerHTML = d.results.length
       ? `<div class="fhead"><div>Name</div><div class="fwhere">Location</div><div>Size</div><div></div></div>` +
@@ -403,14 +483,6 @@ async function runSearch() {
 }
 
 $('#sf').addEventListener('submit', e => { e.preventDefault(); runSearch(); });
-$('#modes').addEventListener('click', e => {
-  const b = e.target.closest('button[data-mode]');
-  if (!b) return;
-  mode = b.dataset.mode;
-  document.querySelectorAll('#modes button[data-mode]')
-    .forEach(x => x.classList.toggle('on', x === b));
-  if (searching) runSearch();
-});
 $('#clear').addEventListener('click', () => { $('#sq').value = ''; open(current); });
 
 // ----------------------------------------------------------------- index --

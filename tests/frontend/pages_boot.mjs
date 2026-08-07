@@ -63,11 +63,14 @@ for (const page of ['index.html', 'library.html', 'queue.html']) {
   let bootError = null;
   try {
     const fn = new Function(
-      'document', 'window', 'fetch', 'location', 'confirm', 'console',
+      'document', 'window', 'fetch', 'location', 'confirm', 'console', 'sessionStorage',
       `${shared}\n;{\n${inline}\n}`);
     fn(makeDom(), { open: () => null, location: {} },
        async () => ({ ok: true, json: async () => ({ books: [], pending: [], total_chunks: 0 }) }),
-       { href: '' }, () => true, console);
+       { href: '' }, () => true, console,
+       // Empty-session semantics: the chat page reads its saved conversation at
+       // boot, and "nothing saved" must boot cleanly.
+       { getItem: () => null, setItem: () => {}, removeItem: () => {} });
   } catch (e) {
     bootError = `${e.name}: ${e.message}`;
   }

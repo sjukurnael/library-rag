@@ -58,11 +58,17 @@ class Session:
         k = max(1, min(int(k or DEFAULT_K), MAX_K))
 
         vec = embed_mod.embed_query(query, self.voyage)
-        # query_text as well as the vector: retrieval is hybrid (dense + full
-        # text, fused by RRF -- see config.RRF_K). The agent reformulates into
-        # the corpus's own vocabulary, which is exactly when the lexical leg
-        # earns its keep, and it quotes proper names and references that a
-        # 1024-dim embedding barely encodes.
+        # query_text is passed as well as the vector even though the shipping
+        # mode over chunks is DENSE (config.SEARCH_MODE), not hybrid. Two
+        # reasons, and neither is that the lexical leg is running:
+        #   - db.search picks its mode from config, so passing the text is what
+        #     makes flipping SEARCH_MODE to "hybrid" a one-line change rather
+        #     than a change to every caller.
+        #   - --compare in cli/evaluate.py scores modes side by side against
+        #     these same call sites.
+        # Hybrid IS the default over drive_files (title search), where it was
+        # re-measured and does win. See config.SEARCH_MODE for the chunk
+        # measurement and config.DRIVE_RRF_LEXICAL_WEIGHT for the title one.
         rows = db.search(self.conn, vec, k, book_id, query_text=query)
 
         hits = []

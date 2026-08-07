@@ -192,6 +192,46 @@ def test_a_row_whose_parent_is_outside_the_mirror_is_treated_as_a_root(conn):
         "SELECT path FROM drive_files WHERE file_id='root'").fetchone()[0] == "Exclusive"
 
 
+# ---------------------------------------------------------------- sizes --
+
+def _bytes(size_mb):
+    """The same arithmetic _p uses to fake Drive's size field."""
+    return int(size_mb * 1024 * 1024)
+
+
+def test_folder_sizes_roll_up_the_whole_subtree(synced):
+    sizes = dict(synced.execute(
+        "SELECT file_id, subtree_bytes FROM drive_files WHERE mime_type = %s",
+        (FOLDER,)).fetchall())
+    assert sizes["rom"] == _bytes(3.0)
+    assert sizes["comm"] == _bytes(3.0), "a folder of folders sums the files beneath them"
+    assert sizes["books"] == _bytes(3.0) + _bytes(7.1) + _bytes(7.7)
+    assert sizes["root"] == sizes["books"]
+
+
+def test_an_empty_folder_is_zero_not_null(conn):
+    """NULL would render as 'size unknown'; an empty folder's size is known."""
+    mirror.sync(conn, FakeService(TREE + [_f("empty", "Drafts", "books")]))
+    assert conn.execute(
+        "SELECT subtree_bytes FROM drive_files WHERE file_id = 'empty'"
+    ).fetchone()[0] == 0
+
+
+def test_sizes_follow_a_resync(synced):
+    """A deleted file must leave its ancestors' totals, not haunt them."""
+    mirror.sync(synced, FakeService([i for i in TREE if i["id"] != "pdf3"]))
+    assert synced.execute(
+        "SELECT subtree_bytes FROM drive_files WHERE file_id = 'books'"
+    ).fetchone()[0] == _bytes(3.0) + _bytes(7.1)
+
+
+def test_children_gives_folders_a_size(synced):
+    """The browse payload's size_mb works for folders too -- that is what the
+    Size column renders."""
+    d = db.drive_children(synced, "books")
+    assert d["folders"][0]["size_mb"] == 3.0
+
+
 # -------------------------------------------------------------- embedding --
 
 def test_embed_titles_only_touches_rows_without_one(synced):

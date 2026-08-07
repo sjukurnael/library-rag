@@ -22,6 +22,7 @@ import json
 import os
 import secrets
 import tempfile
+import time
 from html import escape
 from pathlib import Path
 
@@ -103,7 +104,13 @@ def static_file(name: str):
     that reaches the filesystem is the wrong thing to be casual about."""
     if name not in {"app.css", "app.js"}:
         raise HTTPException(404, "No such asset.")
-    return FileResponse(_STATIC / name)
+    # no-cache means "revalidate every time", not "never cache": the browser
+    # still keeps the bytes and the ETag makes revalidation a cheap 304. Without
+    # it, browsers heuristically cache these and users keep running old JS for
+    # hours after a deploy.
+    return FileResponse(
+        _STATIC / name, headers={"Cache-Control": "no-cache"}
+    )
 
 
 @app.get("/api/books")
@@ -316,28 +323,95 @@ def delete_book(book_id: int):
     }
 
 
+# A research run is detached from the HTTP connection that started it. The old
+# shape -- POST holds one SSE stream open for the whole run -- meant navigating
+# to another page killed the agent mid-thought, because closing the response
+# closed the generator. Now POST only starts the run; events accumulate in this
+# registry whether or not anyone is watching, and the events route below can be
+# attached, dropped and re-attached freely. In memory, like _sync_state and
+# _auth_flows: a restart loses in-flight runs, which is correct for a
+# single-user local app (and the page tells the user so via the 404).
+_research_runs: dict[str, dict] = {}
+_RESEARCH_KEEP = 20  # finished runs kept for late re-attach, oldest pruned
+
+
+def _run_research(run_id: str, question: str) -> None:
+    """The agent loop, feeding the registry instead of a response. Runs on the
+    BackgroundTasks threadpool; list.append is atomic under the GIL, so the
+    streaming reader needs no lock to tail it."""
+    record = _research_runs[run_id]
+    try:
+        voyage = embed_mod.build_client()
+        with db.get_conn() as conn:
+            for event in research.run(question, conn, voyage):
+                record["events"].append(event)
+    except Exception as e:  # noqa: BLE001 -- a background task has nowhere to raise
+        record["events"].append({"type": "error", "message": str(e)})
+    finally:
+        record["done"] = True
+
+
+def _research_event_frames(record: dict, after: int):
+    """SSE frames for one run, starting at event index `after`.
+
+    Tail-follows the record: drain what is buffered, then poll until the run
+    is done AND drained -- both, because `done` can flip while events are still
+    unread. The 0.25s poll is imperceptible next to a loop that thinks in
+    tens of seconds, and costs nothing while blocked in sleep.
+    """
+    i = max(0, after)
+    while True:
+        events = record["events"]
+        while i < len(events):
+            yield f"data: {json.dumps(events[i])}\n\n"
+            i += 1
+        if record["done"] and i >= len(record["events"]):
+            return
+        time.sleep(0.25)
+
+
 @app.post("/api/research")
-def research_stream(req: AskRequest):
-    """Server-sent events rather than one JSON blob: the loop takes tens of
-    seconds, and the trace -- which queries it chose, what each returned -- is
-    what makes the page a diagnostic instead of a demo. Waiting in silence would
-    hide exactly what is worth watching."""
+def research_start(req: AskRequest, background: BackgroundTasks):
+    """Start a research run and return its id -- the events route streams it.
+
+    Split from the stream so the run survives the client: the chat page can
+    navigate away mid-run and re-attach to the same run_id when it returns.
+    """
     if not config.VOYAGE_API_KEY:
         raise HTTPException(500, "VOYAGE_API_KEY is not set")
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(500, "ANTHROPIC_API_KEY is not set")
 
-    def stream():
-        try:
-            voyage = embed_mod.build_client()
-            with db.get_conn() as conn:
-                for event in research.run(req.question, conn, voyage):
-                    yield f"data: {json.dumps(event)}\n\n"
-        except Exception as e:  # noqa: BLE001 -- surface it in the stream, not a 500
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    # Prune finished runs first; an in-flight run is never evicted, because
+    # its worker would keep appending to a record nobody can reach.
+    while len(_research_runs) >= _RESEARCH_KEEP:
+        stale = next((k for k, r in _research_runs.items() if r["done"]), None)
+        if stale is None:
+            break
+        del _research_runs[stale]
 
+    run_id = secrets.token_hex(16)
+    _research_runs[run_id] = {"question": req.question, "events": [], "done": False}
+    background.add_task(_run_research, run_id, req.question)
+    return {"run_id": run_id}
+
+
+@app.get("/api/research/{run_id}/events")
+def research_events(run_id: str, after: int = 0):
+    """Server-sent events for one run, resumable via `after`.
+
+    SSE rather than one JSON blob for the same reason as ever: the loop takes
+    tens of seconds and the trace is what makes the page a diagnostic instead
+    of a demo. `after` is how a returning page skips what it already rendered
+    from its saved copy and picks up live at the first unseen event.
+    """
+    record = _research_runs.get(run_id)
+    if record is None:
+        raise HTTPException(
+            404, "That run is gone — the server may have restarted. Ask again."
+        )
     return StreamingResponse(
-        stream(),
+        _research_event_frames(record, after),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -433,7 +507,85 @@ def drive_children(parent: str | None = None):
     with db.get_conn() as conn:
         result = db.drive_children(conn, parent)
         result["breadcrumb"] = db.drive_breadcrumb(conn, parent) if parent else []
+        # The current folder itself, so the header's "index all here" button
+        # can exist when you are inside a folder and no row for it is visible.
+        result["folder"] = db.drive_file(conn, parent) if parent else None
+    # Where the bulk-index line is, so the page can disable oversized folders'
+    # buttons up front instead of letting them discover the 413.
+    result["folder_limit_mb"] = config.FOLDER_INDEX_LIMIT_BYTES // (1024 * 1024)
     return result
+
+
+class AddDriveFilesRequest(BaseModel):
+    # 100 matches the search route's maximum k: the intended caller is "index
+    # everything this search returned". The real guard is the byte limit below.
+    file_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+@app.post("/api/drive/files/index")
+def index_drive_files(req: AddDriveFilesRequest, background: BackgroundTasks):
+    """Queue a list of mirror PDFs -- the "index all results" of a search.
+
+    Unlike POST /api/library/drive (hand-picked ids, re-verified against Drive
+    one call each), this trusts the mirror like the folder route does, so a
+    whole result page queues in one statement. The same byte ceiling applies,
+    measured over what is not already queued.
+    """
+    counts = None
+    with db.get_conn() as conn:
+        counts = db.queue_drive_files(
+            conn, req.file_ids, limit_bytes=config.FOLDER_INDEX_LIMIT_BYTES
+        )
+    if counts["over_limit"]:
+        raise HTTPException(
+            413,
+            f"These results hold {counts['pending_bytes'] // (1024 * 1024)} MB of "
+            f"unindexed PDFs, over the "
+            f"{config.FOLDER_INDEX_LIMIT_BYTES // (1024 * 1024)} MB bulk-index limit.",
+        )
+    if counts["queued"]:
+        background.add_task(_drain_queue, "drive")
+    return {
+        "queued": counts["queued"],
+        "already_indexed": counts["matched"] - counts["queued"],
+    }
+
+
+@app.post("/api/drive/folders/{folder_id}/index")
+def index_drive_folder(folder_id: str, background: BackgroundTasks):
+    """Queue every PDF in one folder's subtree, if the folder is small enough.
+
+    The size gate is enforced HERE, not just hidden in the UI: one request
+    naming the root would otherwise put ~143 GB into flight. subtree_bytes is
+    the mirror's recursive PDF total, so the comparison is a column read.
+
+    413 rather than 400 for an oversized folder: the request is well-formed,
+    the payload it implies is what is too large.
+    """
+    limit = config.FOLDER_INDEX_LIMIT_BYTES
+    with db.get_conn() as conn:
+        folder = db.drive_file(conn, folder_id)
+        if folder is None:
+            raise HTTPException(404, "No such folder in the mirror.")
+        if folder["mime_type"] != db.FOLDER_MIME:
+            raise HTTPException(400, f"{folder['title']} is a file, not a folder.")
+        total = folder["subtree_bytes"] or 0
+        if total > limit:
+            raise HTTPException(
+                413,
+                f"{folder['title']} holds {total // (1024 * 1024)} MB of PDFs, "
+                f"over the {limit // (1024 * 1024)} MB bulk-index limit.",
+            )
+        counts = db.queue_drive_folder(conn, folder_id)
+
+    if counts["queued"]:
+        background.add_task(_drain_queue, "drive")
+
+    return {
+        "folder": folder["title"],
+        "queued": counts["queued"],
+        "already_indexed": counts["total_pdfs"] - counts["queued"],
+    }
 
 
 @app.get("/api/drive/search")

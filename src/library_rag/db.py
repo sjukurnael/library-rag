@@ -557,7 +557,7 @@ def fetch_report_data(conn):
 _DRIVE_COLUMNS = """
     d.file_id, d.name AS title, d.mime_type, d.parent_id, d.path,
     d.web_view_link AS url,
-    round(d.size_bytes / 1048576.0, 1)::float8 AS size_mb,
+    round(coalesce(d.size_bytes, d.subtree_bytes) / 1048576.0, 1)::float8 AS size_mb,
     (b.id IS NOT NULL) AS indexed, b.id AS book_id, b.status::text AS status
 """
 
@@ -624,6 +624,111 @@ def drive_breadcrumb(conn, file_id: str) -> list:
             (file_id,),
         )
         return cur.fetchall()
+
+
+def drive_file(conn, file_id: str) -> dict | None:
+    """One mirror row, shaped like the browse rows (size_mb covers folders via
+    subtree_bytes) plus the raw subtree_bytes the folder-index gate compares."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT file_id, name AS title, mime_type, parent_id, path,
+                   round(coalesce(size_bytes, subtree_bytes) / 1048576.0, 1)::float8
+                       AS size_mb,
+                   subtree_bytes
+            FROM drive_files WHERE file_id = %s
+            """,
+            (file_id,),
+        )
+        return cur.fetchone()
+
+
+def queue_drive_folder(conn, folder_id: str) -> dict:
+    """Queue every PDF in a folder's subtree for ingestion, in one statement.
+
+    Metadata comes from the mirror, not from per-file Drive calls: the single-
+    file route's one get_file is fine for hand-picked books, but a folder of a
+    hundred would spend minutes inside the request re-fetching what sync
+    already wrote. The mirror's md5 can be stale if a file changed in Drive
+    since -- that book fails its checksum during ingest, visibly, which is the
+    right degradation.
+
+    Rows already in books are left completely alone (anti-join, plus ON
+    CONFLICT DO NOTHING for races), so re-clicking never resets a book that is
+    done or mid-flight. New rows land at the column-default 'discovered', which
+    is what makes them claimable.
+
+    Returns {"queued": inserted, "total_pdfs": pdfs in the subtree}.
+    """
+    row = conn.execute(
+        """
+        WITH RECURSIVE sub AS (
+            SELECT file_id FROM drive_files WHERE file_id = %(folder)s
+          UNION ALL
+            SELECT d.file_id FROM drive_files d JOIN sub s ON d.parent_id = s.file_id
+        ),
+        pdfs AS (
+            SELECT d.file_id, d.name, d.md5, d.size_bytes
+            FROM drive_files d JOIN sub USING (file_id)
+            WHERE d.mime_type <> %(folder_mime)s
+        ),
+        ins AS (
+            INSERT INTO books (source_id, title, md5, size_bytes, source)
+            SELECT p.file_id, p.name, p.md5, p.size_bytes, 'drive'
+            FROM pdfs p
+            WHERE NOT EXISTS (SELECT 1 FROM books b WHERE b.source_id = p.file_id)
+            ON CONFLICT (source_id) DO NOTHING
+            RETURNING 1
+        )
+        SELECT (SELECT count(*) FROM pdfs) AS total_pdfs,
+               (SELECT count(*) FROM ins) AS queued
+        """,
+        {"folder": folder_id, "folder_mime": FOLDER_MIME},
+    ).fetchone()
+    conn.commit()
+    return {"total_pdfs": row[0], "queued": row[1]}
+
+
+def queue_drive_files(conn, file_ids: list, limit_bytes: int | None = None) -> dict:
+    """Queue an explicit list of mirror PDFs (e.g. one search's results).
+
+    Same contract as queue_drive_folder -- mirror metadata, rows already in
+    books untouched -- but gated on the bytes actually PENDING rather than a
+    stored total: a result list is arbitrary, so its "size" is whatever is not
+    yet queued. Over the limit nothing is inserted and over_limit says so;
+    non-PDF or unknown ids are simply not matched.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*) FILTER (WHERE b.id IS NULL),
+                   coalesce(sum(d.size_bytes) FILTER (WHERE b.id IS NULL), 0),
+                   count(*)
+            FROM drive_files d
+            LEFT JOIN books b ON b.source_id = d.file_id
+            WHERE d.file_id = ANY(%s) AND d.mime_type <> %s
+            """,
+            (list(file_ids), FOLDER_MIME),
+        )
+        pending, pending_bytes, matched = cur.fetchone()
+        if limit_bytes is not None and pending_bytes > limit_bytes:
+            return {"queued": 0, "matched": matched,
+                    "pending_bytes": pending_bytes, "over_limit": True}
+        cur.execute(
+            """
+            INSERT INTO books (source_id, title, md5, size_bytes, source)
+            SELECT d.file_id, d.name, d.md5, d.size_bytes, 'drive'
+            FROM drive_files d
+            WHERE d.file_id = ANY(%s) AND d.mime_type <> %s
+              AND NOT EXISTS (SELECT 1 FROM books b WHERE b.source_id = d.file_id)
+            ON CONFLICT (source_id) DO NOTHING
+            """,
+            (list(file_ids), FOLDER_MIME),
+        )
+        queued = cur.rowcount
+    conn.commit()
+    return {"queued": queued, "matched": matched,
+            "pending_bytes": pending_bytes, "over_limit": False}
 
 
 def drive_sync_status(conn) -> dict:

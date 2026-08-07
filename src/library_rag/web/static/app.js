@@ -30,7 +30,12 @@ function age(s) {
   return s < 90 ? ` ${Math.round(s)}s` : ` ${Math.round(s / 60)}m`;
 }
 
-function mb(n) { return n == null ? 'size unknown' : `${n} MB`; }
+// Sizes arrive as megabytes; a folder rolls up to gigabytes fast enough that
+// "3481.7 MB" would be the common case, so switch units at 1 GB.
+function mb(n) {
+  if (n == null) return 'size unknown';
+  return n >= 1024 ? `${(n / 1024).toFixed(1)} GB` : `${n} MB`;
+}
 
 // ------------------------------------------------------------- progress --
 // Every wait in this app is long enough to be mistaken for a hang: a search
@@ -218,3 +223,63 @@ document.addEventListener('click', async e => {
     alert(`Could not remove "${title}" — ${err.message || err}`);
   }
 });
+
+// ----------------------------------------------------------- drive auth --
+// Every page shows whether Google Drive is connected, bottom-left. Indexing a
+// book downloads it from Drive, so an expired token is worth knowing about
+// BEFORE a click fails -- and the fix (sign in) should be one click from
+// anywhere, not something only the Drive page can do.
+
+let _authConnecting = false;
+
+async function paintAuth() {
+  const el = $('#sideauth');
+  if (!el) return;
+  let a;
+  try { a = await fetchJSON('/api/drive/auth/status', {}, 15000); }
+  catch { return; }
+  el.hidden = false;
+  if (a.ok) {
+    el.innerHTML = `<span class="authdot ok"></span> Google Drive connected`;
+  } else if (a.reason === 'missing_client') {
+    // No credentials.json: signing in can't work until the server is set up,
+    // so a button would be a lie. Show why instead.
+    el.innerHTML = `<span class="authdot bad"></span> Drive not configured`;
+    el.title = a.detail || '';
+  } else if (_authConnecting) {
+    el.innerHTML = `<span class="authdot warn"></span> Waiting for Google — approve in the other tab…`;
+  } else {
+    el.innerHTML = `<button class="btn connectbtn" id="sideconnect">Sign in to Google Drive</button>`;
+    el.title = '';
+  }
+  return a;
+}
+
+document.addEventListener('click', async e => {
+  const btn = e.target.closest('#sideconnect');
+  if (!btn || _authConnecting) return;
+  // Opened SYNCHRONOUSLY, before any await: window.open after an await has
+  // lost its user-gesture context and popup blockers eat it silently (same
+  // hard-won lesson as the Drive page's Connect button).
+  const tab = window.open('', '_blank');
+  _authConnecting = true;
+  paintAuth();
+  try {
+    const d = await fetchJSON('/api/drive/auth/start', {}, 15000);
+    if (tab && !tab.closed) tab.location = d.url;
+    // The callback lands in the OTHER tab; polling is how this one learns.
+    const started = Date.now();
+    const poll = setInterval(async () => {
+      if (Date.now() - started > 300000) { _authConnecting = false; clearInterval(poll); paintAuth(); return; }
+      const a = await fetchJSON('/api/drive/auth/status', {}, 15000).catch(() => null);
+      if (a && a.ok) { _authConnecting = false; clearInterval(poll); paintAuth(); }
+    }, 3000);
+  } catch (err) {
+    if (tab && !tab.closed) tab.close();
+    _authConnecting = false;
+    paintAuth();
+    alert(`Could not start Google sign-in — ${err.message || err}`);
+  }
+});
+
+paintAuth();
