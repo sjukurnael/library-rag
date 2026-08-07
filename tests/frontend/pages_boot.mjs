@@ -32,7 +32,7 @@ function makeDom() {
       if (prop === 'files') return [];
       if (prop === 'parentElement' || prop === 'closest') return () => node;
       if (typeof prop === 'symbol') return undefined;
-      return typeof prop === 'string' && /^(add|remove|insert|append|query|scroll|focus|requestSubmit|closest|open|write)/.test(prop)
+      return typeof prop === 'string' && /^(add|remove|insert|append|query|scroll|focus|requestSubmit|closest|open|write|set|get)/.test(prop)
         ? () => node
         : '';
     },
@@ -48,7 +48,7 @@ function makeDom() {
 }
 
 const results = [];
-for (const page of ['index.html', 'library.html']) {
+for (const page of ['index.html', 'library.html', 'queue.html']) {
   const html = fs.readFileSync(path.join(STATIC, page), 'utf8');
 
   // 1. The page must actually link the shared bundle.

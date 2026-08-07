@@ -3,104 +3,96 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>library — browse the drive</title>
+<title>Library — drive</title>
 <link rel="stylesheet" href="/static/app.css">
-<style>
-  main.wide { max-width: 1180px; }
-  nav a { color: var(--muted); text-decoration: none; font-size: 13px; margin-right: 14px; }
-  nav a:hover, nav a.on { color: var(--ink); }
-  nav a.on { border-bottom: 2px solid var(--accent); padding-bottom: 2px; }
-
-  .banner { background: var(--accent-soft); border: 1px solid var(--line);
-            border-radius: 9px; padding: 11px 14px; margin-bottom: 16px;
-            font-size: 13px; display: flex; align-items: center; gap: 12px; }
-  .banner button { font-size: 12.5px; padding: 6px 13px; }
-  .banner .msg { color: var(--muted); }
-
-  .split { display: grid; grid-template-columns: 290px 1fr; gap: 22px; align-items: start; }
-  @media (max-width: 780px) { .split { grid-template-columns: 1fr; } }
-
-  .tree { font-size: 13.5px; max-height: 74vh; overflow: auto; }
-  .tree ul { list-style: none; margin: 0; padding-left: 15px; }
-  .tree > ul { padding-left: 0; }
-  .tree li { margin: 1px 0; }
-  .tree .row { display: flex; align-items: center; gap: 5px; cursor: pointer;
-               padding: 3px 6px; border-radius: 6px; color: var(--muted); }
-  .tree .row:hover { background: var(--accent-soft); color: var(--ink); }
-  .tree .row.on { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
-  .tree .tw { width: 12px; flex: none; font-size: 10px; opacity: .65; }
-  .tree .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  .crumb { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
-  .crumb a { color: var(--muted); text-decoration: none; }
-  .crumb a:hover { color: var(--ink); }
-
-  .files { display: flex; flex-direction: column; gap: 8px; }
-  .f { border: 1px solid var(--line); background: var(--panel); border-radius: 9px;
-       padding: 10px 13px; display: flex; gap: 12px; align-items: center; }
-  .f .body { flex: 1; min-width: 0; }
-  .f .t { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .f .m { font-size: 12px; color: var(--dim, var(--muted)); margin-top: 2px; }
-  .f .m a { color: var(--muted); }
-  .f .why { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
-  .f button { font-size: 12.5px; padding: 6px 13px; white-space: nowrap;
-              background: none; color: var(--muted); border: 1px solid var(--line); }
-  .f button:hover:not(:disabled) { color: var(--ink); border-color: var(--accent); }
-  .f.have { border-color: var(--good); }
-  .f .badge { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-              white-space: nowrap; color: var(--good); }
-  .f .badge.work { color: var(--warn); }
-  .f .badge.bad { color: var(--bad); }
-  .empty { color: var(--muted); font-size: 13px; padding: 20px 0; }
-  .modes { display: flex; gap: 8px; align-items: center; margin: 8px 0 16px;
-           font-size: 12.5px; color: var(--muted); }
-  .modes button { background: transparent; color: var(--muted); border: 1px solid var(--line);
-                  font-size: 12px; font-weight: 400; padding: 4px 10px; border-radius: 999px; }
-  .modes button.on { color: var(--ink); border-color: var(--accent); }
-</style>
 </head>
 <body>
-<header>
-  <h1>library</h1>
-  <nav>
-    <a href="/">Research</a>
-    <a href="/library" class="on">Browse the drive</a>
-  </nav>
-  <span class="sub" id="stat">loading…</span>
-</header>
+<div class="shell">
 
-<main class="wide">
-  <div class="banner" id="authbanner" hidden>
-    <span class="msg" id="amsg"></span>
-    <button id="connect">Connect Google Drive</button>
-  </div>
+  <aside class="side">
+    <div class="brand"><span class="logo"></span>Library</div>
+    <nav class="snav">
+      <a href="/">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Chat</a>
+      <a href="/library" class="on">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        Drive</a>
+      <a href="/queue">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Processing</a>
+    </nav>
+    <div class="sidebooks">
+      <button class="sidehead" id="bookstoggle" aria-expanded="false">
+        <span class="chev">▸</span> In the index
+        <span class="count" id="bookcount"></span>
+      </button>
+      <ul id="navbooks" hidden></ul>
+    </div>
+    <div class="sidefoot" id="sidefoot">loading…</div>
+  </aside>
 
-  <div class="banner" id="banner" hidden>
-    <span class="msg" id="bmsg"></span>
-    <button id="sync">Sync from Drive</button>
-  </div>
+  <div class="page">
+    <div class="pagehead">
+      <h1>Drive</h1>
+      <span class="sub" id="stat">loading…</span>
+    </div>
+    <div class="pagebody">
 
-  <form id="sf">
-    <input type="text" id="sq" autocomplete="off"
-           placeholder="Search every book by meaning — “the end times”, “how to pray”, “Paul in prison”…">
-    <button type="submit">Search</button>
-  </form>
-  <div class="modes" id="modes">
-    <span>ranking</span>
-    <button data-mode="hybrid" class="on">hybrid</button>
-    <button data-mode="dense">meaning</button>
-    <button data-mode="lexical">words</button>
-    <button id="clear" style="margin-left:auto">clear search</button>
-  </div>
+      <div class="banner" id="authbanner" hidden>
+        <span class="msg" id="amsg"></span>
+        <button class="btn" id="connect">Connect Google Drive</button>
+      </div>
 
-  <div class="split">
-    <div class="card tree" id="tree">loading…</div>
-    <div>
-      <div class="crumb" id="crumb"></div>
-      <div class="files" id="files"></div>
+      <div class="banner" id="banner" hidden>
+        <span class="msg" id="bmsg"></span>
+        <button class="btn" id="sync">Sync from Drive</button>
+      </div>
+
+      <div class="toolbar">
+        <form class="searchpill" id="sf">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input type="text" id="sq" autocomplete="off"
+                 placeholder="Search 57,000 books by meaning — “the end times”, “how to pray”, “Paul in prison”…">
+        </form>
+      </div>
+
+      <div class="filters" id="modes">
+        <button class="chip on" data-mode="hybrid">Hybrid</button>
+        <button class="chip" data-mode="dense">Meaning</button>
+        <button class="chip" data-mode="lexical">Words</button>
+        <button class="chip" id="librarianbtn">✦ Ask the librarian</button>
+        <span class="spacer"></span>
+        <button class="chip" id="clear">Clear search</button>
+      </div>
+
+      <div class="card librarian" id="librarian" hidden>
+        <form class="ask" id="bf">
+          <input type="text" id="bq" autocomplete="off" class="li-input"
+                 placeholder="What do you want to study? e.g. the parables, church history…"
+                 style="flex:1;border:0;background:var(--panel);border-radius:999px;padding:10px 18px;color:var(--ink);font:inherit;outline:none">
+          <button type="submit" class="btn primary" id="bgo">Browse</button>
+        </form>
+        <div class="sub" style="margin-top:8px">
+          An agent searches the whole drive by meaning and shortlists books worth
+          indexing next. Books you already have are excluded.
+        </div>
+        <div id="btrail"></div>
+        <div id="bout"></div>
+      </div>
+
+      <div class="split">
+        <div class="tree" id="tree">loading…</div>
+        <div>
+          <div class="crumb" id="crumb"></div>
+          <div class="files" id="files"></div>
+        </div>
+      </div>
+
     </div>
   </div>
-</main>
+
+</div>
 
 <script src="/static/app.js"></script>
 <script>
@@ -108,6 +100,9 @@ let mode = 'hybrid';
 let current = null;          // folder id being viewed, null = roots
 let searching = false;
 let pollTimer = null;
+
+const FOLDER_ICON = '<svg class="ic-folder" viewBox="0 0 24 24" fill="currentColor"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>';
+const PDF_ICON = '<svg class="ic-pdf" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13z"/></svg>';
 
 // ---------------------------------------------------------------- status --
 
@@ -230,7 +225,7 @@ async function children(parent) {
 
 function folderRow(f) {
   return `<li data-id="${esc(f.file_id)}">` +
-    `<div class="row"><span class="tw">▸</span>` +
+    `<div class="row"><span class="tw">▶</span>` +
     `<span class="nm" title="${esc(f.title)}">${esc(f.title)}</span></div></li>`;
 }
 
@@ -263,12 +258,12 @@ $('#tree').addEventListener('click', async e => {
   let sub = li.querySelector('ul');
   if (sub) {
     const showing = sub.hidden = !sub.hidden;
-    row.querySelector('.tw').textContent = showing ? '▸' : '▾';
+    row.querySelector('.tw').textContent = showing ? '▶' : '▼';
   } else {
     const d = await children(id);
     if (d.folders.length) {
       li.insertAdjacentHTML('beforeend', `<ul>${d.folders.map(folderRow).join('')}</ul>`);
-      row.querySelector('.tw').textContent = '▾';
+      row.querySelector('.tw').textContent = '▼';
     } else {
       row.querySelector('.tw').textContent = '·';
     }
@@ -280,44 +275,58 @@ $('#tree').addEventListener('click', async e => {
 
 // ------------------------------------------------------------------ files --
 
-function fileCard(f, i) {
+function statusCell(f, i) {
   const has = f.indexed;
   const working = has && !TERMINAL.has(f.status) && f.status !== 'done';
-  let right;
-  if (working) {
-    right = `<span class="badge work">${esc(STAGE[f.status] || f.status)}…</span>`;
-  } else if (has && f.status === 'done') {
-    right = `<span class="badge">in your library</span>`;
-  } else if (has) {
-    right = `<span class="badge bad">${esc(f.status)}</span>`;
-  } else {
-    right = `<button class="ix" data-i="${i}">Index</button>`;
-  }
+  if (working) return `<span class="badge work">${esc(STAGE[f.status] || f.status)}…</span>`;
+  if (has && f.status === 'done') return `<span class="badge good">In your library</span>`;
+  if (has) return `<span class="badge bad">${esc(f.status)}</span>`;
+  return `<button class="btn ix" data-i="${i}">Index</button>`;
+}
+
+// A Drive-style row: icon + name, location, size, then the status or action.
+function fileRow(f, i) {
   const where = f.path ? f.path.split(' / ').slice(0, -1).join(' / ') : '';
-  return `<div class="f${has ? ' have' : ''}">` +
-    `<div class="body"><div class="t" title="${esc(f.title)}">${esc(f.title)}</div>` +
-    `<div class="m">${esc(mb(f.size_mb))}${where ? ' · ' + esc(where) : ''} · ` +
-    `<a href="${esc(f.url)}" target="_blank" rel="noopener">Drive</a></div></div>` +
-    right + `</div>`;
+  return `<div class="frow">` +
+    `<div class="fname">${PDF_ICON}<span class="t" title="${esc(f.title)}">${esc(f.title)}</span></div>` +
+    `<div class="fwhere" title="${esc(where)}">${esc(where)}` +
+    `${where ? ' · ' : ''}<a href="${esc(f.url)}" target="_blank" rel="noopener">Drive</a></div>` +
+    `<div class="fsize">${esc(mb(f.size_mb))}</div>` +
+    `<div class="fact">${statusCell(f, i)}</div></div>`;
+}
+
+function dirRow(f) {
+  return `<div class="frow isfolder" data-open="${esc(f.file_id)}">` +
+    `<div class="fname">${FOLDER_ICON}<span class="t" title="${esc(f.title)}">${esc(f.title)}</span></div>` +
+    `<div class="fwhere"></div><div class="fsize">—</div><div class="fact"></div></div>`;
 }
 
 let shown = [];
 
-function render(files, crumb) {
-  shown = files;
+function render(d, crumb) {
+  shown = d.files;
   $('#crumb').innerHTML = crumb === undefined ? $('#crumb').innerHTML
     : (crumb.length
-        ? '<a href="#" data-id="">All</a> / ' +
-          crumb.map(c => `<a href="#" data-id="${esc(c.file_id)}">${esc(c.name)}</a>`).join(' / ')
-        : 'All');
-  $('#files').innerHTML = files.length
-    ? files.map(fileCard).join('')
-    : '<div class="empty">No PDFs directly in this folder — open a subfolder on the left.</div>';
+        ? '<a href="#" data-id="">All</a>' +
+          crumb.slice(0, -1).map(c =>
+            `<span class="sep">›</span><a href="#" data-id="${esc(c.file_id)}">${esc(c.name)}</a>`).join('') +
+          `<span class="sep">›</span><span class="here">${esc(crumb[crumb.length - 1].name)}</span>`
+        : '<span class="here">All folders</span>');
+  const folders = d.folders || [];
+  const head = (folders.length || d.files.length)
+    ? `<div class="fhead"><div>Name</div><div class="fwhere">Location</div><div>Size</div><div></div></div>`
+    : '';
+  $('#files').innerHTML = head +
+    folders.map(dirRow).join('') +
+    (d.files.length
+      ? d.files.map(fileRow).join('')
+      : (folders.length ? '' :
+         '<div class="empty">No PDFs in this folder — open a subfolder on the left.</div>'));
 
   // Poll only while something is genuinely mid-pipeline, for the same reason
-  // the index page does: a finished or failed book never changes on its own.
+  // the queue page does: a finished or failed book never changes on its own.
   clearTimeout(pollTimer);
-  if (files.some(f => f.indexed && f.status !== 'done' && !TERMINAL.has(f.status))) {
+  if (d.files.some(f => f.indexed && f.status !== 'done' && !TERMINAL.has(f.status))) {
     pollTimer = setTimeout(() => searching ? null : open(current), 3000);
   }
 }
@@ -325,12 +334,12 @@ function render(files, crumb) {
 async function open(id, prefetched) {
   searching = false;
   current = id;
-  if (prefetched) return render(prefetched.files, prefetched.breadcrumb || []);
+  if (prefetched) return render(prefetched, prefetched.breadcrumb || []);
   const p = progress($('#files'), { label: 'Opening folder', normal: 3 });
   try {
     const d = await children(id);
     p.stop();
-    render(d.files, d.breadcrumb || []);
+    render(d, d.breadcrumb || []);
   } catch (err) {
     p.stop();
     failed($('#files'), `Could not open that folder — ${err.message || err}`,
@@ -343,6 +352,12 @@ $('#crumb').addEventListener('click', e => {
   if (!a) return;
   e.preventDefault();
   open(a.dataset.id || null);
+});
+
+// Folder rows in the main pane open like Drive's do.
+$('#files').addEventListener('click', e => {
+  const dir = e.target.closest('.frow.isfolder');
+  if (dir) open(dir.dataset.open);
 });
 
 // ---------------------------------------------------------------- search --
@@ -373,11 +388,12 @@ async function runSearch() {
       `/api/drive/search?q=${encodeURIComponent(q)}&mode=${mode}`, {}, 30000);
     p.stop();
     $('#crumb').innerHTML =
-      `${d.results.length} result(s) for “${esc(q)}” across the whole drive` +
-      ` · ${p.seconds()}s`;
+      `<span class="here">${d.results.length} result(s) for “${esc(q)}”</span>` +
+      `<span class="sep">·</span> across the whole drive · ${p.seconds()}s`;
     shown = d.results;
     $('#files').innerHTML = d.results.length
-      ? d.results.map(fileCard).join('')
+      ? `<div class="fhead"><div>Name</div><div class="fwhere">Location</div><div>Size</div><div></div></div>` +
+        d.results.map(fileRow).join('')
       : '<div class="empty">Nothing matched. Try fewer or more general words.</div>';
   } catch (err) {
     p.stop();
@@ -399,14 +415,14 @@ $('#clear').addEventListener('click', () => { $('#sq').value = ''; open(current)
 
 // ----------------------------------------------------------------- index --
 
-// Same endpoint the browse agent's cards use. The page never writes to the
+// Same endpoint the librarian's cards use. The page never writes to the
 // library except through this one explicit action.
 $('#files').addEventListener('click', async e => {
   const btn = e.target.closest('.ix');
   if (!btn) return;
   const f = shown[Number(btn.dataset.i)];
   btn.disabled = true;
-  btn.textContent = 'queueing…';
+  btn.textContent = 'Queueing…';
   try {
     // The route fetches this book's real metadata from Drive before queueing,
     // so it is a network call, not a local insert.
@@ -414,7 +430,8 @@ $('#files').addEventListener('click', async e => {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ file_ids: [f.file_id] })
     }, 30000);
-    btn.textContent = d.added.length ? 'queued' : 'already yours';
+    btn.textContent = d.added.length ? 'Queued' : 'Already yours';
+    refreshBooks();
     if (!searching) setTimeout(() => open(current), 1200);
   } catch (err) {
     btn.disabled = false;
@@ -425,9 +442,137 @@ $('#files').addEventListener('click', async e => {
   }
 });
 
+// ------------------------------------------------------------- librarian --
+// Same SSE contract as /api/research: `data: {json}\n\n` frames off a reader.
+// Streamed because the agent runs several Drive searches over tens of seconds,
+// and showing which ones it chose is what separates a shortlist you can trust
+// from a list of plausible-looking titles.
+
+$('#librarianbtn').addEventListener('click', () => {
+  const el = $('#librarian');
+  el.hidden = !el.hidden;
+  $('#librarianbtn').classList.toggle('on', !el.hidden);
+  if (!el.hidden) $('#bq').focus();
+});
+
+const TOOL_LABEL = {
+  search_drive: 'search', browse_folder: 'browse',
+  estimate_pipeline: 'estimate', recommend: 'shortlist',
+};
+
+function toolLine(e) {
+  const i = e.input || {};
+  const arg = i.query || i.name_contains || i.folder_id || '';
+  return `<div class="bstep"><span class="lbl">${esc(TOOL_LABEL[e.name] || e.name)}</span>` +
+         `${arg ? `“${esc(String(arg))}”` : ''}</div>`;
+}
+
+function resultLine(s) {
+  const bits = [];
+  if (s.returned != null) bits.push(`${s.returned} found`);
+  if (s.total_pdfs != null && s.truncated) bits.push(`of ${s.total_pdfs}`);
+  if (s.already_indexed) bits.push(`${s.already_indexed} already yours`);
+  if (s.hit_limit) bits.push('hit the limit');
+  if (s.picks != null) bits.push(`${s.picks} picked`);
+  return bits.length
+    ? `<div class="bstep"><span class="lbl"></span>${esc(bits.join(' · '))}</div>` : '';
+}
+
+function recCard(b, i) {
+  // A pick whose file_id the agent never actually saw is shown as an error, not
+  // rendered as a card -- a dead Drive link that looks real is worse than none.
+  if (b.unknown) {
+    return `<div class="rec bad"><div class="body"><div class="t">Unusable suggestion</div>` +
+           `<div class="why">${esc(b.error)}</div></div></div>`;
+  }
+  const size = b.size_mb != null ? `${b.size_mb} MB` : 'size unknown';
+  const action = b.indexed
+    ? `<span class="badge good">Already yours</span>`
+    : `<button class="btn add" data-i="${i}">Add to library</button>`;
+  return `<div class="rec${b.indexed ? ' owned' : ''}">` +
+    `<div class="body"><div class="t">${esc(b.title)}</div>` +
+    `<div class="why">${esc(b.why || '')}</div>` +
+    `<div class="m">${esc(size)} · <a href="${esc(b.url)}" target="_blank" rel="noopener">view in Drive</a></div>` +
+    `</div>${action}</div>`;
+}
+
+let recs = [];
+
+$('#bf').addEventListener('submit', async e => {
+  e.preventDefault();
+  const interest = $('#bq').value.trim();
+  if (!interest) return;
+  $('#bgo').disabled = true;
+  $('#btrail').innerHTML = '<div class="bstep">looking…</div>';
+  $('#bout').innerHTML = '';
+  recs = [];
+
+  const trail = [];
+  try {
+    const r = await fetch('/api/browse', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ interest })
+    });
+    if (!r.ok) throw new Error(r.statusText);
+    await readEventStream(r, ev => {
+        if (ev.type === 'tool') trail.push(toolLine(ev));
+        else if (ev.type === 'results') trail.push(resultLine(ev.summary));
+        else if (ev.type === 'tool_error') {
+          trail.push(`<div class="bstep berr">${esc(ev.name)} failed — ${esc(ev.message)}</div>`);
+        } else if (ev.type === 'recommendations') {
+          recs = ev.books;
+          $('#bout').innerHTML = recs.map(recCard).join('');
+        } else if (ev.type === 'answer') {
+          $('#bout').insertAdjacentHTML('beforeend',
+            `<div class="sub" style="margin-top:10px">${esc(ev.text)}</div>`);
+        } else if (ev.type === 'error') {
+          $('#bout').insertAdjacentHTML('beforeend', `<div class="berr">${esc(ev.message)}</div>`);
+        }
+        $('#btrail').innerHTML = trail.join('');
+    }, {
+      terminal: 'done',
+      onStall: secs => {
+        trail.push(`<div class="bstep">no update for ${secs}s — still connected.</div>`);
+        $('#btrail').innerHTML = trail.join('');
+      },
+    });
+  } catch (err) {
+    $('#bout').innerHTML = `<div class="berr">${esc(String(err.message || err))}</div>`;
+  } finally {
+    $('#bgo').disabled = false;
+  }
+});
+
+// The agent recommends; the button acts. Nothing the agent does writes to the
+// library -- adding a book is always an explicit choice made here.
+$('#bout').addEventListener('click', async e => {
+  const btn = e.target.closest('.add');
+  if (!btn) return;
+  const book = recs[Number(btn.dataset.i)];
+  btn.disabled = true;
+  btn.textContent = 'Adding…';
+  try {
+    const r = await fetch('/api/library/drive', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ file_ids: [book.file_id] })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || `failed (${r.status})`);
+    btn.textContent = d.added.length ? 'Queued' : 'Already yours';
+    // The queue page and the sidebar report the ingest from here on -- no
+    // second progress mechanism needed.
+    refreshBooks();
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Retry';
+    $('#bout').insertAdjacentHTML('beforeend', `<div class="berr">${esc(String(err.message || err))}</div>`);
+  }
+});
+
 refreshAuth();
 refreshStatus();
 buildTree();
+refreshBooks();
 </script>
 </body>
 </html>

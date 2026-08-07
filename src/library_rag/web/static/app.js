@@ -1,7 +1,7 @@
-// Helpers shared by index.html (research) and library.html (the Drive browser).
-// Extracted when the second page arrived: `esc` in particular must have exactly
-// one definition, because a second copy that drifts is an XSS hole nobody
-// notices until a book title contains a bracket.
+// Helpers shared by index.html (chat), library.html (the Drive browser) and
+// queue.html (processing). Extracted when the second page arrived: `esc` in
+// particular must have exactly one definition, because a second copy that
+// drifts is an XSS hole nobody notices until a book title contains a bracket.
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g,
@@ -136,3 +136,85 @@ async function readEventStream(response, onEvent, opts = {}) {
                     'may have restarted. Nothing was lost; try again.');
   }
 }
+
+// ---------------------------------------------------------------- shell --
+// Every page shares the sidebar: nav, the list of indexed books (what the
+// index can actually answer from), and a one-line status. One poller feeds
+// all of it; pages that need the same data (the queue dashboard, the chat
+// status line) register a listener instead of fetching twice.
+
+const bookListeners = [];
+function onBooks(fn) { bookListeners.push(fn); }
+
+let bookTimer = null;
+async function refreshBooks() {
+  clearTimeout(bookTimer);
+  let d = null, err = null;
+  try { d = await fetchJSON('/api/books', {}, 15000); }
+  catch (e) { err = e; }
+  for (const fn of bookListeners) fn(d, err);
+  // Only a book actually moving through the pipeline justifies polling; one
+  // sitting at a terminal status never changes on its own.
+  const working = d && (d.pending || []).some(b => !TERMINAL.has(b.status));
+  if (working || err) bookTimer = setTimeout(refreshBooks, working ? 3000 : 15000);
+}
+
+// The sidebar's own listener. Registered unconditionally: every page has the
+// sidebar, and a page that somehow lacks it just no-ops on the null lookups.
+onBooks((d, err) => {
+  const list = $('#navbooks'), count = $('#bookcount'), foot = $('#sidefoot');
+  if (!list) return;
+  if (err) {
+    if (foot) foot.textContent = 'index unavailable — is the server up?';
+    return;
+  }
+  const working = (d.pending || []).filter(b => !TERMINAL.has(b.status));
+  list.innerHTML =
+    working.map(b =>
+      `<li class="working" title="${esc(b.title)}"><span class="t">${esc(b.title)}</span>` +
+      `<span class="m">${esc(STAGE[b.status] || b.status)}…</span></li>`
+    ).join('') +
+    d.books.map(b =>
+      `<li title="${esc(b.title)} — ${b.pages ?? '?'} pages, ${b.chunks} chunks">` +
+      `<span class="t">${esc(b.title)}</span><span class="m">${b.chunks}</span>` +
+      `<button class="del" data-id="${b.id}" data-title="${esc(b.title)}" ` +
+      `title="Remove this book">&times;</button></li>`
+    ).join('');
+  if (count) count.textContent = String(d.books.length);
+  if (foot) foot.textContent =
+    `${d.books.length} books · ${d.total_chunks.toLocaleString()} passages indexed`;
+});
+
+// The index list is a dropdown, and it ALWAYS starts collapsed -- the point is
+// that the sidebar stays calm until the list is asked for. Deliberately not
+// remembered across loads: a persisted "open" makes the list permanent again
+// the moment anyone expands it once, which is exactly the state this exists
+// to avoid.
+const _booksToggle = $('#bookstoggle'), _booksList = $('#navbooks');
+function setBooksOpen(open) {
+  if (!_booksToggle || !_booksList) return;
+  _booksList.hidden = !open;
+  _booksToggle.classList.toggle('open', open);
+  _booksToggle.setAttribute('aria-expanded', String(open));
+}
+if (_booksToggle && _booksList) {
+  _booksToggle.addEventListener('click', () => setBooksOpen(_booksList.hidden));
+}
+
+// Delete is a hard delete of the row, its chunks and its files, so confirm by
+// name rather than a bare "are you sure" that says nothing about what goes.
+// Delegated at the document so the sidebar list and the queue page share it.
+document.addEventListener('click', async e => {
+  const btn = e.target.closest('.del');
+  if (!btn || !btn.dataset.id) return;
+  const { id, title } = btn.dataset;
+  if (!confirm(`Remove "${title}" from the library?\n\nThis deletes its passages and the uploaded file. You can add it again later.`)) return;
+  btn.disabled = true;
+  try {
+    await fetchJSON(`/api/books/${id}`, { method: 'DELETE' });
+    refreshBooks();
+  } catch (err) {
+    btn.disabled = false;
+    alert(`Could not remove "${title}" — ${err.message || err}`);
+  }
+});

@@ -7,9 +7,12 @@ import { fileURLToPath } from 'url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(
   path.join(here, '../../src/library_rag/web/static/app.js'), 'utf8');
-// app.js is a plain script; evaluate it and pull out what we test.
-const mod = new Function(src + '\nreturn { readEventStream, progress, fetchJSON };')
-  .call({ document: { querySelector: () => null } });
+// app.js is a plain script; evaluate it and pull out what we test. `document`
+// is a real parameter, not `this` -- a bare identifier never resolves through
+// the call receiver, and app.js now touches document at the top level.
+const mod = new Function('document',
+  src + '\nreturn { readEventStream, progress, fetchJSON };')(
+  { querySelector: () => null, querySelectorAll: () => [], addEventListener: () => {} });
 
 function fakeResponse(frames, { cut = false } = {}) {
   const enc = new TextEncoder();

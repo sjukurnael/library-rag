@@ -87,6 +87,14 @@ def library():
     return FileResponse(_STATIC / "library.html")
 
 
+@app.get("/queue")
+def queue():
+    """The processing dashboard: everything mid-pipeline, stage by stage, plus
+    upload. A third page because it is a third task -- watching work happen,
+    rather than reading or choosing what to read."""
+    return FileResponse(_STATIC / "queue.html")
+
+
 @app.get("/static/{name}")
 def static_file(name: str):
     """Shared CSS/JS. Whitelisted rather than mounted as a directory: this

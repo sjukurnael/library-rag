@@ -3,178 +3,83 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>library-rag</title>
+<title>Library — chat</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<header>
-  <h1>library-rag</h1>
-  <nav>
-    <a href="/" class="on">Research</a>
-    <a href="/library">Browse the drive</a>
-  </nav>
-  <span class="sub" id="libsummary">loading index…</span>
-</header>
+<div class="shell">
 
-<main>
-  <form id="f">
-    <input type="text" id="q" placeholder="Ask about the Holy Spirit, doctrine, an epistle…" autocomplete="off" autofocus>
-    <button type="submit" id="go">Ask</button>
-  </form>
+  <aside class="side">
+    <div class="brand"><span class="logo"></span>Library</div>
+    <nav class="snav">
+      <a href="/" class="on">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Chat</a>
+      <a href="/library">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        Drive</a>
+      <a href="/queue">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Processing</a>
+    </nav>
+    <div class="sidebooks">
+      <button class="sidehead" id="bookstoggle" aria-expanded="false">
+        <span class="chev">▸</span> In the index
+        <span class="count" id="bookcount"></span>
+      </button>
+      <ul id="navbooks" hidden></ul>
+    </div>
+    <div class="sidefoot" id="sidefoot">loading…</div>
+  </aside>
 
-  <div class="examples" id="ex">
-    <button>Who is the Holy Spirit?</button>
-    <button>How do these books differ on baptism in the Holy Spirit?</button>
-    <button>What are the qualifications of an elder?</button>
-    <button>How can I know I have eternal life?</button>
-    <button>What was Paul asking of Philemon?</button>
-    <button>What kinds of psalms are there?</button>
+  <div class="page">
+    <div class="chatwrap">
+      <div class="msgs" id="msgs">
+        <div class="hello" id="hello">
+          <div class="hi">Hello.</div>
+          <div class="sub">What would you like to study today?</div>
+          <div class="examples" id="ex">
+            <button>Who is the Holy Spirit?</button>
+            <button>How do these books differ on baptism in the Holy Spirit?</button>
+            <button>What are the qualifications of an elder?</button>
+            <button>How can I know I have eternal life?</button>
+            <button>What was Paul asking of Philemon?</button>
+            <button>What kinds of psalms are there?</button>
+          </div>
+        </div>
+      </div>
+      <div class="composer">
+        <form id="f">
+          <input type="text" id="q" placeholder="Ask the library…" autocomplete="off" autofocus>
+          <button type="submit" class="send" id="go" aria-label="Send">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.4 20.4l17.9-7.7c.8-.36.8-1.5 0-1.84L3.4 3.16a.993.993 0 0 0-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.5-.87 1l.01 5.05c0 .71.73 1.2 1.39.91z"/></svg>
+          </button>
+        </form>
+        <div class="note">Answers come only from the indexed books. Click a citation to see the source passage.</div>
+      </div>
+    </div>
   </div>
 
-  <div id="out"></div>
+</div>
 
-  <details class="card">
-    <summary>What's in the index</summary>
-    <ul class="lib" id="lib"></ul>
-    <ul class="lib pending" id="pending"></ul>
-    <div class="upload">
-      <label class="uploadbtn">
-        Add a book (PDF)
-        <input type="file" id="file" accept="application/pdf,.pdf" hidden>
-      </label>
-      <span class="uploadnote" id="uploadnote"></span>
-    </div>
-  </details>
-
-  <details class="card" id="browsecard">
-    <summary>Find a book to read next</summary>
-    <form id="bf">
-      <input type="text" id="bq" autocomplete="off"
-             placeholder="What do you want to study? e.g. the parables, church history…">
-      <button type="submit" id="bgo">Browse</button>
-    </form>
-    <div class="sub browsehint">
-      Searches ~57,500 books by meaning, not just title. Books you already have
-      are excluded.
-    </div>
-    <div id="btrail"></div>
-    <div id="bout"></div>
-  </details>
-</main>
-
-<div id="pop">
-  <button class="close" id="popclose" aria-label="close">&times;</button>
-  <div class="title" id="poptitle"></div>
-  <dl class="meta" id="popmeta"></dl>
-  <div class="quote" id="popquote"></div>
+<div id="panel" aria-hidden="true">
+  <div class="phead">
+    <div class="ptitle" id="ptitle"></div>
+    <button class="close" id="pclose" aria-label="Close">&times;</button>
+  </div>
+  <div class="pbody">
+    <dl class="meta" id="pmeta"></dl>
+    <div class="rawhead">Original passage (markdown)</div>
+    <div class="raw" id="praw"></div>
+  </div>
 </div>
 
 <script src="/static/app.js"></script>
 <script>
-function stage(b) {
-  const base = STAGE[b.status] || b.status;
-  // page_count is written by mark_extracted, so it is only meaningful once the
-  // book has been read; before that it is NULL (or a leftover from a prior run).
-  const known = b.pages && (b.status === 'extracted' || b.status === 'chunked');
-  return known ? `${base}, ${b.pages} pages` : base;
-}
-
-function terminalLabel(b) {
-  if (b.status === 'needs_ocr') return 'needs OCR — this PDF has no text layer';
-  return `failed — ${esc(b.error || 'unknown error')}`;
-}
-
-// Poll while anything is mid-pipeline. Ingestion takes minutes, so the upload
-// response only confirms the book was QUEUED -- this is what reports progress.
-let pollTimer = null;
-function loadBooks() {
-  return fetch('/api/books').then(r => r.json()).then(d => {
-    $('#libsummary').textContent =
-      `${d.books.length} books · ${d.total_chunks.toLocaleString()} chunks indexed`;
-    $('#lib').innerHTML = d.books.map(b =>
-      `<li><span>${esc(b.title)} — ${b.pages ?? '?'} pages, ${b.chunks} chunks</span>` +
-      `<button class="del" data-id="${b.id}" data-title="${esc(b.title)}" ` +
-      `title="Remove this book">&times;</button></li>`).join('');
-
-    const pending = d.pending || [];
-    $('#pending').innerHTML = pending.map(b => {
-      const terminal = TERMINAL.has(b.status);
-      const label = terminal ? terminalLabel(b) : `${esc(stage(b))}…${age(b.claim_age_s)}`;
-      // A stuck book gets a delete control too -- otherwise the only way out of
-      // a bad upload is SQL.
-      const del = terminal
-        ? `<button class="del" data-id="${b.id}" data-title="${esc(b.title)}">&times;</button>`
-        : '';
-      return `<li class="${terminal ? 'failed' : 'loading'}">` +
-             `<span>${esc(b.title)} — ${label}</span>${del}</li>`;
-    }).join('');
-
-    // Only a book actually moving through the pipeline justifies polling; one
-    // sitting at a terminal status never changes on its own, and polling it
-    // forever would be a request loop with no possible outcome.
-    const working = pending.some(b => !TERMINAL.has(b.status));
-    clearTimeout(pollTimer);
-    if (working) pollTimer = setTimeout(loadBooks, 3000);
-  }).catch(() => $('#libsummary').textContent = 'index unavailable');
-}
-loadBooks();
-
-// Delete is a hard delete of the row, its chunks and its files, so confirm by
-// name rather than by a bare "are you sure" that says nothing about what goes.
-document.addEventListener('click', async e => {
-  const btn = e.target.closest('.del');
-  if (!btn) return;
-  const { id, title } = btn.dataset;
-  if (!confirm(`Remove "${title}" from the library?\n\nThis deletes its passages and the uploaded file. You can add it again later.`)) return;
-  btn.disabled = true;
-  const note = $('#uploadnote');
-  try {
-    const r = await fetch(`/api/books/${id}`, { method: 'DELETE' });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || `delete failed (${r.status})`);
-    note.className = 'uploadnote';
-    note.textContent = `Removed ${d.title}.`;
-    loadBooks();
-  } catch (err) {
-    btn.disabled = false;
-    note.className = 'uploadnote err';
-    note.textContent = err.message;
-  }
-});
-
-$('#file').addEventListener('change', async e => {
-  const file = e.target.files[0];
-  if (!file) return;
-  e.target.value = '';                       // so re-picking the same file re-fires
-  const note = $('#uploadnote');
-  note.className = 'uploadnote';
-  note.textContent = `uploading ${file.name}…`;
-
-  const body = new FormData();
-  body.append('file', file);
-  try {
-    const r = await fetch('/api/books/upload', { method: 'POST', body });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || `upload failed (${r.status})`);
-    note.textContent = d.already_indexed
-      ? `${d.title} is already indexed — nothing to do.`
-      : `${d.title} queued. Indexing takes a few minutes.`;
-    $('details.card').open = true;
-    loadBooks();
-  } catch (err) {
-    note.className = 'uploadnote err';
-    note.textContent = err.message;
-  }
-});
-
-$('#ex').addEventListener('click', e => {
-  if (e.target.tagName === 'BUTTON') { $('#q').value = e.target.textContent; $('#f').requestSubmit(); }
-});
-
-
-// Minimal markdown -> HTML. Escapes first, so nothing the model writes can
-// inject markup; only the subset below is promoted back to tags. claude.ai
-// renders markdown too -- the raw ** you were seeing was us not rendering it.
+// Minimal markdown -> HTML for the ANSWER only. Escapes first, so nothing the
+// model writes can inject markup; only the subset below is promoted back to
+// tags. The user never sees raw markdown here -- the original text lives in
+// the citation panel instead.
 function md(text, citeFn) {
   const blocks = esc(text).trim().split(/\n{2,}/);
   const inline = t => {
@@ -184,7 +89,7 @@ function md(text, citeFn) {
     t = t.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
          .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s.,;:)]|$)/g, '$1<em>$2</em>')
          .replace(/`([^`]+)`/g, '<code>$1</code>')
-         .replace(/&quot;([^&]{1,200}?)&quot;/g, '\u201c$1\u201d');
+         .replace(/&quot;([^&]{1,200}?)&quot;/g, '“$1”');
     return citeFn ? citeFn(t) : t;
   };
   return blocks.map(b => {
@@ -202,258 +107,153 @@ function md(text, citeFn) {
   }).join('');
 }
 
-// ---- Citation popover ----
-// One source-of-truth map keyed by citation number; both modes populate it, so
-// [n] in the prose always resolves to the exact passage the model was given.
-let SOURCES = {};
+// ---- Citation panel ----
+// Sources are PER TURN: two questions can both have a source [1], and each
+// citation must resolve to the passage its own run was given.
+const TURNS = [];
 
-function bodyOf(s) {
-  // content has the heading trail prepended by chunking.py; show the prose only.
-  const parts = s.content.split('\n\n');
-  return parts.length > 1 ? parts.slice(1).join('\n\n') : s.content;
-}
-
-function showCite(el, n) {
-  const s = SOURCES[n];
-  const pop = $('#pop');
+function showSource(ti, n) {
+  const s = (TURNS[ti] || {})[n];
   if (!s) return;
   document.querySelectorAll('.answer cite.on').forEach(c => c.classList.remove('on'));
-  el.classList.add('on');
+  const el = document.querySelector(`.answer cite[data-t="${ti}"][data-n="${n}"]`);
+  if (el) el.classList.add('on');
 
-  $('#poptitle').textContent = s.book;
+  $('#ptitle').textContent = s.book;
+  // Everything the retrieval layer knows about this passage. The panel is the
+  // one place metadata appears, so nothing is trimmed for tidiness.
   const rows = [
     ['Section', s.heading_trail ? s.heading_trail.replace(/\*\*/g, '') : '—'],
-    ['Page', s.pages + (s.book_pages ? ` of ${s.book_pages}` : '')],
+    ['Pages', s.pages + (s.book_pages ? ` (book has ${s.book_pages})` : '')],
     ['Passage', s.ordinal != null ? `${s.ordinal + 1} of ${s.total_chunks}` : '—'],
     ['Length', s.tokens != null ? `${s.tokens} tokens` : '—'],
-    ['Distance', `${s.distance}${s.distance <= 0.70 ? '' : ' (weak)'}`],
+    ['Distance', `${s.distance}${s.distance <= 0.70 ? '' : ' (weak match)'}`],
+    ['Citation', `[${s.n}]`],
+    ['Chunk id', s.chunk_id],
+    ['Book id', s.book_id],
   ];
-  $('#popmeta').innerHTML = rows
+  $('#pmeta').innerHTML = rows
     .map(([k, v]) => `<dt>${k}</dt><dd>${esc(String(v))}</dd>`).join('');
-  $('#popquote').textContent = bodyOf(s);
-
-  pop.classList.add('show');
-  const r = el.getBoundingClientRect();
-  const w = pop.offsetWidth;
-  let left = r.left + window.scrollX - w / 2 + r.width / 2;
-  left = Math.max(12, Math.min(left, window.innerWidth - w - 12));
-  let top = r.bottom + window.scrollY + 8;
-  if (top + pop.offsetHeight > window.scrollY + window.innerHeight) {
-    top = r.top + window.scrollY - pop.offsetHeight - 8;
-  }
-  pop.style.left = left + 'px';
-  pop.style.top = Math.max(8, top) + 'px';
+  // textContent, not innerHTML: this is the ORIGINAL markdown, shown verbatim.
+  $('#praw').textContent = s.content;
+  $('#panel').classList.add('show');
 }
 
-function hideCite() {
-  $('#pop').classList.remove('show');
+function hidePanel() {
+  $('#panel').classList.remove('show');
   document.querySelectorAll('.answer cite.on').forEach(c => c.classList.remove('on'));
 }
 
-$('#popclose').addEventListener('click', hideCite);
-document.addEventListener('keydown', e => { if (e.key === 'Escape') hideCite(); });
+$('#pclose').addEventListener('click', hidePanel);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') hidePanel(); });
 document.addEventListener('click', e => {
   const cite = e.target.closest('.answer cite');
-  if (cite) { showCite(cite, cite.dataset.n); e.stopPropagation(); return; }
-  if (!e.target.closest('#pop')) hideCite();
+  if (cite) { showSource(cite.dataset.t, cite.dataset.n); e.stopPropagation(); return; }
+  if (!e.target.closest('#panel')) hidePanel();
 });
 
-const citeSpans = html =>
-  html.replace(/\[(\d+)\]/g, (m, n) => SOURCES[n]
-    ? `<cite data-n="${n}" title="${esc(SOURCES[n].book)} \u2014 ${esc(SOURCES[n].pages)}">${n}</cite>`
-    : m);
-const citeify = text => md(text, citeSpans);
+const citeify = (text, ti) => md(text, html =>
+  html.replace(/\[(\d+)\]/g, (m, n) => (TURNS[ti] || {})[n]
+    ? `<cite data-t="${ti}" data-n="${n}" title="${esc(TURNS[ti][n].book)} — ${esc(TURNS[ti][n].pages)}">${n}</cite>`
+    : m));
 
-// ---- Research mode: SSE, render the loop as it happens ----
+// ---- The conversation ----
+const scrollDown = () => { const m = $('#msgs'); m.scrollTop = m.scrollHeight; };
+
+function addTurn(question) {
+  const ti = TURNS.length;
+  TURNS.push({});
+  $('#hello')?.remove();
+  $('#msgs').insertAdjacentHTML('beforeend',
+    `<div class="turn" id="turn-${ti}">
+       <div class="msg user">${esc(question)}</div>
+       <div class="msg bot">
+         <details class="trace"><summary id="tsum-${ti}">Researching…</summary>
+           <div class="trace-body" id="trace-${ti}"></div>
+         </details>
+         <div class="answer" id="ans-${ti}"></div>
+       </div>
+     </div>`);
+  scrollDown();
+  return ti;
+}
+
+$('#ex').addEventListener('click', e => {
+  if (e.target.tagName === 'BUTTON') { $('#q').value = e.target.textContent; $('#f').requestSubmit(); }
+});
+
 $('#f').addEventListener('submit', async e => {
   e.preventDefault();
   const question = $('#q').value.trim();
   if (!question) return;
+  $('#q').value = '';
   $('#go').disabled = true;
 
+  const ti = addTurn(question);
   const steps = [];
-  const paint = (answerHtml, sources) => {
-    $('#out').innerHTML =
-      (answerHtml ? `<div class="card"><div class="answer">${answerHtml}</div></div>` : '') +
-      `<details class="card"><summary>How this was researched — ${steps.filter(s => s.t === 'search').length} searches</summary>
-         <div class="trace">${steps.map(s => s.html).join('')}</div></details>` +
-      '';
-  };
-  steps.push({ t: 'x', html: `<div class="step status loading"><span class="lbl">start</span> thinking…</div>` });
-  paint('', null);
+  const trace = $(`#trace-${ti}`), sum = $(`#tsum-${ti}`), ans = $(`#ans-${ti}`);
+  const paintTrace = () => { trace.innerHTML = steps.map(s => s.html).join(''); scrollDown(); };
+  let searches = 0;
+  steps.push({ html: `<div class="step status loading"><span class="lbl">start</span>thinking…</div>` });
+  paintTrace();
 
   try {
     const r = await fetch('/api/research', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ question, k: 8 })
+      body: JSON.stringify({ question })
     });
-    if (!r.ok) throw new Error(r.statusText);
-    let answerHtml = '', rawAnswer = '', sources = null;
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    let rawAnswer = '';
     steps.length = 0;
 
     // `terminal: 'done'` is what turns a dropped connection into an error. A
     // stream that just stops leaves the trail half-drawn and the page silent.
-    await readEventStream(r, e => {
-      if (e.type === 'thinking') {
-          steps.push({ t: 'think', html: `<div class="step"><span class="lbl">reasoning</span><span class="think">${esc(e.text)}</span></div>` });
-        } else if (e.type === 'search') {
-          steps.push({ t: 'search', html: e.query
-            ? `<div class="step"><span class="lbl">search</span><span class="q">“${esc(e.query)}”</span>${e.book_id ? ` <span class="badge">book ${e.book_id}</span>` : ''}</div>`
-            : `<div class="step"><span class="lbl">tool</span><span class="q">list_books</span></div>` });
-        } else if (e.type === 'results') {
-          const last = steps[steps.length - 1];
-          last.html += `<div class="hits">${e.hits.map(h =>
-            `<div class="${h.weak ? 'w' : ''}"><b>[${h.n}]</b> d=${h.distance} · ${esc(h.book).slice(0,40)} ${h.pages}${h.heading ? ' · ' + esc(h.heading).slice(0,54) : ''}</div>`
-          ).join('')}${e.strong === 0 ? '<div class="w">— no strong matches; agent should rephrase</div>' : ''}</div>`;
-        } else if (e.type === 'answer') {
-          rawAnswer = e.text;
-        } else if (e.type === 'done') {
-          sources = e.sources.map(s => ({ ...s, relevant: s.distance <= 0.70 }));
-          SOURCES = Object.fromEntries(sources.map(x => [String(x.n), x]));
-          answerHtml = citeify(rawAnswer);
-      } else if (e.type === 'error') {
-        throw new Error(e.message);
+    await readEventStream(r, ev => {
+      if (ev.type === 'thinking') {
+        steps.push({ html: `<div class="step"><span class="lbl">reasoning</span><span class="think">${esc(ev.text)}</span></div>` });
+      } else if (ev.type === 'search') {
+        if (ev.query) searches++;
+        sum.textContent = `Researching… ${searches} search${searches === 1 ? '' : 'es'}`;
+        steps.push({ html: ev.query
+          ? `<div class="step"><span class="lbl">search</span><span class="q">“${esc(ev.query)}”</span>${ev.book_id ? ` <span class="badge">book ${ev.book_id}</span>` : ''}</div>`
+          : `<div class="step"><span class="lbl">tool</span><span class="q">list_books</span></div>` });
+      } else if (ev.type === 'results') {
+        const last = steps[steps.length - 1];
+        last.html += `<div class="hits">${ev.hits.map(h =>
+          `<div class="${h.weak ? 'w' : ''}"><b>[${h.n}]</b> d=${h.distance} · ${esc(h.book).slice(0,40)} ${h.pages}${h.heading ? ' · ' + esc(h.heading).slice(0,54) : ''}</div>`
+        ).join('')}${ev.strong === 0 ? '<div class="w">— no strong matches; agent should rephrase</div>' : ''}</div>`;
+      } else if (ev.type === 'answer') {
+        rawAnswer = ev.text;
+      } else if (ev.type === 'done') {
+        TURNS[ti] = Object.fromEntries(ev.sources.map(s => [String(s.n), s]));
+        ans.innerHTML = citeify(rawAnswer, ti);
+        sum.textContent = `Researched · ${searches} search${searches === 1 ? '' : 'es'} · ${ev.sources.length} sources`;
+      } else if (ev.type === 'error') {
+        throw new Error(ev.message);
       }
-      paint(answerHtml, sources);
+      paintTrace();
     }, {
       terminal: 'done',
       // Not a timeout -- a hard question legitimately runs for a minute, and
       // killing one that is merely slow is worse than waiting. This only
       // changes what the user is told.
       onStall: secs => {
-        steps.push({ t: 'x', html: `<div class="step status warn"><span class="lbl">waiting</span>` +
+        steps.push({ html: `<div class="step status warn"><span class="lbl">waiting</span>` +
           `no update for ${secs}s — still connected, but the model may be stuck.</div>` });
-        paint(answerHtml, sources);
+        paintTrace();
       },
     });
   } catch (err) {
-    $('#out').insertAdjacentHTML('beforeend', `<div class="card err">${esc(String(err.message || err))}</div>`);
+    sum.textContent = 'Research failed';
+    ans.innerHTML = `<p class="err">${esc(String(err.message || err))}</p>`;
+    scrollDown();
   } finally {
     $('#go').disabled = false;
+    $('#q').focus();
   }
 });
 
-// ------------------------------------------------------------------ browse --
-// Same SSE contract as /api/research: `data: {json}\n\n` frames off a reader.
-// Streamed because the agent runs several Drive searches over tens of seconds,
-// and showing which ones it chose is what separates a shortlist you can trust
-// from a list of plausible-looking titles.
-
-const TOOL_LABEL = {
-  search_drive: 'search', browse_folder: 'browse',
-  estimate_pipeline: 'estimate', recommend: 'shortlist',
-};
-
-function toolLine(e) {
-  const i = e.input || {};
-  const arg = i.query || i.name_contains || i.folder_id || '';
-  return `<div class="bstep"><span class="lbl">${esc(TOOL_LABEL[e.name] || e.name)}</span>` +
-         `${arg ? `“${esc(String(arg))}”` : ''}</div>`;
-}
-
-function resultLine(s) {
-  const bits = [];
-  if (s.returned != null) bits.push(`${s.returned} found`);
-  if (s.total_pdfs != null && s.truncated) bits.push(`of ${s.total_pdfs}`);
-  if (s.already_indexed) bits.push(`${s.already_indexed} already yours`);
-  if (s.hit_limit) bits.push('hit the limit');
-  if (s.picks != null) bits.push(`${s.picks} picked`);
-  return bits.length
-    ? `<div class="bstep"><span class="lbl"></span>${esc(bits.join(' · '))}</div>` : '';
-}
-
-function recCard(b, i) {
-  // A pick whose file_id the agent never actually saw is shown as an error, not
-  // rendered as a card -- a dead Drive link that looks real is worse than none.
-  if (b.unknown) {
-    return `<div class="rec bad"><div class="body"><div class="t">Unusable suggestion</div>` +
-           `<div class="why">${esc(b.error)}</div></div></div>`;
-  }
-  const size = b.size_mb != null ? `${b.size_mb} MB` : 'size unknown';
-  const action = b.indexed
-    ? `<span class="badge">already yours</span>`
-    : `<button class="add" data-i="${i}">Add to library</button>`;
-  return `<div class="rec${b.indexed ? ' owned' : ''}">` +
-    `<div class="body"><div class="t">${esc(b.title)}</div>` +
-    `<div class="why">${esc(b.why || '')}</div>` +
-    `<div class="m">${esc(size)} · <a href="${esc(b.url)}" target="_blank" rel="noopener">view in Drive</a></div>` +
-    `</div>${action}</div>`;
-}
-
-let recs = [];
-
-$('#bf').addEventListener('submit', async e => {
-  e.preventDefault();
-  const interest = $('#bq').value.trim();
-  if (!interest) return;
-  $('#bgo').disabled = true;
-  $('#btrail').innerHTML = '<div class="bstep">looking…</div>';
-  $('#bout').innerHTML = '';
-  recs = [];
-
-  const trail = [];
-  try {
-    const r = await fetch('/api/browse', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ interest })
-    });
-    if (!r.ok) throw new Error(r.statusText);
-    await readEventStream(r, ev => {
-        if (ev.type === 'tool') trail.push(toolLine(ev));
-        else if (ev.type === 'results') trail.push(resultLine(ev.summary));
-        else if (ev.type === 'tool_error') {
-          trail.push(`<div class="bstep berr">${esc(ev.name)} failed — ${esc(ev.message)}</div>`);
-        } else if (ev.type === 'recommendations') {
-          recs = ev.books;
-          $('#bout').innerHTML = recs.map(recCard).join('');
-        } else if (ev.type === 'answer') {
-          $('#bout').insertAdjacentHTML('beforeend',
-            `<div class="why" style="margin-top:10px">${esc(ev.text)}</div>`);
-        } else if (ev.type === 'error') {
-          $('#bout').insertAdjacentHTML('beforeend', `<div class="berr">${esc(ev.message)}</div>`);
-        }
-        $('#btrail').innerHTML = trail.join('');
-    }, {
-      terminal: 'done',
-      onStall: secs => {
-        trail.push(`<div class="bstep">no update for ${secs}s — still connected.</div>`);
-        $('#btrail').innerHTML = trail.join('');
-      },
-    });
-  } catch (err) {
-    $('#bout').innerHTML = `<div class="berr">${esc(String(err.message || err))}</div>`;
-  } finally {
-    $('#bgo').disabled = false;
-  }
-});
-
-// The agent recommends; the button acts. Nothing the agent does writes to the
-// library -- adding a book is always an explicit choice made here.
-$('#bout').addEventListener('click', async e => {
-  const btn = e.target.closest('.add');
-  if (!btn) return;
-  const book = recs[Number(btn.dataset.i)];
-  btn.disabled = true;
-  btn.textContent = 'adding…';
-  try {
-    const r = await fetch('/api/library/drive', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ file_ids: [book.file_id] })
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || `failed (${r.status})`);
-    btn.textContent = d.added.length ? 'queued' : 'already yours';
-    // The pending list and its stage labels report the ingest from here on --
-    // no second progress mechanism needed.
-    $('details.card').open = true;
-    loadBooks();
-  } catch (err) {
-    btn.disabled = false;
-    btn.textContent = 'retry';
-    $('#bout').insertAdjacentHTML('beforeend', `<div class="berr">${esc(String(err.message || err))}</div>`);
-  }
-});
-
+refreshBooks();
 </script>
 </body>
 </html>
