@@ -324,7 +324,7 @@ def test_an_all_stopword_query_degrades_instead_of_erroring(corpus):
 
 
 def test_hybrid_still_returns_a_distance_for_a_lexical_only_hit(corpus, monkeypatch):
-    """agent/research.py reads `distance` on every row to decide weak vs strong.
+    """retrieval/tools.py reads `distance` on every row to decide weak vs strong.
     A lexical-only hit arriving with distance NULL would read as a perfect
     match and be reported to the model as strong evidence.
 

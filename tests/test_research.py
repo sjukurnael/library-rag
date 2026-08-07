@@ -1,6 +1,6 @@
 """
-agent/research.py: the tool loop, citation numbering across searches, the
-search budget, and the iteration leash.
+retrieval/loop.py + retrieval/tools.py: the tool loop, citation numbering
+across searches, the search budget, and the iteration leash.
 
 The Anthropic client is a scripted fake -- each test states exactly what the
 model "decides" so the assertions are about our loop, not about the model's
@@ -11,7 +11,7 @@ import types
 
 import pytest
 
-from library_rag.retrieval import research
+from library_rag.retrieval import research, tools
 
 # ------------------------------------------------------------- fakes --
 
@@ -94,9 +94,9 @@ def fake_search(monkeypatch):
     def _search(_conn, _vec, k, book_id=None, **kw):
         return queued.pop(0) if queued else []
 
-    monkeypatch.setattr(research.db, "search", _search)
+    monkeypatch.setattr(tools.db, "search", _search)
     monkeypatch.setattr(
-        research.embed_mod, "embed_query", lambda text, client: [0.0] * 8
+        tools.embed_mod, "embed_query", lambda text, client: [0.0] * 8
     )
     return queued
 
@@ -180,7 +180,7 @@ def test_stop_check_reports_the_running_search_count(fake_search):
 
 
 def test_search_budget_is_enforced(fake_search, monkeypatch):
-    monkeypatch.setattr(research, "MAX_SEARCHES", 2)
+    monkeypatch.setattr(tools, "MAX_SEARCHES", 2)
     for _ in range(4):
         fake_search.append([_row(101)])
     client = ScriptedClient([
@@ -222,6 +222,18 @@ def test_list_books_is_offered_and_reported(fake_search):
     assert events[-1]["searches"] == 0, "list_books must not spend search budget"
 
 
+def test_unknown_tool_is_rejected_without_searching(fake_search):
+    client = ScriptedClient([
+        [_tool("hack_the_planet", "t1")],
+        [_text("ok")],
+    ])
+    events = list(research.run("q", FakeConn(), object(), client=client))
+
+    assert events[-1]["searches"] == 0
+    assert client.last_tool_results()[0] == {"error": "unknown tool: hack_the_planet"}
+    assert "results" not in {e["type"] for e in events}
+
+
 def test_book_id_is_passed_through_to_retrieval(monkeypatch):
     seen = {}
 
@@ -230,8 +242,8 @@ def test_book_id_is_passed_through_to_retrieval(monkeypatch):
         seen["query_text"] = kw.get("query_text")
         return [_row(101)]
 
-    monkeypatch.setattr(research.db, "search", _search)
-    monkeypatch.setattr(research.embed_mod, "embed_query", lambda t, c: [0.0] * 8)
+    monkeypatch.setattr(tools.db, "search", _search)
+    monkeypatch.setattr(tools.embed_mod, "embed_query", lambda t, c: [0.0] * 8)
     events = _run([
         [_tool("search_library", "t1", query="scoped", k=3, book_id=7)],
         [_text("ok")],
@@ -247,16 +259,16 @@ def test_book_id_is_passed_through_to_retrieval(monkeypatch):
 def test_k_is_clamped_to_the_allowed_range(monkeypatch):
     seen = []
     monkeypatch.setattr(
-        research.db, "search",
+        tools.db, "search",
         lambda _c, _v, k, book_id=None, **kw: (seen.append(k), [_row(101)])[1],
     )
-    monkeypatch.setattr(research.embed_mod, "embed_query", lambda t, c: [0.0] * 8)
+    monkeypatch.setattr(tools.embed_mod, "embed_query", lambda t, c: [0.0] * 8)
     _run([
         [_tool("search_library", "t1", query="huge", k=999)],
         [_tool("search_library", "t2", query="zero", k=0)],
         [_text("ok")],
     ])
-    assert seen == [research.MAX_K, research.DEFAULT_K]
+    assert seen == [tools.MAX_K, tools.DEFAULT_K]
 
 
 def test_missing_api_key_is_reported_only_when_building_a_real_client(monkeypatch):
