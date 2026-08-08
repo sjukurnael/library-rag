@@ -47,6 +47,19 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
 ```
 
+Given a **zip** instead of a repo, unzip it and run the last two lines — nothing
+else differs. You lose the commit history, which costs you nothing to run it.
+
+> **If you are the one sending the zip: do not compress the folder in Finder.**
+> That sweeps up `.env` with every API key in it, plus `credentials.json`,
+> `token.json`, the whole `data/` corpus and a `.venv` full of absolute paths
+> that are wrong on any other machine. Use
+> `git archive --format=zip --prefix=library-rag/ HEAD -o library-rag.zip`
+> instead: it exports exactly the tracked files, so everything gitignored is
+> excluded by construction rather than by remembering to exclude it. Note it
+> archives the last **commit** — uncommitted work in your tree will not be in
+> the zip.
+
 The `src/` layout means the package is importable **only once installed** —
 that is deliberate, so a test can never pass by accidentally picking up the
 working directory instead of what would actually ship.
@@ -122,17 +135,62 @@ still run — so a green-but-mostly-skipped run means Docker is not up.
 
 ---
 
-## Two ways to get books, and why it matters
+## Joining someone else's library
 
-**Your own library (recommended).** Everything above. Empty database, your
-keys, your books. Fully independent.
+If the point is to see a library that already has books in it, you skip most of
+the above: no Docker, no migrations, no ingestion. You point at their database
+and the corpus is simply there.
 
-**Sharing an existing library.** If someone hands you their `DATABASE_URL` and
-`SUPABASE_*` values, you get their books immediately — same corpus, same
-citations. Understand what that is: the Supabase `service_role` key is
-**full read and write on their database and file storage**, with no scoping.
-Deleting a book from your copy deletes it from theirs. Only do this with
-someone who means to give you that, and never commit the values.
+Ask them for three values and put them in your `.env`:
+
+```
+DATABASE_URL=            # their Supabase SESSION pooler URI
+SUPABASE_URL=            # their project URL
+SUPABASE_SERVICE_KEY=    # their service_role key
+```
+
+Then keep these **your own** — they are not part of what is shared:
+
+```
+ANTHROPIC_API_KEY=       # your key, your bill
+VOYAGE_API_KEY=          # your key
+TEST_DATABASE_URL=postgresql://app:app@localhost:5434/library
+```
+
+Your own Voyage key is fine and does not corrupt anything: the model is pinned
+in `config.EMBED_MODEL`, so vectors you produce land in the same space as
+theirs. It is the *model* that has to match, not the account.
+
+Then step 5 — start the server — and you are done. Steps 4 and 6 do not apply.
+
+**What works immediately:** the chat, every indexed book, and browsing/searching
+all 57k Drive titles — the metadata mirror lives in the shared database, so no
+Google account is involved. **What still needs your own Google setup:** indexing
+a *new* book from Drive, because that downloads the actual file. Uploading a PDF
+from your machine never needs Drive.
+
+Two people can use one database at once. The `books` table is the work queue and
+claims are taken with `FOR UPDATE SKIP LOCKED`, so two servers draining it will
+not collide or double-process — that is the design, not a happy accident.
+
+### What you are actually being given
+
+The `service_role` key is **unscoped read and write on their database and file
+storage**. There is no read-only mode and no per-user permission. Deleting a
+book on your screen deletes it from theirs, permanently, along with its chunks
+and its stored PDF. Treat the whole thing as shared-owner access to someone
+else's work.
+
+For the person sharing: send these through a password manager or another
+end-to-end encrypted channel, not chat or email, and never commit them. If you
+later want the access back, rotate the `service_role` key in the Supabase
+dashboard and change the database password — revoking is per-project, not per
+person, so everyone reconnects.
+
+`TEST_DATABASE_URL` is the one line you must not skip. The suite CREATEs and
+DROPs databases; `tests/conftest.py` refuses any non-local host outright, so a
+missing value is a hard stop rather than a disaster — but point it at local
+Docker and the tests just work.
 
 ---
 
