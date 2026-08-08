@@ -1,5 +1,9 @@
 # library-rag
 
+> **Just cloned this? Read [SETUP.md](SETUP.md)** — clone to a running app in
+> about 15 minutes. This file is the engineering record: what each decision was,
+> what was measured, and what would change the answer.
+
 A RAG "library tutor" chatbot over ~130GB of theology PDFs in a shared
 Google Drive. Built in phases:
 

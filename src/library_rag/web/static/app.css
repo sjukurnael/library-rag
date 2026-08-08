@@ -170,6 +170,10 @@ button { font: inherit; }
 .btn.primary { background: var(--accent); color: var(--bg); }
 .btn.primary:hover:not(:disabled) { filter: brightness(1.08); }
 .btn.soft { background: var(--accent-soft); color: var(--accent-ink); }
+/* A .btn that toggles something open, so it needs a pressed state the way
+   .chip has one -- without it the librarian button looks identical whether its
+   panel is showing or not. */
+.btn.on { background: var(--accent-soft); color: var(--accent-ink); }
 .btn:disabled { opacity: .5; cursor: default; }
 .btn svg { width: 16px; height: 16px; }
 
@@ -408,6 +412,13 @@ details.trace[open] summary { color: var(--ink); }
 .crumb .sep { margin: 0 2px; color: var(--dim); }
 .crumb .here { color: var(--ink); font-weight: 500; padding: 3px 8px; }
 .crumb .btn { padding: 4px 12px; font-size: 12px; margin-left: 10px; }
+
+/* An explanation, not a failure: a refused bulk-index is the rule working, so
+   it reads as information rather than the red of .failnote. */
+.note {
+  background: var(--surface); color: var(--muted); font-size: 13px;
+  border-radius: 10px; padding: 9px 14px; margin: 0 0 10px;
+}
 
 /* Drive-style rows: fill on hover, no borders between rows. */
 .files { display: flex; flex-direction: column; }

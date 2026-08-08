@@ -37,6 +37,13 @@
     <div class="pagehead">
       <h1>Drive</h1>
       <span class="sub" id="stat">loading…</span>
+      <span style="flex:1"></span>
+      <!-- The librarian is a different feature from search, not a variant of
+           it: search runs the one query you typed, the librarian runs an agent
+           that writes its own. It sits up here with the page's other top-level
+           action (cf. queue.html's Upload) rather than in the toolbar, where
+           being adjacent to the search box implied it modified the search. -->
+      <button class="btn" id="librarianbtn">✦ Ask the librarian</button>
     </div>
     <div class="pagebody">
 
@@ -48,16 +55,6 @@
       <div class="banner" id="banner" hidden>
         <span class="msg" id="bmsg"></span>
         <button class="btn" id="sync">Sync from Drive</button>
-      </div>
-
-      <div class="toolbar">
-        <form class="searchpill" id="sf">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-          <input type="text" id="sq" autocomplete="off"
-                 placeholder="Search 57,000 books by meaning — “the end times”, “how to pray”, “Paul in prison”…">
-        </form>
-        <button class="chip" id="librarianbtn">✦ Ask the librarian</button>
-        <button class="chip" id="clear">Clear search</button>
       </div>
 
       <div class="card librarian" id="librarian" hidden>
@@ -75,10 +72,25 @@
         <div id="bout"></div>
       </div>
 
+      <div class="toolbar">
+        <form class="searchpill" id="sf">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input type="text" id="sq" autocomplete="off"
+                 placeholder="Search 57,000 books by meaning — “the end times”, “how to pray”, “Paul in prison”…">
+        </form>
+        <!-- form= submits #sf from outside it, so this button and the Enter key
+             go through the one submit handler rather than two code paths. -->
+        <button class="btn primary" id="searchbtn" type="submit" form="sf">Search</button>
+      </div>
+
       <div class="split">
         <div class="tree" id="tree">loading…</div>
         <div>
           <div class="crumb" id="crumb"></div>
+          <!-- Explanations that must not cost you the breadcrumb: the error
+               path used to overwrite #crumb, which answered the question and
+               took away the navigation you needed to act on the answer. -->
+          <div class="note" id="note" hidden></div>
           <div class="files" id="files"></div>
         </div>
       </div>
@@ -288,16 +300,34 @@ function fileRow(f, i) {
     `<div class="fact">${statusCell(f, i)}</div></div>`;
 }
 
-// "Index folder" queues the folder's whole subtree, so it is gated by size:
-// over the server's limit the button stays visible but dead, with the reason
-// on hover -- a hidden button would make the feature look arbitrary on the
-// folders where it does exist. The server enforces the same limit (413).
+// "Index folder" queues the folder's whole subtree, so it is gated by size.
+// Over the limit the button stays LIVE and explains itself on click, rather
+// than sitting greyed out: a dead control says you cannot, never why, and the
+// why is the half that tells you what to do instead. Hover text is not an
+// answer either -- it does not exist on touch, and nobody hovers a button they
+// have already been told is dead. The server enforces the same limit (413),
+// so this is a shortcut to the explanation, not the guard itself.
 function dirBtn(f, label) {
-  if (LIMIT_MB != null && f.size_mb != null && f.size_mb > LIMIT_MB)
-    return `<button class="btn ixdir" disabled title="${esc(mb(f.size_mb))} of PDFs — ` +
-      `over the ${LIMIT_MB} MB bulk-index limit">${esc(label)}</button>`;
-  return `<button class="btn ixdir" data-dir="${esc(f.file_id)}" ` +
-    `title="Queue every PDF in this folder for indexing">${esc(label)}</button>`;
+  const over = LIMIT_MB != null && f.size_mb != null && f.size_mb > LIMIT_MB;
+  return `<button class="btn ixdir" data-dir="${esc(f.file_id)}"` +
+    (over ? ` data-over="${esc(mb(f.size_mb))}" data-name="${esc(f.title)}"` : '') +
+    ` title="${over ? 'Too large to index in one action — click to see why'
+                    : 'Queue every PDF in this folder for indexing'}">${esc(label)}</button>`;
+}
+
+// Why one folder can be indexed whole and another cannot, in the terms the
+// question is actually asked in: this folder, its size, the ceiling, and the
+// two ways through.
+function overLimitNote(subject, size, remedy) {
+  return `${subject} ${size} of PDFs — more than the ${LIMIT_MB} MB that one bulk ` +
+    `action can queue. ${remedy}`;
+}
+
+// A message that does not cost you the breadcrumb (see #note in the markup).
+function note(message) {
+  const el = $('#note');
+  el.textContent = message;
+  el.hidden = false;
 }
 
 function dirRow(f) {
@@ -313,6 +343,8 @@ let LIMIT_MB = null;   // the bulk-index ceiling, told to us by the children API
 function render(d, crumb) {
   shown = d.files;
   if (d.folder_limit_mb != null) LIMIT_MB = d.folder_limit_mb;
+  // A note explains the view you were in; moving somewhere else retires it.
+  $('#note').hidden = true;
   $('#crumb').innerHTML = crumb === undefined ? $('#crumb').innerHTML
     : (crumb.length
         ? '<a href="#" data-id="">All</a>' +
@@ -398,7 +430,13 @@ async function queueFolder(btn) {
 for (const host of [$('#files'), $('#crumb')]) {
   host.addEventListener('click', e => {
     const btn = e.target.closest('.ixdir');
-    if (btn && !btn.disabled && btn.dataset.dir) queueFolder(btn);
+    if (!btn || btn.disabled || !btn.dataset.dir) return;
+    // Over the ceiling the click buys the explanation instead of a request the
+    // server would only 413.
+    if (btn.dataset.over) {
+      note(overLimitNote(`“${btn.dataset.name}” holds`, btn.dataset.over,
+        'Open it and index a subfolder that fits, or index books individually.'));
+    } else queueFolder(btn);
   });
 }
 
@@ -407,6 +445,9 @@ for (const host of [$('#files'), $('#crumb')]) {
 $('#crumb').addEventListener('click', async e => {
   const btn = e.target.closest('.ixall');
   if (!btn || btn.disabled) return;
+  // Same rule as a folder, so the same treatment: live button, stated reason.
+  if (btn.dataset.over) return note(overLimitNote('These results hold', btn.dataset.over,
+    'Narrow the search, or index books individually from the list.'));
   const ids = shown.filter(f => !f.indexed).map(f => f.file_id);
   if (!ids.length) return;
   btn.disabled = true;
@@ -461,15 +502,17 @@ async function runSearch() {
     const totalMb = Math.round(d.results.reduce((a, f) => a + (f.size_mb || 0), 0) * 10) / 10;
     let ixall = '';
     if (newOnes.length && LIMIT_MB != null && newMb > LIMIT_MB) {
-      ixall = `<button class="btn ixall" disabled title="${esc(mb(newMb))} of unindexed PDFs — ` +
-        `over the ${LIMIT_MB} MB bulk-index limit">Index all</button>`;
+      ixall = `<button class="btn ixall" data-over="${esc(mb(newMb))}" ` +
+        `title="Too large to index in one action — click to see why">` +
+        `Index all (${newOnes.length})</button>`;
     } else if (newOnes.length) {
       ixall = `<button class="btn ixall" title="Queue the ${newOnes.length} result(s) not yet in your library">` +
         `Index all (${newOnes.length})</button>`;
     }
     $('#crumb').innerHTML =
       `<span class="here">${d.results.length} result(s) for “${esc(q)}”</span>` +
-      `<span class="sep">·</span> ${esc(mb(totalMb))} total · across the whole drive · ${p.seconds()}s ${ixall}`;
+      `<span class="sep">·</span> ${esc(mb(totalMb))} total · across the whole drive · ${p.seconds()}s ${ixall}` +
+      `<button class="btn clearsearch">Back to browsing</button>`;
     shown = d.results;
     $('#files').innerHTML = d.results.length
       ? `<div class="fhead"><div>Name</div><div class="fwhere">Location</div><div>Size</div><div></div></div>` +
@@ -483,7 +526,16 @@ async function runSearch() {
 }
 
 $('#sf').addEventListener('submit', e => { e.preventDefault(); runSearch(); });
-$('#clear').addEventListener('click', () => { $('#sq').value = ''; open(current); });
+
+// Leaving a result list is now offered BY the result list, not by a toolbar
+// button that sat there meaning nothing for as long as you were browsing.
+// `current` is untouched by runSearch, so this returns to the folder you
+// searched from rather than dumping you at the roots.
+$('#crumb').addEventListener('click', e => {
+  if (!e.target.closest('.clearsearch')) return;
+  $('#sq').value = '';
+  open(current);
+});
 
 // ----------------------------------------------------------------- index --
 
@@ -544,7 +596,14 @@ function resultLine(s) {
   if (s.returned != null) bits.push(`${s.returned} found`);
   if (s.total_pdfs != null && s.truncated) bits.push(`of ${s.total_pdfs}`);
   if (s.already_indexed) bits.push(`${s.already_indexed} already yours`);
+  // "hit the limit" used to sit here and was shown on EVERY mirror search --
+  // a KNN ranker always fills its page, so it announced a ceiling that was not
+  // real. Only the live-Drive fallback can genuinely run short.
   if (s.hit_limit) bits.push('hit the limit');
+  // The honest version of "is this topic actually in the collection": titles
+  // both rankers agreed on. Only worth saying when it is zero -- that is the
+  // case where a full-looking list of 50 is really just nearest neighbours.
+  if (s.word_and_meaning === 0) bits.push('nothing matched on words — nearest by meaning only');
   if (s.picks != null) bits.push(`${s.picks} picked`);
   return bits.length
     ? `<div class="bstep"><span class="lbl"></span>${esc(bits.join(' · '))}</div>` : '';
@@ -560,7 +619,7 @@ function recCard(b, i) {
   const size = b.size_mb != null ? `${b.size_mb} MB` : 'size unknown';
   const action = b.indexed
     ? `<span class="badge good">Already yours</span>`
-    : `<button class="btn add" data-i="${i}">Add to library</button>`;
+    : `<button class="btn add" data-i="${i}">Index</button>`;
   return `<div class="rec${b.indexed ? ' owned' : ''}">` +
     `<div class="body"><div class="t">${esc(b.title)}</div>` +
     `<div class="why">${esc(b.why || '')}</div>` +
@@ -622,7 +681,7 @@ $('#bout').addEventListener('click', async e => {
   if (!btn) return;
   const book = recs[Number(btn.dataset.i)];
   btn.disabled = true;
-  btn.textContent = 'Adding…';
+  btn.textContent = 'Queueing…';
   try {
     const r = await fetch('/api/library/drive', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
