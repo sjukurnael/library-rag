@@ -27,7 +27,7 @@ library-rag/
 ├── scripts/                # one-off maintenance, not part of any pipeline
 ├── data/                   # gitignored, YOUR corpus (not packaged)
 │   ├── uploads/            #   uploaded originals, content-addressed (NOT disposable)
-│   ├── markdown/           #   extracted markdown -- the permanent asset
+│   ├── markdown/           #   extracted markdown -- permanent ONLY when storage is off
 │   └── pdfs/               #   per-book working cache, safe to delete
 ├── tests/                  # real Postgres, fake externals, zero network
 └── src/library_rag/
@@ -68,10 +68,27 @@ live pipeline imports it.
 (`pip install -e ".[dev]"`), so a test can never pass by accidentally picking up
 the working directory instead of what would actually ship.
 
-Everything under Phase 1 treats `data/markdown/*.md` (+ its `.manifest.json`) as the
-permanent, rebuildable-from asset — Postgres is disposable
-(`ingest.py --rechunk` rebuilds every chunk/embedding from local markdown
-alone, no Drive or OCR calls).
+Everything under Phase 1 treats the extracted markdown (+ its `.manifest.json`)
+as the permanent, rebuildable-from asset — Postgres is disposable
+(`ingest.py --rechunk` rebuilds every chunk/embedding from markdown alone, no
+Drive or OCR calls).
+
+**Where that markdown lives depends on whether Supabase Storage is configured**,
+and it is one place or the other, never both:
+
+- **`SUPABASE_*` set** — `process_book` mirrors markdown and manifest to the
+  bucket and then deletes the local pair, so the **bucket** is the durable copy
+  and `data/markdown/` is working space. This is what makes `--rechunk` work on
+  a machine that never extracted the book — before it, only the laptop that ran
+  the ingest could rebuild its chunks. It also stops `data/pdfs/` growing
+  without bound (measured: 488 MB against 18 MB of markdown at 197 books).
+- **`SUPABASE_*` unset** — nothing is uploaded and nothing is deleted; the local
+  files are the only copy, exactly as before.
+
+The working PDF is deleted only once the bucket *confirms* it, so an outage or
+an unconfigured install never loses the last copy. But note the trade: with
+storage on there is no second copy of the markdown, and losing the bucket means
+re-extracting — which for a scanned book means paying for OCR again.
 
 ## Setup
 
@@ -286,10 +303,12 @@ identity, not history, so a deletion is not permanent.
 
 - `--discover` — enumerate the pilot folder into `books`, then stop.
 - `--limit N` — process at most N books this run.
-- `--rechunk` — rebuild chunks + embeddings from local `data/markdown/*.md`
-  only; makes **no Drive or OCR calls**. Use this after tuning chunk size, the
+- `--rechunk` — rebuild chunks + embeddings from the extracted markdown only;
+  makes **no Drive or OCR calls**. Use this after tuning chunk size, the
   junk-heading filter, or the embedding model. (Resets `done` → `extracted`
-  and rebuilds — markdown is the permanent, rebuildable-from asset.)
+  and rebuilds — markdown is the permanent, rebuildable-from asset.) Markdown is
+  read via `extract.load_markdown`, which falls back to Supabase Storage, so
+  this works on a machine that never extracted the book.
 - `--index` — build the HNSW index (`chunks_hnsw`); run once, after ingestion
   finishes (not before — building it against an empty/partial table is wasted
   work).

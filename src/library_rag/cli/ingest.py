@@ -78,19 +78,23 @@ def run_delete(book_ids: list) -> None:
 
 
 def run_rechunk() -> None:
-    """Rebuild chunks+embeddings from local markdown only. No Drive or OCR
-    calls -- this is the point of keeping markdown as the permanent asset."""
+    """Rebuild chunks+embeddings from stored markdown only. No Drive or OCR
+    calls -- this is the point of keeping markdown as the permanent asset.
+
+    Markdown comes from load_markdown, so it is fetched from the bucket when
+    this machine never extracted the book. That is the whole reason the
+    extraction output is mirrored: rechunking used to be possible only on the
+    laptop that happened to run the original ingest."""
     voyage_client = embed_mod.build_client()
     with db.get_conn() as conn:
         reset = db.reset_done_to_extracted(conn)
         if reset:
             print(f"Reset {reset} done book(s) back to extracted for rechunk.")
         for book_id, title in db.fetch_rechunkable_books(conn):
-            md_path = config.MARKDOWN_DIR / f"{book_id}.md"
-            if not md_path.exists():
-                print(f"[{book_id}] {title}: SKIP -- no local markdown at {md_path}")
+            markdown = extract_mod.load_markdown(book_id)
+            if markdown is None:
+                print(f"[{book_id}] {title}: SKIP -- no markdown on disk or in storage")
                 continue
-            markdown = md_path.read_text(encoding="utf-8")
             t0 = time.time()
             n_chunks, n_tokens = chunk_embed_and_finish(
                 conn, book_id, markdown, voyage_client
@@ -100,6 +104,9 @@ def run_rechunk() -> None:
                 chunk_embed_seconds=round(time.time() - t0, 2),
                 chunk_count=n_chunks,
             )
+            # Push the refreshed manifest back up and re-clear the local pair;
+            # update_manifest necessarily writes locally to do its merge.
+            extract_mod.sync_outputs(book_id)
             print(f"[{book_id}] {title}: rechunked -> {n_chunks} chunks, {n_tokens} tokens")
 
 

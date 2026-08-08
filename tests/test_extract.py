@@ -8,7 +8,7 @@ from pathlib import Path
 import fitz
 import pytest
 
-from library_rag import config, db, ingest
+from library_rag import config, db, ingest, storage
 from library_rag.pipeline import chunking, embed, extract
 
 
@@ -210,3 +210,59 @@ def test_corrupt_pdf_fails_and_worker_continues(conn, fake_voyage, monkeypatch):
         "WHERE b.source_id = 'good'"
     ).fetchone()[0]
     assert n_good > 0
+
+
+# --------------------------------------- the working PDF, once it is mirrored --
+#
+# process_book deletes its working PDF after extraction, but ONLY when the
+# bucket has confirmed a copy. These pin both halves of that rule, because it is
+# the one code path in the project that removes a file the user did not ask it
+# to remove.
+
+
+def _one_book_through(conn, monkeypatch, fake_voyage, *, mirrored: bool):
+    monkeypatch.setattr(embed, "count_tokens", lambda t: max(1, len(t.split())))
+    monkeypatch.setattr(storage, "put_original", lambda md5, path: mirrored)
+    # sync_outputs is the markdown's business, tested in test_storage.py; keep
+    # it out of the way so this asserts only on the PDF.
+    monkeypatch.setattr(extract, "sync_outputs", lambda book_id: True)
+
+    db.upsert_book(conn, "pdf-life", "A Book", None, None)
+    _drain_worker(conn, lambda file_id, dest: _make_text_pdf(Path(dest), pages=2),
+                  fake_voyage)
+    book_id, status = conn.execute(
+        "SELECT id, status FROM books WHERE source_id = 'pdf-life'"
+    ).fetchone()
+    assert status == "done", f"book did not finish: {status!r}"
+    return config.PDF_DIR / f"{book_id}.pdf"
+
+
+def test_the_working_pdf_goes_once_the_mirror_confirms(conn, fake_voyage, monkeypatch):
+    pdf = _one_book_through(conn, monkeypatch, fake_voyage, mirrored=True)
+    assert not pdf.exists(), "a confirmed mirror should leave no second copy"
+
+
+def test_an_unconfirmed_mirror_keeps_the_local_pdf(conn, fake_voyage, monkeypatch):
+    """Storage off, or a bucket outage: False means "no confirmed second copy",
+    and the only copy there is must survive."""
+    pdf = _one_book_through(conn, monkeypatch, fake_voyage, mirrored=False)
+    assert pdf.exists(), "an unmirrored book must keep its local PDF"
+
+
+def test_a_book_parked_for_ocr_clears_its_pdf_too(conn, fake_voyage, monkeypatch):
+    """The needs_ocr early return used to skip the cleanup entirely, so every
+    scanned book on an install without a Mistral key kept a full PDF forever."""
+    monkeypatch.setattr(storage, "put_original", lambda md5, path: True)
+    monkeypatch.setattr(
+        extract, "extract",
+        lambda *a, **k: (_ for _ in ()).throw(extract.NeedsOCRError("scanned")),
+    )
+    db.upsert_book(conn, "scan", "A Scan", None, None)
+    _drain_worker(conn, lambda file_id, dest: _make_text_pdf(Path(dest), pages=1),
+                  fake_voyage)
+
+    book_id, status = conn.execute(
+        "SELECT id, status FROM books WHERE source_id = 'scan'"
+    ).fetchone()
+    assert status == "needs_ocr"
+    assert not (config.PDF_DIR / f"{book_id}.pdf").exists()

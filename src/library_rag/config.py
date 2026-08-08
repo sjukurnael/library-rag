@@ -12,9 +12,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ---- Paths ----
-# Markdown is the permanent asset; Postgres is disposable and rebuildable
-# from it (see ingest.py --rechunk). PDFs are a local cache of Drive, not
-# an asset -- safe to delete and re-download.
+# Markdown is the permanent asset; Postgres is disposable and rebuildable from
+# it (see ingest.py --rechunk). PDFs are a local cache of Drive, not an asset --
+# safe to delete and re-download.
+#
+# WHERE that permanent asset lives depends on whether SUPABASE_* is configured.
+# With storage on, process_book mirrors markdown to the bucket and drops the
+# local copy, so the BUCKET holds it and these directories are working space;
+# with storage off, nothing is uploaded and nothing is deleted, and the local
+# files are the only copy. Either way there is exactly one durable home for the
+# markdown, and losing it means re-extracting -- which for a scanned book means
+# paying for OCR again.
 # The repo root, three levels up from src/library_rag/config.py. Data lives
 # beside the source tree, not inside it: `data/` is the user's corpus -- their
 # uploaded originals and extracted markdown -- and packaging user data into an

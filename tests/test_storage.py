@@ -7,10 +7,14 @@ behaviour monkeypatches the module functions -- the assertions here are about
 OUR wiring (when things are mirrored, when the shared object may be deleted,
 which source the route serves), not about Supabase's API.
 """
+import json
+import types
+
 import pytest
 from fastapi.testclient import TestClient
 
 from library_rag import config, db, ingest, storage
+from library_rag.pipeline import extract
 from library_rag.web import api
 
 # ------------------------------------------------------------- unit level --
@@ -141,3 +145,146 @@ def test_process_book_mirrors_the_verified_bytes(conn, tmp_path, monkeypatch):
             ocr_client=None, voyage_client=None,
         )
     assert put == [book["md5"]]
+
+
+# ------------------------------------------- the local copy, after mirroring --
+#
+# process_book now DELETES local files once the bucket confirms them, which is
+# the only place in this project that removes a user's data. What follows pins
+# the rule down: a file goes only after its own bytes are known to be up, and
+# reads fall back to the bucket so a machine that never extracted a book can
+# still rechunk it.
+
+
+@pytest.fixture
+def fake_bucket(monkeypatch):
+    """An in-memory stand-in for the bucket.
+
+    Storage is OFF by default here (conftest blanks SUPABASE_*), so anything
+    exercising the mirror has to switch it on deliberately -- which is also what
+    guarantees a test can never reach the real Supabase.
+    """
+    objects: dict = {}
+    failing: set = set()
+
+    def put_text(key, text, content_type):
+        if key in failing:
+            return False
+        objects[key] = text
+        return True
+
+    monkeypatch.setattr(storage, "enabled", lambda: True)
+    monkeypatch.setattr(storage, "put_text", put_text)
+    monkeypatch.setattr(storage, "get_text", lambda key: objects.get(key))
+    monkeypatch.setattr(
+        storage, "delete_keys",
+        lambda keys: all(objects.pop(k, None) or True for k in keys),
+    )
+
+    # SimpleNamespace, not a class body: `objects = objects` inside one is a
+    # local assignment that cannot see the enclosing function's name.
+    return types.SimpleNamespace(objects=objects, fail=failing.add)
+
+
+def _write_outputs(book_id: int, md: str = "# Book\n\ntext", **manifest):
+    md_path = config.MARKDOWN_DIR / f"{book_id}.md"
+    mf_path = config.MARKDOWN_DIR / f"{book_id}.manifest.json"
+    md_path.write_text(md, encoding="utf-8")
+    mf_path.write_text(json.dumps(manifest or {"page_count": 3}), encoding="utf-8")
+    return md_path, mf_path
+
+
+def test_sync_outputs_uploads_both_and_clears_the_local_pair(fake_bucket):
+    md_path, mf_path = _write_outputs(7)
+
+    assert extract.sync_outputs(7) is True
+
+    assert fake_bucket.objects[storage.markdown_key(7)] == "# Book\n\ntext"
+    assert storage.manifest_key(7) in fake_bucket.objects
+    # The point of the change: nothing is left behind locally.
+    assert not md_path.exists() and not mf_path.exists()
+
+
+def test_a_file_whose_own_upload_fails_is_kept(fake_bucket):
+    """Per-file, not all-or-nothing: the manifest goes up and is cleared, the
+    markdown fails and stays. No partial failure can drop unstored bytes."""
+    md_path, mf_path = _write_outputs(8)
+    fake_bucket.fail(storage.markdown_key(8))
+
+    assert extract.sync_outputs(8) is False
+
+    assert md_path.exists(), "markdown must survive its own failed upload"
+    assert not mf_path.exists()
+    assert storage.markdown_key(8) not in fake_bucket.objects
+
+
+def test_a_lone_manifest_still_syncs(fake_bucket):
+    """The rechunk case: load_markdown served the .md from the bucket, so no
+    local one exists. An all-or-nothing rule would see it missing, refuse, and
+    strand the refreshed manifest on one machine."""
+    mf_path = config.MARKDOWN_DIR / "9.manifest.json"
+    mf_path.write_text(json.dumps({"chunk_count": 12}), encoding="utf-8")
+
+    assert extract.sync_outputs(9) is True
+    assert fake_bucket.objects[storage.manifest_key(9)]
+    assert not mf_path.exists()
+
+
+def test_sync_outputs_leaves_everything_alone_while_storage_is_off():
+    """A purely local install must behave exactly as it did before the mirror
+    existed -- nothing uploaded, and nothing deleted."""
+    md_path, mf_path = _write_outputs(10)
+
+    assert storage.enabled() is False
+    assert extract.sync_outputs(10) is False
+    assert md_path.exists() and mf_path.exists()
+
+
+def test_load_markdown_prefers_local_then_the_bucket(fake_bucket):
+    _write_outputs(11, md="local copy")
+    assert extract.load_markdown(11) == "local copy"
+
+    (config.MARKDOWN_DIR / "11.md").unlink()
+    fake_bucket.objects[storage.markdown_key(11)] = "stored copy"
+    assert extract.load_markdown(11) == "stored copy"
+
+
+def test_load_markdown_is_none_when_a_book_has_neither(fake_bucket):
+    """None, not an exception: run_rechunk skips on it rather than dying."""
+    assert extract.load_markdown(12) is None
+
+
+def test_read_manifest_falls_back_to_the_bucket(fake_bucket):
+    fake_bucket.objects[storage.manifest_key(13)] = json.dumps({"page_count": 42})
+    assert extract.read_manifest(13)["page_count"] == 42
+
+
+def test_update_manifest_merges_into_the_stored_copy(fake_bucket):
+    """The silent-drop bug: with the local file already synced away, a naive
+    update would write a manifest holding ONLY the new fields, losing the
+    extractor version and page count that report.py reads."""
+    fake_bucket.objects[storage.manifest_key(14)] = json.dumps(
+        {"page_count": 42, "extractor": "pymupdf4llm-1.28.0"}
+    )
+
+    extract.update_manifest(14, chunk_count=9)
+
+    merged = extract.read_manifest(14)
+    assert merged == {
+        "page_count": 42, "extractor": "pymupdf4llm-1.28.0", "chunk_count": 9,
+    }
+
+
+def test_purge_removes_the_extraction_objects(conn, tmp_path, monkeypatch):
+    """Keyed by book_id, so nothing else can reference them and the book they
+    name is gone -- they go unconditionally, unlike the shared original."""
+    deleted = []
+    monkeypatch.setattr(storage, "delete_keys", lambda keys: deleted.extend(keys) or True)
+    monkeypatch.setattr(storage, "delete_original", lambda md5: False)
+
+    book = _register(conn, tmp_path, b"%PDF-1.4 purge-me", "p.pdf")
+    ingest.purge_book(conn, book["id"])
+
+    assert deleted == [
+        storage.markdown_key(book["id"]), storage.manifest_key(book["id"]),
+    ]

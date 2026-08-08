@@ -23,7 +23,7 @@ from pathlib import Path
 import fitz  # PyMuPDF
 import pymupdf4llm
 
-from library_rag import config
+from library_rag import config, storage
 
 # Set explicitly rather than relying on the library default, because this one
 # flag decides whether the whole pipeline sees any document structure at all.
@@ -135,22 +135,81 @@ def update_manifest(book_id: int, **fields) -> None:
     """Merge extra fields (timing, chunk counts) into an existing manifest.
     Used by ingest.py after chunking/embedding completes, so report.py can read
     wall-clock-per-stage from the manifest without the DB schema needing timing
-    columns."""
+    columns.
+
+    Reads through read_manifest, so it merges into the bucket's copy when the
+    local file is gone -- otherwise the first update after a sync would write a
+    manifest containing only the fields being added, silently dropping the
+    extractor version and page count.
+    """
     manifest_path = config.MARKDOWN_DIR / f"{book_id}.manifest.json"
-    manifest = (
-        json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest_path.exists()
-        else {}
-    )
+    manifest = read_manifest(book_id)
     manifest.update(fields)
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
 def read_manifest(book_id: int) -> dict:
+    """The manifest, from local disk if present, else from the bucket.
+
+    Local first because during a run the local file is the fresher of the two:
+    write_outputs and update_manifest both write there, and sync_outputs only
+    pushes upward at the end.
+    """
     manifest_path = config.MARKDOWN_DIR / f"{book_id}.manifest.json"
-    if not manifest_path.exists():
-        return {}
-    return json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest_path.exists():
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    remote = storage.get_text(storage.manifest_key(book_id))
+    return json.loads(remote) if remote else {}
+
+
+def load_markdown(book_id: int) -> str | None:
+    """A book's extracted markdown, from local disk if present, else the bucket.
+
+    This is what makes --rechunk work on a machine that never extracted the
+    book: markdown is the input to chunking, and before this it existed only on
+    whichever laptop happened to run the extraction.
+    """
+    md_path = config.MARKDOWN_DIR / f"{book_id}.md"
+    if md_path.exists():
+        return md_path.read_text(encoding="utf-8")
+    return storage.get_text(storage.markdown_key(book_id))
+
+
+def sync_outputs(book_id: int) -> bool:
+    """Mirror whichever of markdown/manifest are on disk, dropping each local
+    copy once ITS OWN upload is confirmed. True if nothing was left behind.
+
+    Gated per file rather than all-or-nothing, which matters on the rechunk
+    path: there, load_markdown served the markdown straight from the bucket so
+    no local .md exists, and only the manifest needs pushing. An all-or-nothing
+    rule would see the missing .md, refuse, and silently leave the refreshed
+    manifest stranded on one machine.
+
+    Per-file is also the safer rule, not merely the more convenient one: a file
+    is deleted only after its own bytes are confirmed up, so no combination of
+    partial failures can drop something that is not already stored.
+
+    Called at the END of a run rather than inside write_outputs: update_manifest
+    merges timings in afterwards, and mirroring before that would upload a
+    manifest that is about to change.
+    """
+    if not storage.enabled():
+        return False
+    targets = (
+        (config.MARKDOWN_DIR / f"{book_id}.md",
+         storage.markdown_key(book_id), "text/markdown; charset=utf-8"),
+        (config.MARKDOWN_DIR / f"{book_id}.manifest.json",
+         storage.manifest_key(book_id), "application/json; charset=utf-8"),
+    )
+    ok = True
+    for path, key, content_type in targets:
+        if not path.exists():
+            continue
+        if storage.put_text(key, path.read_text(encoding="utf-8"), content_type):
+            path.unlink(missing_ok=True)
+        else:
+            ok = False
+    return ok
 
 
 # ------------------------------------------------------------- pymupdf --

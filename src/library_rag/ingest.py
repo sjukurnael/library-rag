@@ -124,6 +124,15 @@ def purge_book(conn, book_id: int):
     if book.get("md5") and not db.md5_in_use(conn, book["md5"]):
         if storage.delete_original(book["md5"]):
             removed.append(storage.original_key(book["md5"]))
+
+    # The extraction output goes unconditionally, unlike the original above: it
+    # is keyed by book_id, so nothing else can be referencing it, and the book
+    # whose id it names no longer exists. Skipping this was the same orphan bug
+    # the local files had -- objects keyed to an id that will never be reissued,
+    # which nothing would ever collect.
+    md_keys = [storage.markdown_key(book_id), storage.manifest_key(book_id)]
+    if storage.delete_keys(md_keys):
+        removed.extend(md_keys)
     return {"book": book, "removed": removed}
 
 
@@ -252,7 +261,12 @@ def process_book(conn, book, *, download_file, ocr_client, voyage_client) -> Non
     # Mirror the verified bytes to the bucket. Warn-only inside: a storage
     # outage must not fail a book the pipeline can otherwise finish, and the
     # viewer falls back to the local copy (or a fresh Drive fetch) anyway.
-    storage.put_original(book.get("md5") or local_md5, pdf_path)
+    #
+    # The RESULT is kept, unlike before, because it is what makes dropping the
+    # local copy below safe: False means "no confirmed second copy", and a book
+    # ingested during a storage outage (or with SUPABASE_* unset) must keep the
+    # only one it has.
+    mirrored = storage.put_original(book.get("md5") or local_md5, pdf_path)
     db.mark_downloaded(conn, book_id)
     db.touch_claim(conn, book_id)
     download_s = time.time() - t_download
@@ -263,12 +277,44 @@ def process_book(conn, book, *, download_file, ocr_client, voyage_client) -> Non
         result = extract_mod.extract(pdf_path, book_id, ocr_client=ocr_client)
     except extract_mod.NeedsOCRError as e:
         db.set_status(conn, book_id, "needs_ocr", str(e))
+        # Same rule as the success path below: the mirror already ran (it is
+        # upstream of extraction), so this copy is redundant the moment the
+        # bucket confirms. Returning early without it was how a whole class of
+        # book -- every scan, on any install with no MISTRAL_API_KEY -- kept
+        # accumulating full PDFs locally while every other path cleaned up.
+        #
+        # The queue page's "Open PDF" is unaffected: it goes through
+        # /api/books/{id}/pdf, which reaches for the signed bucket URL first.
+        if mirrored:
+            pdf_path.unlink(missing_ok=True)
         print(f"[{book_id}] {title}: needs_ocr ({e})")
         return
     extract_mod.write_outputs(book_id, source_id, pdf_path, result)
     db.mark_extracted(conn, book_id, result.page_count, result.has_text_layer)
     db.touch_claim(conn, book_id)
     extract_s = time.time() - t_extract
+
+    # The working PDF has done its job -- extraction is over and write_outputs
+    # has already hashed it into the manifest. Nothing downstream reads it:
+    # chunking works on the markdown, and --rechunk works on the markdown too.
+    #
+    # Dropped rather than kept because it is a SECOND copy of bytes that are
+    # already in the bucket, and it was never being cleaned up: measured at 197
+    # books, data/pdfs held 488 MB against 21 MB of markdown, and every one of
+    # those PDFs was in storage as well. Left alone it grows ~2.6 GB per 1000
+    # books forever, on every machine that ever indexes anything.
+    #
+    # Strictly conditional on `mirrored`, which is the conservative choice
+    # rather than a strict necessity: a Drive book could always be re-fetched
+    # from Drive and an upload still has its original in data/uploads, so this
+    # is never the last copy of anything. But an unconfirmed mirror means the
+    # remaining copy is one OAuth token or one bucket outage away from being
+    # unreachable, and a local file is a free hedge against that.
+    #
+    # The viewer re-fetches from storage and process_book re-downloads from
+    # scratch, so nothing here is depended on later.
+    if mirrored:
+        pdf_path.unlink(missing_ok=True)
 
     # -- chunk + embed + store --
     t_chunk_embed = time.time()
@@ -286,6 +332,11 @@ def process_book(conn, book, *, download_file, ocr_client, voyage_client) -> Non
         total_seconds=round(total_s, 2),
         chunk_count=n_chunks,
     )
+    # Last step, once the manifest is final: push markdown + manifest to the
+    # bucket and drop the local pair. With the working PDF already gone above,
+    # this is what leaves the run with NO local state -- the machine that
+    # extracted a book stops being the only one that can rechunk it.
+    extract_mod.sync_outputs(book_id)
     scanned = not result.has_text_layer
     print(
         f"[{book_id}] {title}: pages={result.page_count} scanned={scanned} "

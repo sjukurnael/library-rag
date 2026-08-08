@@ -28,6 +28,20 @@ def original_key(md5: str) -> str:
     return f"originals/{md5}.pdf"
 
 
+# Extraction output, keyed by BOOK ID rather than by md5 like the original is.
+# The two are keyed differently on purpose: an original is pure content, so the
+# same bytes arriving twice should occupy one object, whereas markdown is the
+# output of one book's extraction and its manifest names that book_id and
+# source_id. Content-addressing it would make two books share an object whose
+# contents claim to belong to one of them.
+def markdown_key(book_id: int) -> str:
+    return f"markdown/{book_id}.md"
+
+
+def manifest_key(book_id: int) -> str:
+    return f"markdown/{book_id}.manifest.json"
+
+
 _client = None
 
 
@@ -70,6 +84,56 @@ def put_original(md5: str, path: Path) -> bool:
                 return False
             time.sleep(1.5 * (attempt + 1))
     return False
+
+
+def put_text(key: str, text: str, content_type: str) -> bool:
+    """Upsert a text object. True if it is there afterwards.
+
+    Same retry shape as put_original and for the same reason -- these are small
+    enough that a transient TLS reset is rarer, but the cost of one retry is a
+    few hundred milliseconds against re-running an extraction to recover.
+    """
+    if not enabled():
+        return False
+    body = text.encode("utf-8")
+    for attempt in range(3):
+        try:
+            _bucket().upload(
+                key, body,
+                file_options={"content-type": content_type, "upsert": "true"},
+            )
+            return True
+        except Exception as e:  # noqa: BLE001 -- durability, not correctness
+            if attempt == 2:
+                print(f"  WARNING: could not mirror {key} to storage: {e}")
+                return False
+            time.sleep(1.5 * (attempt + 1))
+    return False
+
+
+def get_text(key: str) -> str | None:
+    """Fetch a text object, or None if storage is off / the object is missing.
+
+    None is "not here", never an exception: every caller has a local-file path
+    to fall back to, and a missing object must degrade rather than crash a run.
+    """
+    if not enabled():
+        return None
+    try:
+        return _bucket().download(key).decode("utf-8")
+    except Exception:  # noqa: BLE001 -- absence is a normal answer here
+        return None
+
+
+def delete_keys(keys: list) -> bool:
+    if not (enabled() and keys):
+        return False
+    try:
+        _bucket().remove(keys)
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"  WARNING: could not delete {keys} from storage: {e}")
+        return False
 
 
 def delete_original(md5: str) -> bool:
