@@ -170,6 +170,16 @@ from different angles (the subject, a narrower aspect, an author you expect) \
 rather than one long one; each gives you a different slice of a 57,000-book \
 collection.
 
+Every search returns the top `returned` matches ranked out of the whole \
+collection (`ranked_over`), so a full-looking result list is NORMAL and is not a \
+sign you missed anything -- there is nothing better further down, only worse. Do \
+not re-search to cover a shortfall that a full list does not indicate. The one \
+number worth reacting to is `word_and_meaning`, the titles that matched on words \
+AND ranked near you by meaning: a healthy topical search scores at least 2, and \
+0 means the collection has nothing on this and the list you got is just nearest \
+neighbours. React to a 0 by rewording or by browsing a likely shelf -- not by \
+trying another synonym of the same idea.
+
 Use browse_folder when a search comes back thin and you need to see what is \
 actually on a shelf, or when the reader names a topic area rather than a subject.
 
@@ -216,7 +226,11 @@ def _summarize(tool_name: str, result: dict) -> dict:
         return {
             "returned": result["returned"],
             "already_indexed": sum(1 for m in result["matches"] if m["indexed"]),
-            "hit_limit": result["hit_limit"],
+            # Both optional: the two branches of search_drive report different
+            # things, because only one of them HAS a real ceiling (see there).
+            **({"hit_limit": result["hit_limit"]} if "hit_limit" in result else {}),
+            **({"word_and_meaning": result["word_and_meaning"]}
+               if "word_and_meaning" in result else {}),
         }
     if tool_name == "browse_folder":
         return {

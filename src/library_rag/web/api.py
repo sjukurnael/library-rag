@@ -77,16 +77,28 @@ class AddDriveRequest(BaseModel):
     file_ids: list[str] = Field(min_length=1, max_length=20)
 
 
+def _page(name: str) -> FileResponse:
+    """Serve one of the HTML pages, revalidated every time.
+
+    Same reasoning as static_file below, and it belongs here MORE, not less:
+    each of these pages carries its own inline <script>, so a heuristically
+    cached page is stale JS that no amount of reloading app.js can fix. The
+    symptom is a UI change that is live on the server and invisible in the
+    browser, which reads as a broken feature rather than a stale cache.
+    """
+    return FileResponse(_STATIC / name, headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/")
 def index():
-    return FileResponse(_STATIC / "index.html")
+    return _page("index.html")
 
 
 @app.get("/library")
 def library():
     """The Drive browser. A separate page from the research chat because it is a
     different task -- deciding what to read, rather than reading."""
-    return FileResponse(_STATIC / "library.html")
+    return _page("library.html")
 
 
 @app.get("/queue")
@@ -94,7 +106,7 @@ def queue():
     """The processing dashboard: everything mid-pipeline, stage by stage, plus
     upload. A third page because it is a third task -- watching work happen,
     rather than reading or choosing what to read."""
-    return FileResponse(_STATIC / "queue.html")
+    return _page("queue.html")
 
 
 @app.get("/static/{name}")
@@ -141,7 +153,8 @@ def books():
         pending = conn.execute(
             """
             SELECT id, title, status, source, error, page_count,
-                   EXTRACT(EPOCH FROM now() - claimed_at) AS claim_age_s
+                   EXTRACT(EPOCH FROM now() - claimed_at) AS claim_age_s,
+                   source_id, size_bytes
             FROM books
             WHERE status <> 'done'
             ORDER BY updated_at DESC
@@ -160,10 +173,35 @@ def books():
                 # the book has actually been read.
                 "pages": r[5],
                 "claim_age_s": None if r[6] is None else int(r[6]),
+                "url": _original_url(r[0], r[3], r[7]),
+                # Shipped so a terminal card can SAY "0 bytes" instead of making
+                # someone click a link and interpret a blank PDF viewer. An
+                # empty source is the one failure whose cause is fully knowable
+                # without opening anything.
+                "size_bytes": r[8],
             }
             for r in pending
         ],
     }
+
+
+def _original_url(book_id: int, source: str, source_id: str) -> str | None:
+    """Where to send someone who wants to see the file itself, for a book that
+    is still in the queue.
+
+    Deliberately NOT /api/books/{id}/pdf for a Drive book: that route falls
+    through to a full in-request download when nothing is cached, so on the
+    processing page -- where by definition the bytes have not arrived yet -- it
+    would block a click for as long as the file takes, and re-download a file
+    the worker is already downloading. Drive's own viewer costs us nothing and
+    is live from the moment the row exists, because source_id IS the file id.
+
+    An upload has no such page, but it does have its original on disk from the
+    moment it was registered, so the local route is right there and cheap.
+    """
+    if source == "drive":
+        return f"https://drive.google.com/file/d/{source_id}/view"
+    return f"/api/books/{book_id}/pdf"
 
 
 def _drain_queue(source: str):

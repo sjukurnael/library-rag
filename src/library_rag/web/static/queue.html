@@ -87,6 +87,49 @@ function srcBadge(b) {
   return `<span class="badge">${b.source === 'drive' ? 'Drive' : 'Upload'}</span>`;
 }
 
+// "Open PDF" on a book that stopped -- the point of which is to SEE the file,
+// not to fix it. A stopped book is a claim about a document ("empty", "no text
+// layer") and the only way to check a claim like that is to look.
+//
+// Deliberately /api/books/{id}/pdf and NOT the Drive link already on the title:
+// they answer different questions. Drive shows what Drive holds; this shows the
+// bytes THE PIPELINE saw -- the ones the extractor actually choked on. They are
+// normally identical, and the moment they are not is exactly the moment this is
+// worth having. It is also instant here: a book only reaches a terminal state
+// after its download step, so the local copy exists.
+function inspect(b) {
+  // A known-empty file must NOT be handed to the PDF viewer. The route serves
+  // it honestly -- 200, application/pdf, zero bytes -- and the browser then says
+  // "Failed to load PDF document.", which reads as a broken app and buries the
+  // one fact that matters: there is nothing in the file. We already know the
+  // size, so answer here instead of letting the viewer guess.
+  if (b.size_bytes === 0) {
+    return `<span class="open off" title="This file has no bytes in it -- there ` +
+           `is nothing for a PDF viewer to show. Use the title link to check it ` +
+           `at the source.">Empty file</span>`;
+  }
+  return `<a class="open" href="/api/books/${b.id}/pdf" target="_blank" rel="noopener"
+    title="Open the PDF the pipeline read">Open PDF</a>`;
+}
+
+// An empty source file is the one failure whose cause is completely knowable
+// without opening anything, so say it on the card. Everything else stays quiet
+// -- a byte count on a healthy book is noise.
+function sizeBadge(b) {
+  if (b.size_bytes !== 0) return '';
+  return `<span class="badge bad">0 bytes — the source file is empty</span>`;
+}
+
+// The title, linked to the original file when the API gave us somewhere to
+// send it. New tab: the processing page polls, and navigating away from it
+// mid-run is the one thing someone watching a queue does not want.
+function titleCell(b) {
+  const t = esc(b.title);
+  return b.url
+    ? `<div class="t"><a href="${esc(b.url)}" target="_blank" rel="noopener">${t}</a></div>`
+    : `<div class="t">${t}</div>`;
+}
+
 function pendingRow(b) {
   const terminal = TERMINAL.has(b.status);
   if (terminal) {
@@ -95,11 +138,11 @@ function pendingRow(b) {
       : `Failed — ${b.error || 'unknown error'}`;
     return `<div class="run failed"><span class="dot"></span>
       <div class="who">
-        <div class="t">${esc(b.title)}</div>
-        <div class="m">${srcBadge(b)}<span class="badge bad">${esc(b.status)}</span></div>
+        ${titleCell(b)}
+        <div class="m">${srcBadge(b)}<span class="badge bad">${esc(b.status)}</span>${sizeBadge(b)}</div>
         <div class="errline">${esc(msg)}</div>
       </div>
-      <div class="side"><button class="del" data-id="${b.id}" data-title="${esc(b.title)}"
+      <div class="side">${inspect(b)}<button class="del" data-id="${b.id}" data-title="${esc(b.title)}"
         title="Remove this book">&times;</button></div></div>`;
   }
   // claim_age_s is Postgres's clock, not the browser's: silence is the thing
@@ -109,7 +152,7 @@ function pendingRow(b) {
     ? `<span class="badge">${b.pages} pages</span>` : '';
   return `<div class="run working"><span class="dot"></span>
     <div class="who">
-      <div class="t">${esc(b.title)}</div>
+      ${titleCell(b)}
       <div class="m">${srcBadge(b)}${pages}<span>${esc(STAGE[b.status] || b.status)}… ${esc(wait)}</span></div>
       ${stepsBar(b)}
     </div>

@@ -173,14 +173,18 @@ def search_drive(conn, query: str, limit=DEFAULT_LIMIT, *, voyage=None) -> dict:
     install still works before anyone has run drive_sync.
     """
     limit = max(1, min(int(limit or DEFAULT_LIMIT), MAX_LIMIT))
-    if db.drive_sync_status(conn)["files"] == 0:
+    mirrored = db.drive_sync_status(conn)["files"]
+    if mirrored == 0:
         service = drive_client.build_service()
         items = drive_client.search_files(service, query, limit=limit)
         owned = indexed_ids(conn)
         return {
             "query": query, "source": "drive-live",
             "matches": [_as_pdf(i, owned) for i in items],
-            "returned": len(items), "hit_limit": len(items) >= limit,
+            "returned": len(items),
+            # Meaningful HERE and only here: a `name contains` match really can
+            # come back short, so a full page means Drive had more to give.
+            "hit_limit": len(items) >= limit,
         }
 
     voyage = voyage or embed_mod.build_client()
@@ -200,9 +204,37 @@ def search_drive(conn, query: str, limit=DEFAULT_LIMIT, *, voyage=None) -> dict:
             for r in rows
         ],
         "returned": len(rows),
-        # The agent must be able to tell "few results" from "hit the ceiling",
-        # or it will narrow a query that was actually already too broad.
-        "hit_limit": len(rows) >= limit,
+        # Deliberately NO hit_limit on this branch, though the live-Drive branch
+        # above still reports one.
+        #
+        # The dense leg is a KNN scan with no relevance threshold: every one of
+        # the ~57k embedded titles has a distance to any query vector, so the
+        # candidate pool ALWAYS fills and this search ALWAYS returns k rows --
+        # for a real topic and for gibberish alike. Measured: "zzzqqqx
+        # nonexistent gibberish term" returns a full 50 and would have reported
+        # "hit the limit" just as "the end times" did. The flag was true on every
+        # search ever run against the mirror, so it carried no information, and
+        # the agent -- which is handed this whole dict -- spent extra turns
+        # re-searching to cover a shortfall that was never there.
+        #
+        # What the agent can actually act on: these are the top `returned` of the
+        # WHOLE mirror, already ranked, so there is no unseen better match to go
+        # looking for -- only worse ones.
+        "ranked_over": mirrored,
+        # Titles BOTH rankers surfaced -- matched on words and among the nearest
+        # by meaning. Agreement is the signal; neither leg alone is.
+        #
+        # Counting lexical hits alone was tried first and is worthless: the
+        # tsquery ORs every term, so one ordinary word carries the whole query.
+        # Measured over 11 queries, "purple monetary derivatives arbitrage" and
+        # "zzzqqqx nonexistent gibberish term" each matched 10 titles on words
+        # (on "term", on "monetary") -- indistinguishable from a real topic.
+        # Agreement separated them cleanly: 6/6 real subjects scored 2 or more,
+        # 4/5 off-topic scored exactly 0. The lone leak was a contrived query
+        # ending in the word "time".
+        "word_and_meaning": sum(
+            1 for r in rows if r.get("dense_rank") and r.get("lexical_rank")
+        ),
     }
 
 

@@ -499,6 +499,10 @@ details.trace[open] summary { color: var(--ink); }
   font-size: 14px; font-weight: 500;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* The link is the title, not a blue thing next to it: colour and underline stay
+   off until hover so a queue of 50 rows does not read as a wall of links. */
+.run .t a { color: inherit; text-decoration: none; }
+.run .t a:hover { color: var(--accent); text-decoration: underline; }
 .run .m { font-size: 12px; color: var(--dim); margin-top: 2px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .run .errline { font-size: 12.5px; color: var(--bad); margin-top: 4px; overflow-wrap: anywhere; }
 .run .side { display: flex; align-items: center; gap: 10px; }
@@ -507,6 +511,22 @@ details.trace[open] summary { color: var(--ink); }
   font-size: 16px; line-height: 1; padding: 4px 6px; border-radius: 999px;
 }
 .run .del:hover { background: var(--surface-2); color: var(--bad); }
+/* On a stopped book, looking at the file is the primary action, so it is a real
+   button rather than another quiet link -- but outlined, not filled: it sits
+   next to a delete, and two solid buttons would make the destructive one look
+   equally routine. */
+.run .open {
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 4px 10px; font-size: 12px; color: var(--muted);
+  text-decoration: none; white-space: nowrap;
+}
+.run .open:hover { background: var(--surface-2); border-color: var(--accent); color: var(--accent); }
+/* Same shape, visibly not a button: the slot still explains itself, but nothing
+   here is clickable, because there is nothing to click through to. */
+.run .open.off {
+  color: var(--dim); border-style: dashed; cursor: help;
+}
+.run .open.off:hover { background: none; border-color: var(--line); color: var(--dim); }
 
 /* The step pipeline: which stage a book is at, at a glance. */
 .steps { display: flex; align-items: center; gap: 0; margin-top: 10px; flex-wrap: wrap; }
