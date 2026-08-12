@@ -84,7 +84,7 @@ def test_a_fetch_gets_401_json_not_a_login_page(auth_on, client):
     assert r.json()["detail"] == "Not signed in."
 
 
-@pytest.mark.parametrize("path", ["/login", "/healthz", "/static/app.css",
+@pytest.mark.parametrize("path", ["/login", "/api/health", "/static/app.css",
                                   "/api/auth/config"])
 def test_the_open_paths_stay_reachable(auth_on, client, path):
     """Otherwise signing in would require being signed in."""
@@ -215,10 +215,10 @@ def test_an_empty_allowlist_locks_everyone_out(auth_on, google, conn, client):
                   json={"credential": "anyone@example.com"}).status_code == 403
 
 
-def test_healthz_touches_no_database(auth_on, client, monkeypatch):
+def test_health_touches_no_database(auth_on, client, monkeypatch):
     """Cloud Run probes this. If it needed Postgres, a momentary database blip
     would fail the health check and turn into a restart loop."""
     def explode(*a, **k):
-        raise AssertionError("/healthz must not open a database connection")
+        raise AssertionError("/api/health must not open a database connection")
     monkeypatch.setattr(db, "get_conn", explode)
-    assert client.get("/healthz").json() == {"ok": True}
+    assert client.get("/api/health").json() == {"ok": True}

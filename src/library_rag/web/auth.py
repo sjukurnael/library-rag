@@ -30,14 +30,14 @@ from library_rag import config
 # AuthMiddleware. Kept as an explicit short list rather than a pattern, because
 # "which URLs are public" should be readable in one glance.
 #
-# /healthz is here so Cloud Run's probe never needs a session, and it must not
+# /api/health is here so a probe never needs a session, and it must not
 # touch the database either: a health check that fails when Postgres blinks
 # turns a recoverable blip into a restart loop.
 # /api/auth/config is open because the login page fetches it BEFORE anyone is
 # signed in -- gating it would mean needing a session to learn how to get one.
 # It returns only the client id, which is public by design and ships in the HTML.
 OPEN_PATHS = frozenset({
-    "/login", "/api/auth/google", "/api/auth/config", "/logout", "/healthz",
+    "/login", "/api/auth/google", "/api/auth/config", "/logout", "/api/health",
 })
 OPEN_PREFIXES = ("/static/",)
 

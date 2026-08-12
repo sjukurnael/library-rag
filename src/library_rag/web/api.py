@@ -895,10 +895,18 @@ def bible_search(q: str):
 # may you in) and for why this is not Supabase Auth.
 
 
-@app.get("/healthz")
-def healthz():
-    """Liveness for Cloud Run. Touches nothing on purpose -- a health check that
-    queries Postgres turns a momentary database blip into a restart loop."""
+@app.get("/api/health")
+def health():
+    """Liveness. Touches nothing on purpose -- a health check that queries
+    Postgres turns a momentary database blip into a restart loop.
+
+    NOT /healthz, which is the obvious name and does not work: Google's
+    frontend intercepts that exact path in front of Cloud Run and answers its
+    own 404, so the request never reaches this process. Verified against the
+    deployed service -- /health, /healthz/ and /nonexistent all arrive here and
+    get a 401 from the gate, while /healthz alone returns a Google error page
+    and appears nowhere in the container logs.
+    """
     return {"ok": True}
 
 

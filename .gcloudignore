@@ -1,0 +1,25 @@
+# What NOT to upload to Cloud Build.
+#
+# Explicit rather than relying on gcloud's fallback to .gitignore: a source
+# archive uploaded here is retained by Cloud Build, so a secret that reaches it
+# is a secret that lives in a bucket. Mirrors .dockerignore.
+
+.env
+.env.*
+credentials.json
+token.json
+env.yaml
+
+data/
+.venv/
+.git/
+.github/
+tests/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+.vscode/
+.claude/
+cache.json
