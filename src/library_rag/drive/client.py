@@ -8,7 +8,7 @@ The authenticated service object is built explicitly (build_service()) and
 passed into every call, rather than kept as a module-level singleton, so tests
 and the pipeline can inject fakes and callers control the client's lifetime.
 """
-import os
+import json
 import random
 import time
 
@@ -18,6 +18,8 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
+
+from library_rag.drive import store
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 CREDENTIALS_FILE = "credentials.json"
@@ -40,20 +42,20 @@ class DriveAuthError(RuntimeError):
 
 
 def _load_credentials():
-    if not os.path.exists(CREDENTIALS_FILE):
-        raise DriveAuthError(
-            f"Missing {CREDENTIALS_FILE} in the current directory.\n"
-            "Fix: download your OAuth client secrets from Google Cloud Console "
-            "(APIs & Services > Credentials > OAuth client ID > Desktop app), "
-            f"save the JSON as {CREDENTIALS_FILE} in this repo, and re-run.\n"
-            "See README.md for step-by-step setup."
-        )
+    """A usable Credentials object, or DriveAuthError explaining what to fix.
 
+    Reads through drive/store.py, which decides between the database and the
+    local files -- see there for why database-first-if-a-row-exists is the
+    rule. The stored token is refreshed in place and saved back to wherever it
+    came from, so a laptop and a deployed container never disagree about which
+    copy is current.
+    """
+    stored = store.load_token(TOKEN_FILE)
     creds = None
-    if os.path.exists(TOKEN_FILE):
+    if stored:
         try:
-            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-        except Exception:
+            creds = Credentials.from_authorized_user_info(stored, SCOPES)
+        except Exception:  # noqa: BLE001 -- a corrupt token means "reconnect"
             creds = None
 
     if creds and creds.valid:
@@ -62,28 +64,42 @@ def _load_credentials():
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
-            with open(TOKEN_FILE, "w") as f:
-                f.write(creds.to_json())
+            store.save_token(TOKEN_FILE, json.loads(creds.to_json()), "refresh")
             return creds
         except Exception as e:
             raise DriveAuthError(
-                f"token.json exists but refresh failed ({e}).\n"
-                f"Fix: delete {TOKEN_FILE} and re-run to re-authorize via browser."
+                f"The stored Drive token could not be refreshed ({e}).\n"
+                "Fix: reconnect Google Drive. Consent screens in Testing status "
+                "have their refresh tokens revoked by Google every 7 days."
             )
 
+    # Nothing usable stored. Everything below needs the CLIENT SECRETS, which
+    # is a different thing from the token -- and the check belongs here rather
+    # than at the top of the function, because a valid stored token refreshes
+    # perfectly well without credentials.json ever being present. It carries
+    # its own client id and secret. Guarding at the top made a container with a
+    # working token report "missing credentials.json" and refuse to run.
+    if store.client_config(CREDENTIALS_FILE) is None:
+        raise DriveAuthError(
+            "Google Drive is not connected.\n"
+            "Fix: connect it from the app, or set up OAuth client secrets "
+            f"({CREDENTIALS_FILE}, or the {store.CLIENT_SECRETS_ENV} "
+            "environment variable). See README.md."
+        )
+
     try:
-        flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+        flow = InstalledAppFlow.from_client_config(
+            store.client_config(CREDENTIALS_FILE), SCOPES
+        )
         creds = flow.run_local_server(port=0)
     except Exception as e:
         raise DriveAuthError(
             f"OAuth flow failed to complete ({e}).\n"
-            f"Fix: check that {CREDENTIALS_FILE} is a valid Desktop-app OAuth "
-            "client secrets file, and that you completed the browser consent "
-            "screen. See README.md for setup."
+            "Fix: check the OAuth client secrets are a valid Desktop-app "
+            "client, and that you completed the browser consent screen."
         )
 
-    with open(TOKEN_FILE, "w") as f:
-        f.write(creds.to_json())
+    store.save_token(TOKEN_FILE, json.loads(creds.to_json()), "cli")
     return creds
 
 
@@ -96,15 +112,20 @@ def credentials_status() -> dict:
     a token that still works from one Google has revoked -- expiry alone says
     nothing, since a valid refresh token silently renews.
     """
-    if not os.path.exists(CREDENTIALS_FILE):
-        return {"ok": False, "reason": "missing_client",
-                "detail": f"{CREDENTIALS_FILE} is not present. Download OAuth "
-                          "client secrets from Google Cloud Console."}
-    if not os.path.exists(TOKEN_FILE):
+    stored = store.load_token(TOKEN_FILE)
+    if not stored:
+        # Order matters: "not connected" is the actionable answer, and it is
+        # true whether or not client secrets are around. Reporting the missing
+        # secrets first told a deployed user to go download OAuth credentials,
+        # which is advice for whoever set the server up, not for them.
+        if store.client_config(CREDENTIALS_FILE) is None:
+            return {"ok": False, "reason": "cannot_connect",
+                    "detail": "Google Drive is not connected, and this server "
+                              "has no OAuth client configured to connect with."}
         return {"ok": False, "reason": "not_connected",
                 "detail": "Not connected to Google Drive yet."}
     try:
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        creds = Credentials.from_authorized_user_info(stored, SCOPES)
     except Exception as e:  # noqa: BLE001 -- a corrupt token is "reconnect", not a crash
         return {"ok": False, "reason": "unreadable", "detail": str(e)}
     if creds.valid:
@@ -112,11 +133,10 @@ def credentials_status() -> dict:
     if creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
-            with open(TOKEN_FILE, "w") as f:
-                f.write(creds.to_json())
+            store.save_token(TOKEN_FILE, json.loads(creds.to_json()), "refresh")
             return {"ok": True, "reason": "refreshed", "detail": ""}
         except Exception as e:  # noqa: BLE001
-            return {"ok": False, "reason": "revoked", "detail": str(e)}
+            return {"ok": False, "reason": "expired", "detail": str(e)}
     return {"ok": False, "reason": "no_refresh_token",
             "detail": "The stored token cannot be refreshed."}
 
@@ -148,8 +168,14 @@ def auth_url(redirect_uri: str, state: str) -> tuple:
     intercepted in transit from being redeemable by anyone else, and the code
     travels through a browser redirect.
     """
-    flow = InstalledAppFlow.from_client_secrets_file(
-        CREDENTIALS_FILE, SCOPES, redirect_uri=redirect_uri
+    cfg = store.client_config(CREDENTIALS_FILE)
+    if cfg is None:
+        raise FileNotFoundError(
+            f"No OAuth client secrets: set {store.CLIENT_SECRETS_ENV} or provide "
+            f"{CREDENTIALS_FILE}."
+        )
+    flow = InstalledAppFlow.from_client_config(
+        cfg, SCOPES, redirect_uri=redirect_uri
     )
     url, _ = flow.authorization_url(
         access_type="offline",
@@ -164,19 +190,32 @@ def auth_url(redirect_uri: str, state: str) -> tuple:
     return url, flow.code_verifier
 
 
-def exchange_code(code: str, redirect_uri: str, code_verifier: str | None = None) -> None:
+def exchange_code(code: str, redirect_uri: str, code_verifier: str | None = None,
+                  connected_by: str = "web") -> str:
     """Trade the callback's code for tokens and persist them.
 
     `code_verifier` must be the one auth_url() returned for this flow; see
     there for why it cannot be regenerated here.
+
+    `connected_by` is recorded alongside the token so the UI can say whose
+    Drive access the app is currently using -- which matters when either of two
+    people may have been the one to reconnect it. Returns "database" or "file",
+    i.e. where it ended up.
     """
-    flow = InstalledAppFlow.from_client_secrets_file(
-        CREDENTIALS_FILE, SCOPES, redirect_uri=redirect_uri
+    cfg = store.client_config(CREDENTIALS_FILE)
+    if cfg is None:
+        raise FileNotFoundError(
+            f"No OAuth client secrets: set {store.CLIENT_SECRETS_ENV} or provide "
+            f"{CREDENTIALS_FILE}."
+        )
+    flow = InstalledAppFlow.from_client_config(
+        cfg, SCOPES, redirect_uri=redirect_uri
     )
     flow.code_verifier = code_verifier
     flow.fetch_token(code=code)
-    with open(TOKEN_FILE, "w") as f:
-        f.write(flow.credentials.to_json())
+    return store.save_token(
+        TOKEN_FILE, json.loads(flow.credentials.to_json()), connected_by
+    )
 
 
 def build_service():

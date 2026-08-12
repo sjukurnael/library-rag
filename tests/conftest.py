@@ -91,6 +91,24 @@ def _isolate_data_dirs(tmp_path, monkeypatch):
     # hiding a regression in the gate itself.
     monkeypatch.setattr(config, "GOOGLE_CLIENT_ID", "")
 
+    # Fail CLOSED toward production. Library code does not always take a
+    # connection -- drive/store.py calls db.get_conn() with no argument -- so
+    # any test touching it would otherwise open config.DATABASE_URL, which on
+    # this machine is Supabase. That is exactly how a test run wrote a row into
+    # the real database while asserting against the test one.
+    #
+    # Pointed at a local address nothing listens on rather than at the test
+    # database, because THIS fixture must not require Postgres: the pure
+    # chunking tests run without it. A test that genuinely needs a database
+    # takes `conn`, which overrides this with the real test URL.
+    #
+    # _require_local already refuses to CREATE or DROP remotely. It cannot stop
+    # an ordinary INSERT issued by the code under test; this can.
+    monkeypatch.setattr(
+        config, "DATABASE_URL",
+        "postgresql://unused@127.0.0.1:1/tests-must-take-the-conn-fixture",
+    )
+
 
 def _url_with_db(base_url: str, dbname: str) -> str:
     params = conninfo.conninfo_to_dict(base_url)
@@ -132,17 +150,30 @@ def test_database_url():
 
 
 @pytest.fixture
-def conn(test_database_url):
+def conn(test_database_url, monkeypatch):
     """A connection to the test DB with tables truncated to a clean slate.
+
+    ALSO points config.DATABASE_URL at the test database, which matters for any
+    library code that opens its OWN connection rather than taking one. Found
+    the hard way: drive/store.py calls db.get_conn() with no argument, so a
+    test exercising it wrote a row into the real Supabase database while
+    reading assertions from the test one -- every assertion failed, and the
+    damage was in the other database entirely.
+
+    _require_local already refuses to CREATE or DROP on a remote host. It does
+    not, and cannot, stop an ordinary INSERT issued by the code under test.
+    This closes that gap for every test that takes `conn`.
 
     drive_files is listed explicitly. It has no foreign key to books -- a Drive
     file exists whether or not we hold it -- so CASCADE does not reach it, and
     leaving it out let one test's mirror (and its embeddings) leak into the
     next's counts.
     """
+    monkeypatch.setattr(config, "DATABASE_URL", test_database_url)
     with db_mod.get_conn(test_database_url) as c:
         c.execute(
-            "TRUNCATE books, drive_files, bible_verses, allowed_users "
+            "TRUNCATE books, drive_files, bible_verses, allowed_users, "
+            "drive_credentials "
             "RESTART IDENTITY CASCADE"
         )
         c.commit()

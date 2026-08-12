@@ -158,13 +158,21 @@ async function refreshAuth() {
   $('#authbanner').hidden = a.ok;
   if (!a.ok && !connecting) {
     $('#amsg').textContent = {
-      not_connected: 'Not connected to Google Drive yet. Browsing works; indexing a book needs access.',
-      revoked: 'Google access expired. Reconnect to index new books — your library is unaffected.',
+      not_connected: 'Not connected to Google Drive yet. Browsing and search work; '
+                   + 'indexing a new book needs access.',
+      // Google revokes refresh tokens every 7 days while the consent screen is in
+      // Testing status, so this is the ORDINARY weekly state rather than a fault.
+      // Saying so beats anything that reads like breakage.
+      expired: 'Google Drive access expired — this happens every 7 days. Reconnect to '
+             + 'index new books; everything already indexed is unaffected.',
       no_refresh_token: 'Google access cannot be renewed. Reconnect to index new books.',
       unreadable: 'The stored Google credentials are unreadable. Reconnect.',
-      missing_client: a.detail,
+      cannot_connect: 'Google Drive is not connected on this server. Browsing, search '
+                    + 'and reading all work; indexing runs elsewhere.',
     }[a.reason] || a.detail || 'Google Drive is not available.';
-    $('#connect').hidden = a.reason === 'missing_client';
+    // Hide Connect only when connecting is genuinely impossible here -- no OAuth
+    // client is configured, so the button could never succeed.
+    $('#connect').hidden = a.reason === 'cannot_connect';
   }
   return a;
 }

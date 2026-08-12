@@ -18,6 +18,21 @@ const STAGE = {
   chunked:    'Generating embeddings',
 };
 
+// What to SHOW for a book, which is not the same as its status.
+//
+// `discovered` means "queued", and the label above assumes a worker is about to
+// pick it up -- true when the only way to queue something was on the machine
+// that also ran the worker. Deployed, the click and the worker are different
+// computers, and a row nobody has claimed rendered as "Downloading…" forever.
+//
+// claim_age_s is NULL until a worker claims the book, so it distinguishes the
+// two exactly. An unclaimed row says so instead of animating a stage that is
+// not happening.
+function stageLabel(b) {
+  if (b.status === 'discovered' && b.claim_age_s == null) return 'Queued';
+  return STAGE[b.status] || b.status;
+}
+
 // Statuses the pipeline never leaves on its own. Polling one is a request loop
 // with no possible outcome, and calling it "in progress" is a lie.
 const TERMINAL = new Set(['failed', 'needs_ocr']);
@@ -177,7 +192,7 @@ onBooks((d, err) => {
   list.innerHTML =
     working.map(b =>
       `<li class="working" title="${esc(b.title)}"><span class="t">${esc(b.title)}</span>` +
-      `<span class="m">${esc(STAGE[b.status] || b.status)}…</span></li>`
+      `<span class="m">${esc(stageLabel(b))}${b.claim_age_s == null && b.status === 'discovered' ? '' : '…'}</span></li>`
     ).join('') +
     d.books.map(b =>
       `<li title="${esc(b.title)} — ${b.pages ?? '?'} pages, ${b.chunks} chunks">` +
@@ -231,6 +246,8 @@ document.addEventListener('click', async e => {
 // anywhere, not something only the Drive page can do.
 
 let _authConnecting = false;
+// Whether Drive is reachable, so UI that depends on it can say so up front.
+let _driveOk = false;
 
 async function paintAuth() {
   const el = $('#sideauth');
@@ -241,11 +258,13 @@ async function paintAuth() {
   el.hidden = false;
   if (a.ok) {
     el.innerHTML = `<span class="authdot ok"></span> Google Drive connected`;
-  } else if (a.reason === 'missing_client') {
-    // No credentials.json: signing in can't work until the server is set up,
-    // so a button would be a lie. Show why instead.
-    el.innerHTML = `<span class="authdot bad"></span> Drive not configured`;
-    el.title = a.detail || '';
+  } else if (a.reason === 'cannot_connect') {
+    // No OAuth client configured here, so a Connect button would be a lie.
+    // Deliberately NOT the red "bad" dot: on the deployed app this is the
+    // intended configuration rather than a fault, and a red light beside a
+    // working page reads as something broken that the reader cannot fix.
+    el.innerHTML = `<span class="authdot"></span> Drive read-only here`;
+    el.title = 'Browsing and search use the local mirror. Indexing runs elsewhere.';
   } else if (_authConnecting) {
     el.innerHTML = `<span class="authdot warn"></span> Waiting for Google — approve in the other tab…`;
   } else {
@@ -329,9 +348,16 @@ function recCard(b, i) {
            `<div class="why">${esc(b.error)}</div></div></div>`;
   }
   const size = b.size_mb != null ? `${b.size_mb} MB` : 'size unknown';
+  // _driveOk is refreshed by paintAuth() on every page. Without Drive the
+  // Index endpoint raises before it queues anything, so an enabled button is a
+  // promise the server cannot keep -- and a 503 on click is a worse way to
+  // learn that than a disabled button that says so.
   const action = b.indexed
     ? `<span class="badge good">Already yours</span>`
-    : `<button class="btn add" data-i="${i}">Index</button>`;
+    : _driveOk
+      ? `<button class="btn add" data-i="${i}">Index</button>`
+      : `<button class="btn add" disabled title="Indexing needs Google Drive, `
+        + `which is not connected on this server.">Index</button>`;
   return `<div class="rec${b.indexed ? ' owned' : ''}">` +
     `<div class="body"><div class="t">${esc(b.title)}</div>` +
     `<div class="why">${esc(b.why || '')}</div>` +

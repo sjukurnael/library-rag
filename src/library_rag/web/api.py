@@ -40,6 +40,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from library_rag import bible, config, db, ingest, storage
 from library_rag.drive import client as drive_client
 from library_rag.drive import mirror
+from library_rag.drive import store as drive_store
 from library_rag.exploration import loop as browse_loop
 from library_rag.exploration import tools as browse_tools
 from library_rag.pipeline import embed as embed_mod
@@ -745,8 +746,17 @@ _auth_flows: dict[str, tuple] = {}
 
 @app.get("/api/drive/auth/status")
 def drive_auth_status():
-    """Is Drive usable right now. Safe to poll -- never opens a consent flow."""
-    return drive_client.credentials_status()
+    """Is Drive usable right now. Safe to poll -- never opens a consent flow.
+
+    `connection` says who connected it and when, present only when the token
+    came from the database. Two people can reconnect this, and a shared
+    credential nobody can attribute is a shared credential nobody owns.
+    """
+    status = drive_client.credentials_status()
+    info = drive_store.connection_info()
+    if info:
+        status["connection"] = info
+    return status
 
 
 @app.get("/api/drive/auth/start")
@@ -769,7 +779,8 @@ def drive_auth_start(request: Request):
 
 
 @app.get("/api/drive/auth/callback", name="drive_auth_callback")
-def drive_auth_callback(state: str = "", code: str = "", error: str = ""):
+def drive_auth_callback(request: Request, state: str = "", code: str = "",
+                        error: str = ""):
     """Where Google sends the user back. Renders a page, not JSON -- a browser
     lands here directly, so it must be readable by a person."""
     if error:
@@ -786,7 +797,14 @@ def drive_auth_callback(state: str = "", code: str = "", error: str = ""):
         )
     redirect_uri, verifier = pending
     try:
-        drive_client.exchange_code(code, redirect_uri, verifier)
+        # Attribute the connection. Either allowlisted person may reconnect
+        # -- Google revokes these every 7 days -- and knowing which of them
+        # did it is the difference between "whose Drive are we reading" being
+        # answerable and not.
+        drive_client.exchange_code(
+            code, redirect_uri, verifier,
+            connected_by=auth.current_user(request) or "unknown",
+        )
     except Exception as e:  # noqa: BLE001 -- rendered for a human, not re-raised
         return _auth_page("Could not complete sign-in", str(e), ok=False)
     return _auth_page(

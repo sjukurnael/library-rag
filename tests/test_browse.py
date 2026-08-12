@@ -544,11 +544,18 @@ def test_auth_status_never_starts_a_consent_flow(web, monkeypatch, tmp_path):
     called = []
     monkeypatch.setattr(drive_client, "auth_url",
                         lambda *a, **k: called.append(1) or ("http://x", "v"))
+    # BOTH files, not just the client secrets. Isolating only CREDENTIALS_FILE
+    # left this reading the developer's real token.json from the repo root --
+    # harmless while the code checked the client first, and an instant failure
+    # once it checked the token first. A test that depends on whether the
+    # machine running it happens to be connected to Drive is not a test.
     monkeypatch.setattr(drive_client, "CREDENTIALS_FILE", str(tmp_path / "nope.json"))
+    monkeypatch.setattr(drive_client, "TOKEN_FILE", str(tmp_path / "no-token.json"))
 
     r = web.get("/api/drive/auth/status")
     assert r.status_code == 200
-    assert r.json()["reason"] == "missing_client"
+    # No token AND no way to obtain one -- the state a deployed container is in.
+    assert r.json()["reason"] == "cannot_connect"
     assert called == []
 
 
@@ -591,8 +598,8 @@ def test_a_completed_callback_exchanges_once_and_burns_the_state(web, monkeypatc
                         lambda redirect_uri, state: ("https://g/x", "pkce-verifier"))
     calls = []
     monkeypatch.setattr(drive_client, "exchange_code",
-                        lambda code, redirect_uri, verifier: calls.append(
-                            (code, redirect_uri, verifier)))
+                        lambda code, redirect_uri, verifier, connected_by=None:
+                            calls.append((code, redirect_uri, verifier, connected_by)))
 
     web.get("/api/drive/auth/start")
     state = next(iter(api._auth_flows))
@@ -602,6 +609,11 @@ def test_a_completed_callback_exchanges_once_and_burns_the_state(web, monkeypatc
     assert calls[0][0] == "abc"
     assert calls[0][1].endswith("/api/drive/auth/callback")
     assert calls[0][2] == "pkce-verifier", "the exchange must reuse the PKCE verifier"
+    # Who reconnected is recorded with the token. Either allowlisted person can
+    # do it -- Google revokes these weekly -- so an unattributable shared
+    # credential is one nobody owns. "unknown" here because the gate is off in
+    # tests, so there is no signed-in user to name.
+    assert calls[0][3] == "unknown"
     # Replaying the same link must not exchange again.
     again = web.get("/api/drive/auth/callback", params={"state": state, "code": "abc"})
     assert again.status_code == 400

@@ -156,7 +156,7 @@ function pendingRow(b) {
   return `<div class="run working"><span class="dot"></span>
     <div class="who">
       ${titleCell(b)}
-      <div class="m">${srcBadge(b)}${pages}<span>${esc(STAGE[b.status] || b.status)}… ${esc(wait)}</span></div>
+      <div class="m">${srcBadge(b)}${pages}<span>${esc(stageLabel(b))}${b.claim_age_s == null && b.status === 'discovered' ? ' — waiting for a worker' : '… ' + esc(wait)}</span></div>
       ${stepsBar(b)}
     </div>
     <div class="side"></div></div>`;
