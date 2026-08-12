@@ -23,6 +23,7 @@ import os
 from anthropic import Anthropic
 
 from library_rag import config
+from library_rag.drive import client as drive_client
 from library_rag.exploration import assumptions, tools
 
 ROOT_FOLDER_ID = config.DRIVE_ROOT_FOLDER_ID
@@ -220,6 +221,29 @@ ${assumptions.PILOT_MAX_COST_USD} / {assumptions.PILOT_MAX_GB} GB were a Phase 0
 constraint and no longer apply to choosing a book to read."""
 
 
+# Tools that call Google Drive live rather than reading the local mirror.
+# search_drive is deliberately NOT here: it ranks the mirror, and only falls
+# back to Drive when the mirror is empty.
+_NEEDS_LIVE_DRIVE = frozenset({"browse_folder"})
+
+
+def available_tools() -> list:
+    """The tool schemas to offer this run.
+
+    Drops the live-Drive tools when there are no Drive credentials -- which is
+    the normal state of the deployed app, where indexing happens on a laptop and
+    no `token.json` ships in the image (see README, "Deploying").
+
+    Offering a tool that can only ever return an error is worse than not
+    offering it: the model spends turns discovering that, and the trail fills
+    with failures that look like the app is broken. search_drive and recommend
+    remain, and search_drive is the one that does the real work anyway.
+    """
+    if drive_client.credentials_status()["ok"]:
+        return TOOL_SCHEMAS
+    return [t for t in TOOL_SCHEMAS if t["name"] not in _NEEDS_LIVE_DRIVE]
+
+
 def _summarize(tool_name: str, result: dict) -> dict:
     """A compact, renderable summary of a tool result for the event stream."""
     if tool_name == "search_drive":
@@ -271,13 +295,14 @@ def run(interest: str, conn, *, client=None, max_iterations: int = MAX_ITERATION
     seen = {}
     recommendations = []
     messages = [{"role": "user", "content": interest}]
+    tool_schemas = available_tools()
 
     for iteration in range(1, max_iterations + 1):
         response = client.messages.create(
             model=MODEL,
             max_tokens=4096,
             system=SYSTEM_PROMPT,
-            tools=TOOL_SCHEMAS,
+            tools=tool_schemas,
             messages=messages,
         )
         messages.append({"role": "assistant", "content": response.content})

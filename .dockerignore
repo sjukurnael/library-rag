@@ -1,0 +1,28 @@
+# Secrets. None of these may ever reach an image layer -- a layer is not
+# deleted by a later RUN rm, and anyone who can pull the image can read it.
+.env
+.env.*
+credentials.json
+token.json
+env.yaml
+
+# The corpus: gigabytes, and the deployed app reads from Supabase, not disk.
+data/
+
+# Local development junk that would bust the layer cache or bloat the image.
+.venv/
+.git/
+.github/
+tests/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+.vscode/
+.claude/
+migrations/
+scripts/
+cache.json
+*.md
+!README.md

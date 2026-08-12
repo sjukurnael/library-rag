@@ -5,6 +5,7 @@ constant lives here; secrets come only from environment variables (see
 pipeline/ package should hardcode a number or path that belongs here.
 """
 import os
+import secrets
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -302,3 +303,52 @@ OCR_COST_PER_1K_PAGES = 4.0
 # 0.5 over 0.25/0.1 is worth one question and no MRR -- inside the noise of an
 # 8-question set. Re-measure with a larger set before treating the gap as real.
 DRIVE_RRF_LEXICAL_WEIGHT = 0.5
+
+
+# ---- Who is allowed to use the deployed app (see web/auth.py) ----
+# Sign-in with Google, gating the WHOLE app. This is authentication -- proving
+# who a visitor is -- and it is deliberately separate from the Drive OAuth in
+# drive/client.py, which is the OWNER's read-only access to their own Drive.
+# Two different Google clients, two different scopes, two different accounts:
+# conflating them would ask every visitor to hand over their own Drive.
+#
+# A *Web application* OAuth client ID from the Google Cloud console, NOT the
+# Desktop-app one in credentials.json. Public by design -- it ships in the login
+# page's HTML, and the security comes from Google signing the ID token and this
+# server verifying that signature and audience. There is no client secret in
+# this flow.
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+
+# Comma-separated allowlist. Anyone can sign in with Google; only these get in.
+# Compared case-insensitively after trimming, because "Nael@Gmail.com" and
+# "nael@gmail.com" are one Google account and a capital letter should not be a
+# lockout.
+ALLOWED_EMAILS = frozenset(
+    e.strip().lower() for e in os.environ.get("ALLOWED_EMAILS", "").split(",") if e.strip()
+)
+
+# Signs the session cookie. Changing it logs everyone out, which is the intended
+# panic button. Generated per-process when unset so local development works with
+# no setup -- and deliberately NOT persisted, so a deployment that forgets to set
+# it logs everyone out on every restart rather than running on a guessable key.
+SESSION_SECRET = os.environ.get("SESSION_SECRET") or secrets.token_urlsafe(32)
+
+# How long a sign-in lasts before Google must be consulted again.
+SESSION_MAX_AGE_SECONDS = int(os.environ.get("SESSION_MAX_AGE_HOURS", "168")) * 3600
+
+# Set only over HTTPS. Off by default so http://localhost still works; the
+# deploy docs turn it on, and Cookie: Secure is what stops the session being
+# readable over a plain-HTTP connection.
+SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "").lower() in {"1", "true", "yes"}
+
+
+def auth_enabled() -> bool:
+    """Whether the sign-in gate is active.
+
+    Driven by GOOGLE_CLIENT_ID rather than a separate flag, so there is one
+    thing to set and no way to have a client id configured but ignored. Unset
+    means wide open, which is right for `uvicorn --reload` on a laptop and wrong
+    for anything with a public URL -- api.py prints a startup warning when a
+    server starts unauthenticated.
+    """
+    return bool(GOOGLE_CLIENT_ID)

@@ -21,6 +21,9 @@
       <a href="/queue">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         Processing</a>
+      <a href="/bible">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Bible</a>
     </nav>
     <div class="sidebooks">
       <button class="sidehead" id="bookstoggle" aria-expanded="false">
@@ -579,53 +582,9 @@ $('#librarianbtn').addEventListener('click', () => {
   if (!el.hidden) $('#bq').focus();
 });
 
-const TOOL_LABEL = {
-  search_drive: 'search', browse_folder: 'browse',
-  estimate_pipeline: 'estimate', recommend: 'shortlist',
-};
-
-function toolLine(e) {
-  const i = e.input || {};
-  const arg = i.query || i.name_contains || i.folder_id || '';
-  return `<div class="bstep"><span class="lbl">${esc(TOOL_LABEL[e.name] || e.name)}</span>` +
-         `${arg ? `“${esc(String(arg))}”` : ''}</div>`;
-}
-
-function resultLine(s) {
-  const bits = [];
-  if (s.returned != null) bits.push(`${s.returned} found`);
-  if (s.total_pdfs != null && s.truncated) bits.push(`of ${s.total_pdfs}`);
-  if (s.already_indexed) bits.push(`${s.already_indexed} already yours`);
-  // "hit the limit" used to sit here and was shown on EVERY mirror search --
-  // a KNN ranker always fills its page, so it announced a ceiling that was not
-  // real. Only the live-Drive fallback can genuinely run short.
-  if (s.hit_limit) bits.push('hit the limit');
-  // The honest version of "is this topic actually in the collection": titles
-  // both rankers agreed on. Only worth saying when it is zero -- that is the
-  // case where a full-looking list of 50 is really just nearest neighbours.
-  if (s.word_and_meaning === 0) bits.push('nothing matched on words — nearest by meaning only');
-  if (s.picks != null) bits.push(`${s.picks} picked`);
-  return bits.length
-    ? `<div class="bstep"><span class="lbl"></span>${esc(bits.join(' · '))}</div>` : '';
-}
-
-function recCard(b, i) {
-  // A pick whose file_id the agent never actually saw is shown as an error, not
-  // rendered as a card -- a dead Drive link that looks real is worse than none.
-  if (b.unknown) {
-    return `<div class="rec bad"><div class="body"><div class="t">Unusable suggestion</div>` +
-           `<div class="why">${esc(b.error)}</div></div></div>`;
-  }
-  const size = b.size_mb != null ? `${b.size_mb} MB` : 'size unknown';
-  const action = b.indexed
-    ? `<span class="badge good">Already yours</span>`
-    : `<button class="btn add" data-i="${i}">Index</button>`;
-  return `<div class="rec${b.indexed ? ' owned' : ''}">` +
-    `<div class="body"><div class="t">${esc(b.title)}</div>` +
-    `<div class="why">${esc(b.why || '')}</div>` +
-    `<div class="m">${esc(size)} · <a href="${esc(b.url)}" target="_blank" rel="noopener">view in Drive</a></div>` +
-    `</div>${action}</div>`;
-}
+// toolLine / resultLine / recCard / runLibrarian / wireIndexButtons all live
+// in app.js now -- the Bible page runs the same agent on a verse, and two copies
+// of this rendering is the one that drifts.
 
 let recs = [];
 
@@ -634,39 +593,9 @@ $('#bf').addEventListener('submit', async e => {
   const interest = $('#bq').value.trim();
   if (!interest) return;
   $('#bgo').disabled = true;
-  $('#btrail').innerHTML = '<div class="bstep">looking…</div>';
-  $('#bout').innerHTML = '';
   recs = [];
-
-  const trail = [];
   try {
-    const r = await fetch('/api/browse', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ interest })
-    });
-    if (!r.ok) throw new Error(r.statusText);
-    await readEventStream(r, ev => {
-        if (ev.type === 'tool') trail.push(toolLine(ev));
-        else if (ev.type === 'results') trail.push(resultLine(ev.summary));
-        else if (ev.type === 'tool_error') {
-          trail.push(`<div class="bstep berr">${esc(ev.name)} failed — ${esc(ev.message)}</div>`);
-        } else if (ev.type === 'recommendations') {
-          recs = ev.books;
-          $('#bout').innerHTML = recs.map(recCard).join('');
-        } else if (ev.type === 'answer') {
-          $('#bout').insertAdjacentHTML('beforeend',
-            `<div class="sub" style="margin-top:10px">${esc(ev.text)}</div>`);
-        } else if (ev.type === 'error') {
-          $('#bout').insertAdjacentHTML('beforeend', `<div class="berr">${esc(ev.message)}</div>`);
-        }
-        $('#btrail').innerHTML = trail.join('');
-    }, {
-      terminal: 'done',
-      onStall: secs => {
-        trail.push(`<div class="bstep">no update for ${secs}s — still connected.</div>`);
-        $('#btrail').innerHTML = trail.join('');
-      },
-    });
+    recs = await runLibrarian(interest, $('#btrail'), $('#bout'));
   } catch (err) {
     $('#bout').innerHTML = `<div class="berr">${esc(String(err.message || err))}</div>`;
   } finally {
@@ -674,31 +603,7 @@ $('#bf').addEventListener('submit', async e => {
   }
 });
 
-// The agent recommends; the button acts. Nothing the agent does writes to the
-// library -- adding a book is always an explicit choice made here.
-$('#bout').addEventListener('click', async e => {
-  const btn = e.target.closest('.add');
-  if (!btn) return;
-  const book = recs[Number(btn.dataset.i)];
-  btn.disabled = true;
-  btn.textContent = 'Queueing…';
-  try {
-    const r = await fetch('/api/library/drive', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ file_ids: [book.file_id] })
-    });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || `failed (${r.status})`);
-    btn.textContent = d.added.length ? 'Queued' : 'Already yours';
-    // The queue page and the sidebar report the ingest from here on -- no
-    // second progress mechanism needed.
-    refreshBooks();
-  } catch (err) {
-    btn.disabled = false;
-    btn.textContent = 'Retry';
-    $('#bout').insertAdjacentHTML('beforeend', `<div class="berr">${esc(String(err.message || err))}</div>`);
-  }
-});
+wireIndexButtons($('#bout'), i => recs[i]);
 
 refreshAuth();
 refreshStatus();

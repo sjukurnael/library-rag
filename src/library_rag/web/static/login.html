@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library — sign in</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="loginwrap">
+  <div class="loginbox">
+    <div class="brand"><span class="logo"></span>Library</div>
+    <p class="sub" id="blurb">A private library of theology books, and the Bible.</p>
+
+    <!-- Google renders its own button in here. It is not styleable beyond the
+         documented data-* attributes, which is deliberate on Google's part:
+         a sign-in button that can be made to look like anything is a phishing
+         primitive. -->
+    <div id="gbtn"></div>
+
+    <div class="failnote" id="err" hidden></div>
+    <div class="sub" id="note" style="margin-top:22px"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+// The callback Google invokes with the ID token. Must be a global -- Google's
+// library looks it up by name off `window`.
+async function onGoogleCredential(response) {
+  $('#err').hidden = true;
+  try {
+    const r = await fetch('/api/auth/google', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ credential: response.credential }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || `Sign-in failed (${r.status})`);
+    // Full navigation, not history.pushState: the session cookie was just set
+    // and every page is server-rendered, so the browser should ask for one.
+    location.href = '/';
+  } catch (err) {
+    $('#err').textContent = String(err.message || err);
+    $('#err').hidden = false;
+  }
+}
+
+(async function boot() {
+  let cfg;
+  try {
+    cfg = await fetchJSON('/api/auth/config', {}, 10000);
+  } catch (err) {
+    $('#err').textContent = String(err.message || err);
+    $('#err').hidden = false;
+    return;
+  }
+
+  if (!cfg.enabled) {
+    // Sign-in off means every route is already open, so a login page would be
+    // a lie. Say what is true and offer the way in.
+    $('#blurb').textContent = 'Sign-in is not configured on this server.';
+    $('#note').innerHTML =
+      'Every page is open. Set <code>GOOGLE_CLIENT_ID</code> to require sign-in.' +
+      '<br><br><a href="/">Continue &rsaquo;</a>';
+    return;
+  }
+
+  // Google's library, loaded only when sign-in is actually on -- an unused
+  // third-party script on a page that does not need it is a needless request
+  // and a needless dependency.
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.async = true;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('Could not load Google sign-in.'));
+    document.head.appendChild(s);
+  }).catch(err => {
+    $('#err').textContent = String(err.message || err);
+    $('#err').hidden = false;
+  });
+
+  if (!window.google) return;
+  google.accounts.id.initialize({
+    client_id: cfg.client_id,
+    callback: onGoogleCredential,
+  });
+  google.accounts.id.renderButton($('#gbtn'), {
+    theme: 'outline', size: 'large', text: 'signin_with', shape: 'pill',
+  });
+  $('#note').textContent =
+    'Access is limited to approved accounts. If yours is not one, ask the owner.';
+})();
+</script>
+</body>
+</html>

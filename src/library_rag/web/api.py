@@ -35,17 +35,41 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from pydantic import BaseModel, Field
+from starlette.middleware.sessions import SessionMiddleware
 
-from library_rag import config, db, ingest, storage
+from library_rag import bible, config, db, ingest, storage
 from library_rag.drive import client as drive_client
 from library_rag.drive import mirror
 from library_rag.exploration import loop as browse_loop
 from library_rag.exploration import tools as browse_tools
 from library_rag.pipeline import embed as embed_mod
 from library_rag.retrieval import research
+from library_rag.web import auth
 
 app = FastAPI(title="library-rag")
 _STATIC = Path(__file__).resolve().parent / "static"
+
+# Order matters: SessionMiddleware must be added AFTER AuthMiddleware so that it
+# runs OUTSIDE it. Starlette applies middleware in reverse order of addition, and
+# AuthMiddleware reads request.session -- which does not exist until
+# SessionMiddleware has decoded the cookie.
+app.add_middleware(auth.AuthMiddleware)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=config.SESSION_SECRET,
+    max_age=config.SESSION_MAX_AGE_SECONDS,
+    same_site="lax",          # survives the top-level navigation back from /login
+    https_only=config.SESSION_COOKIE_SECURE,
+)
+
+if not config.auth_enabled():
+    # Loud, because the failure mode is silent: an app deployed without
+    # GOOGLE_CLIENT_ID serves every route, including DELETE /api/books/{id}, to
+    # anyone who finds the URL.
+    print(
+        "\n  WARNING: GOOGLE_CLIENT_ID is not set -- sign-in is DISABLED and\n"
+        "  every route is public. Fine on localhost; never on a public URL.\n"
+    )
 
 
 @app.exception_handler(drive_client.DriveAuthError)
@@ -786,3 +810,155 @@ def _auth_page(title: str, detail: str, *, ok: bool) -> HTMLResponse:
         </div></main>""",
         status_code=200 if ok else 400,
     )
+
+
+# ------------------------------------------------------------------- bible --
+# The Bible reader. English only, one table, no embeddings -- see
+# migrations/0006_bible_verses.sql and library_rag/bible.py.
+
+
+@app.get("/bible")
+def bible_page():
+    """The Bible reader. A fourth page because it is a fourth task -- reading
+    Scripture, which shares no state with the PDF library."""
+    return _page("bible.html")
+
+
+@app.get("/api/bible/books")
+def bible_books():
+    """The 66 books with their chapter counts.
+
+    Also reports `loaded`, so a database that has not run the migration gets a
+    page saying which command to run instead of a 500. This is the page's first
+    call and the only one that has to be able to describe an empty install as
+    data rather than as an error.
+    """
+    with db.get_conn() as conn:
+        if not bible.loaded(conn):
+            return {"loaded": False, "books": []}
+        rows = bible.books(conn)
+    return {
+        "loaded": True,
+        "books": [
+            {"book": b, "name": name, "chapters": chapters, "verses": verses}
+            for b, name, chapters, verses in rows
+        ],
+    }
+
+
+@app.get("/api/bible/chapter")
+def bible_chapter(book: int, chapter: int):
+    with db.get_conn() as conn:
+        verses = bible.chapter(conn, book, chapter)
+    if not verses:
+        raise HTTPException(404, f"No chapter {chapter} in book {book}.")
+    return {
+        "book": book,
+        "chapter": chapter,
+        # `text` is "" for the 16 placeholder verses. Passed through as-is; the
+        # page decides how to show an absence, because that is a display
+        # decision and this is the data.
+        "verses": [{"verse": v, "text": t} for v, t in verses],
+    }
+
+
+# The cap is here rather than in bible.search so that `truncated` below can be
+# computed against the same number the query used.
+SEARCH_LIMIT = 200
+
+
+@app.get("/api/bible/search")
+def bible_search(q: str):
+    """Verses containing `q`, in Bible order.
+
+    Literal substring matching, not semantic -- typing "love" finds the letters
+    l-o-v-e. `truncated` exists so the page can say a result was cut off; a
+    silently capped list reads as a complete answer.
+    """
+    q = q.strip()
+    if not q:
+        raise HTTPException(400, "Empty search.")
+    with db.get_conn() as conn:
+        rows = bible.search(conn, q, limit=SEARCH_LIMIT)
+    return {
+        "query": q,
+        "truncated": len(rows) == SEARCH_LIMIT,
+        "results": [
+            {"book": b, "name": name, "chapter": c, "verse": v, "text": t}
+            for b, name, c, v, t in rows
+        ],
+    }
+
+
+# -------------------------------------------------------------------- auth --
+# Google sign-in. See web/auth.py for the two-questions split (who are you /
+# may you in) and for why this is not Supabase Auth.
+
+
+@app.get("/healthz")
+def healthz():
+    """Liveness for Cloud Run. Touches nothing on purpose -- a health check that
+    queries Postgres turns a momentary database blip into a restart loop."""
+    return {"ok": True}
+
+
+@app.get("/login")
+def login_page():
+    return _page("login.html")
+
+
+@app.get("/api/auth/config")
+def auth_config():
+    """What the login page needs to render Google's button. The client id is
+    public by design -- it ships in the HTML, and the security comes from Google
+    signing the token and this server checking the signature and audience."""
+    return {"enabled": config.auth_enabled(), "client_id": config.GOOGLE_CLIENT_ID}
+
+
+class GoogleCredential(BaseModel):
+    credential: str = Field(min_length=1, max_length=8192)
+
+
+@app.post("/api/auth/google")
+def auth_google(req: GoogleCredential, request: Request):
+    """Exchange a Google ID token for a session on this app.
+
+    Two independent gates, and the order matters: verify the token FIRST, so an
+    unverifiable credential never causes a database lookup, and only then ask
+    whether that proven identity is on the allowlist.
+
+    403 rather than 401 for a non-allowlisted address: we know exactly who they
+    are, and they still may not in. Saying so plainly beats a generic failure
+    that reads like a bug in the sign-in button.
+    """
+    if not config.auth_enabled():
+        raise HTTPException(400, "Sign-in is not configured on this server.")
+    try:
+        email = auth.verify_google_token(req.credential)
+    except auth.AuthError as e:
+        raise HTTPException(401, str(e)) from e
+
+    with db.get_conn() as conn:
+        allowed = auth.is_allowed(conn, email)
+    if not allowed:
+        raise HTTPException(
+            403,
+            f"{email} is not on the allowlist for this app. "
+            "Ask the owner to add it.",
+        )
+
+    auth.sign_in(request, email)
+    return {"email": email}
+
+
+@app.get("/logout")
+def logout(request: Request):
+    auth.sign_out(request)
+    return RedirectResponse("/login", status_code=302)
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request):
+    """Who is signed in -- drives the sidebar footer. Returns null rather than
+    401 when auth is off, so the pages render identically in local development."""
+    return {"enabled": config.auth_enabled(), "email": auth.current_user(request)}

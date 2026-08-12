@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library — bible</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="shell">
+
+  <aside class="side">
+    <div class="brand"><span class="logo"></span>Library</div>
+    <nav class="snav">
+      <a href="/">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        Chat</a>
+      <a href="/library">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        Drive</a>
+      <a href="/queue">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Processing</a>
+      <a href="/bible" class="on">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Bible</a>
+    </nav>
+    <div class="sidefoot" id="sidefoot"></div>
+  </aside>
+
+  <div class="page">
+    <div class="pagehead">
+      <h1>Bible</h1>
+      <select id="booksel" class="picker" aria-label="Book"></select>
+      <select id="chapsel" class="picker" aria-label="Chapter"></select>
+      <div class="stepper">
+        <button class="btn step" id="prev" title="Previous chapter">‹</button>
+        <button class="btn step" id="next" title="Next chapter">›</button>
+      </div>
+      <span style="flex:1"></span>
+      <form class="searchpill" id="sf" style="max-width:360px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="text" id="sq" autocomplete="off" placeholder="Search the Bible…">
+      </form>
+    </div>
+
+    <div class="pagebody">
+      <div id="reader"><div class="empty">loading…</div></div>
+      <!-- Results replace the reader rather than sitting beside it: reading a
+           search hit is the same act as reading a chapter, so it wants the
+           same full width. -->
+      <div id="results" hidden></div>
+      <div class="bfoot">The Holy Bible, Berean Standard Bible (BSB). Public domain.</div>
+    </div>
+  </div>
+
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+// Every book with its chapter count, from the API. The chapter arrows compute
+// the wrap from this rather than hardcoding "Revelation has 22 chapters", so
+// the page knows nothing about the canon.
+let BOOKS = [];
+let book = 1, chap = 1;
+
+// ------------------------------------------------------------------ boot --
+
+async function boot() {
+  let d;
+  try {
+    d = await fetchJSON('/api/bible/books', {}, 15000);
+  } catch (err) {
+    $('#reader').innerHTML = `<div class="failnote">${esc(err.message)}</div>`;
+    return;
+  }
+  if (!d.loaded) {
+    // Not an error: the table is simply empty, and the fix is a command.
+    $('#reader').innerHTML =
+      '<div class="empty">No Bible loaded yet.<br><br>Run:<br>' +
+      '<code>python -m library_rag.cli.migrate</code><br>' +
+      '<code>python -m library_rag.cli.bible --load</code></div>';
+    $('#booksel').hidden = $('#chapsel').hidden = true;
+    $('#prev').hidden = $('#next').hidden = true;
+    return;
+  }
+  BOOKS = d.books;
+  $('#booksel').innerHTML = BOOKS
+    .map(b => `<option value="${b.book}">${esc(b.name)}</option>`).join('');
+  $('#sidefoot').textContent =
+    `${BOOKS.length} books · ${BOOKS.reduce((n, b) => n + b.verses, 0).toLocaleString()} verses`;
+
+  const m = location.hash.match(/^#(\d+):(\d+)$/);
+  await show(m ? +m[1] : 1, m ? +m[2] : 1);
+}
+
+function meta(n) { return BOOKS.find(b => b.book === n); }
+
+// ---------------------------------------------------------------- reader --
+
+async function show(b, c) {
+  const info = meta(b);
+  if (!info) return;
+  book = b;
+  chap = Math.min(Math.max(c, 1), info.chapters);
+
+  $('#results').hidden = true;
+  $('#reader').hidden = false;
+  $('#booksel').value = String(book);
+  $('#chapsel').innerHTML = Array.from({ length: info.chapters }, (_, i) =>
+    `<option value="${i + 1}">Chapter ${i + 1}</option>`).join('');
+  $('#chapsel').value = String(chap);
+  location.hash = `${book}:${chap}`;
+
+  const stop = progress($('#reader'), { label: 'Loading' });
+  let d;
+  try {
+    d = await fetchJSON(`/api/bible/chapter?book=${book}&chapter=${chap}`, {}, 15000);
+  } catch (err) {
+    stop.stop();
+    $('#reader').innerHTML = `<div class="failnote">${esc(err.message)}</div>`;
+    return;
+  }
+  stop.stop();
+
+  $('#reader').innerHTML =
+    `<div class="chaphead">${esc(info.name)} ${chap}</div>` +
+    d.verses.map(v => `
+      <div class="bverse" data-verse="${v.verse}">
+        <div class="bnum">${v.verse}</div>
+        <div>
+          <div class="btext">${
+            // 16 verses across the NT carry no text -- they are in the KJV and
+            // absent from the earliest manuscripts. Saying so is better than a
+            // blank line, which just looks like the page failed to load.
+            v.text ? esc(v.text)
+                   : '<span class="bomit">— not found in the earliest manuscripts</span>'
+          }</div>
+          <div class="dig" hidden><div class="dtrail"></div><div class="dout"></div></div>
+        </div>
+        ${
+          // No button on the 16 empty verses: there is no text to hand the
+          // agent, and offering an action that cannot work is worse than none.
+          v.text ? `<button class="digbtn" title="Find books on this verse">✦</button>` : ''
+        }
+      </div>`).join('');
+  $('.pagebody').scrollTop = 0;
+}
+
+// --------------------------------------------------------------- chapter --
+
+function stepChapter(delta) {
+  const i = BOOKS.findIndex(b => b.book === book);
+  const c = chap + delta;
+  if (c >= 1 && c <= BOOKS[i].chapters) return show(book, c);
+  // Off the end of a book: move to the neighbour. Off the end of the canon:
+  // wrap. Revelation 22 -> Genesis 1, and backwards from Genesis 1.
+  const j = (i + delta + BOOKS.length) % BOOKS.length;
+  return show(BOOKS[j].book, delta > 0 ? 1 : BOOKS[j].chapters);
+}
+
+$('#prev').onclick = () => stepChapter(-1);
+$('#next').onclick = () => stepChapter(1);
+$('#booksel').onchange = e => show(+e.target.value, 1);
+$('#chapsel').onchange = e => show(book, +e.target.value);
+
+window.addEventListener('keydown', e => {
+  if (e.target.matches('input, select, textarea')) return;
+  if (e.key === 'ArrowLeft') stepChapter(-1);
+  if (e.key === 'ArrowRight') stepChapter(1);
+});
+
+// The hash is a real address, not just a note of where you are: Back and
+// Forward move through chapters, and a pasted /bible#43:3 lands there even
+// when the tab is already open.
+window.addEventListener('hashchange', () => {
+  const m = location.hash.match(/^#(\d+):(\d+)$/);
+  if (!m) return;
+  if (+m[1] === book && +m[2] === chap && !$('#reader').hidden) return;
+  show(+m[1], +m[2]);
+});
+
+// ------------------------------------------------------- dig deeper (agent) --
+// The librarian is the same agent the Drive page runs, given a verse instead of
+// a typed interest. /api/browse takes free text, so no new endpoint exists for
+// this -- a verse is just a well-specified way of saying what you want to study.
+
+let digRecs = [];        // the open verse's picks; Index buttons index into it
+
+document.addEventListener('click', async ev => {
+  const btn = ev.target.closest('.digbtn');
+  if (!btn) return;
+  const row = btn.closest('.bverse');
+  const box = row.querySelector('.dig');
+
+  // One at a time. Several open panels would each need their own recs array for
+  // the Index buttons to stay correct, and reading three agent trails at once is
+  // not a thing anyone does.
+  if (!box.hidden) { box.hidden = true; return; }
+  document.querySelectorAll('.dig').forEach(d => { d.hidden = true; });
+  box.hidden = false;
+  digRecs = [];
+
+  const verse = row.dataset.verse;
+  const text = row.querySelector('.btext').textContent.trim();
+  const ref = `${meta(book).name} ${chap}:${verse}`;
+
+  btn.disabled = true;
+  try {
+    digRecs = await runLibrarian(
+      `I am studying this Bible verse and want to go deeper:\n\n` +
+      `${ref} — "${text}"\n\n` +
+      `Find books in the library that would help me understand it.`,
+      box.querySelector('.dtrail'), box.querySelector('.dout'),
+    );
+  } catch (err) {
+    box.querySelector('.dout').innerHTML =
+      `<div class="berr">${esc(String(err.message || err))}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// Delegated from #reader, which survives the chapter re-render that replaces
+// every .bverse inside it.
+wireIndexButtons($('#reader'), i => digRecs[i]);
+
+// ---------------------------------------------------------------- search --
+
+$('#sf').onsubmit = async ev => {
+  ev.preventDefault();
+  const q = $('#sq').value.trim();
+  if (!q) return;
+
+  $('#reader').hidden = true;
+  $('#results').hidden = false;
+  const stop = progress($('#results'), { label: 'Searching' });
+  let d;
+  try {
+    d = await fetchJSON(`/api/bible/search?q=${encodeURIComponent(q)}`, {}, 20000);
+  } catch (err) {
+    stop.stop();
+    $('#results').innerHTML = `<div class="failnote">${esc(err.message)}</div>${backBtn()}`;
+    return;
+  }
+  stop.stop();
+
+  const n = d.results.length;
+  $('#results').innerHTML =
+    `<div class="reshead">
+       <div><b>${d.truncated ? `first ${n}` : n}</b>
+            ${n === 1 ? 'verse contains' : 'verses contain'} “${esc(d.query)}”
+            ${d.truncated ? '<span class="sub"> · narrow the search to see the rest</span>' : ''}
+       </div>${backBtn()}
+     </div>` +
+    (n ? d.results.map(r => `
+      <button class="hit" data-goto="${r.book}:${r.chapter}">
+        <span class="ref">${esc(r.name)} ${r.chapter}:${r.verse}</span>
+        <span class="btext">${highlight(r.text, d.query)}</span>
+      </button>`).join('')
+       : '<div class="empty">No verse contains that text.</div>');
+};
+
+// esc() FIRST, then wrap the match -- escaping afterwards would turn the <mark>
+// we just added into visible text. The query is escaped for the regex too, so
+// a search for "1:1" or "(" cannot break the pattern.
+function highlight(text, q) {
+  const safe = esc(text);
+  const needle = esc(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return safe.replace(new RegExp(needle, 'gi'), m => `<mark>${m}</mark>`);
+}
+
+function backBtn() { return '<button class="btn" id="back">Back to the text</button>'; }
+
+document.addEventListener('click', ev => {
+  if (ev.target.closest('#back')) {
+    $('#results').hidden = true; $('#reader').hidden = false; return;
+  }
+  const go = ev.target.closest('[data-goto]');
+  if (go) {
+    const [b, c] = go.dataset.goto.split(':').map(Number);
+    show(b, c);
+  }
+});
+
+boot();
+</script>
+</body>
+</html>

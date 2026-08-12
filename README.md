@@ -41,28 +41,36 @@ library-rag/
     │   ├── extract.py      #   PyMuPDF / Mistral OCR -> markdown + manifest
     │   ├── chunking.py     #   markdown -> chunks with page ranges + ordinals
     │   └── embed.py        #   the one place that calls the Voyage API
+    ├── bible.py            # the Bible page: download -> parse -> load, + 3 read
+    │                       #   queries. One module, no Greek, no embeddings.
     ├── retrieval/
     │   └── research.py     # the agent that decides what to search for, and when to stop
     ├── evaluation/
     │   ├── harness.py      # hit-rate@k / MRR scoring -- no CLI, so tests reuse it
     │   └── questions/      # curated ground truth (book + page span, never chunk id)
     ├── web/
+    │   ├── auth.py         # Google sign-in + the default-deny gate
     │   ├── api.py          # /api/books, /api/books/upload, DELETE, /api/research (SSE)
     │   └── static/         # the UI: question box, inline citations, PDF upload
-    ├── exploration/        # Phase 0, finished. Nothing live imports it.
-    │   ├── loop.py         #   hand-written tool-use loop
-    │   ├── tools.py        #   list_folder + estimate_pipeline
+    ├── exploration/        # the librarian (see below). Started as Phase 0 and
+    │   │                   #   was repurposed -- web/api.py imports it live.
+    │   ├── loop.py         #   hand-written tool-use loop, streamed as SSE
+    │   ├── tools.py        #   search_drive + browse_folder + recommend
     │   └── assumptions.py  #   every estimation constant, each with a rationale
     └── cli/                # EVERY command. Library modules have no __main__.
         ├── ingest.py  search.py  evaluate.py
         └── migrate.py report.py  explore.py
 ```
 
-Two rules make the tree navigable. **Every command lives in `cli/`** — if a
+One rule makes the tree navigable: **every command lives in `cli/`** — if a
 module parses argv or prints, it goes there, and everything else is importable
-library code the tests and the API can drive directly. **`exploration/` is
-finished work** — Phase 0 ran once, picked a pilot folder, and nothing in the
-live pipeline imports it.
+library code the tests and the API can drive directly.
+
+`exploration/` used to be the second rule ("finished work, nothing imports it").
+That is no longer true and the directory name is now misleading: Phase 0's
+tool-use loop was repurposed into **the librarian**, and `web/api.py` imports
+`exploration.loop` and `exploration.tools` on the live path. Only
+`assumptions.py` is still Phase 0 residue.
 
 `src/` layout on purpose: the package is importable only once installed
 (`pip install -e ".[dev]"`), so a test can never pass by accidentally picking up
@@ -460,6 +468,306 @@ so the search trace streams rather than the page sitting silent).
 it and Voyage is $0.0000002. Split across the two Claude calls, choosing the
 query costs $0.0095 and writing the answer from ten retrieved passages costs
 $0.0964 — so `k`, not the number of searches, is the real cost lever.
+
+---
+
+## The librarian (Drive page)
+
+The Drive holds ~57,500 PDFs; the indexed library holds a few hundred. The
+bottleneck is not searching what you have indexed — it is **deciding what to
+index next**. The librarian is that triage step: describe what you want to
+study, and an agent runs a few searches and returns 3–6 candidates with a
+reason each and an Add button.
+
+`exploration/loop.py` is a hand-written tool-use loop (~85 lines, no framework)
+with four tools — `search_drive`, `browse_folder`, `estimate_pipeline`,
+`recommend`. It is a **generator of events**, so `/api/browse` streams the trail
+as server-sent events and a CLI could print the same events without a second
+implementation. Watching which searches it ran is most of the value: a list of
+titles with no visible provenance is indistinguishable from a hallucination.
+
+It is **read-only**. The agent proposes; adding a book is a separate, explicit
+POST that you trigger by pressing a button.
+
+### What it can actually see — titles and folder paths, never contents
+
+This is the limitation to understand before trusting it. **No book here has been
+opened.** What gets embedded is `drive_files.search_text`: the full breadcrumb
+plus the filename, cleaned (see `migrations/0004_drive_search_text.sql`) —
+
+```
+Exclusive / Books / Bockmuehl Revelation and Mystery in Ancient Judaism...
+Exclusive / Dissertations / Jassen Mediating the divine- Prophecy and revelation...
+```
+
+The folder path is doing real work here: a book filed under
+`Books / Bible Study Guides / Revelation /` inherits that topic even when its own
+filename is opaque. That, plus academic filenames tending to describe their
+contents, is why this works better on this corpus than it would on a fiction
+library — `Snodgrass_Stories With Intent Parables.pdf` tells you what is inside;
+`Harry Potter and the Philosopher's Stone` does not.
+
+**Where it fails, measured against the live mirror:**
+
+| query | result |
+|---|---|
+| `"why do bad things happen to good people"` | finds `The problem of evil`, `Nature and origin of evil` — but **not Job**, whose filename carries no topical signal. `word_and_meaning = 0` correctly reports low confidence. |
+| `"a boy who discovers he has magical powers"` | returns NT scholarship on magic in antiquity, and scores a confident-looking `word_and_meaning = 5`. It matched the *words* "magic" and "power". |
+
+So it cannot bridge from a description of contents to a title that does not name
+the topic. It reads spines, not books. Treat it as triage, not comprehension —
+the thing that reads the books is the RAG pipeline, and only after you index one.
+
+### On "the end times"
+
+An earlier version of this file, and several comments still in the source,
+claimed the mirror search turns `"the end times"` into a query that reaches
+Revelation. Re-measured, that is **half true and worth stating precisely**:
+
+```
+dense only   Segal_Calculating the End_ Inner-Danielic Chronological...
+             Pfandl_The latter days and the time of the end in Daniel     <- real eschatology
+hybrid (shipped, w=0.5)
+             Times as Task, Not Timing- Reconsidering Qoheleth's...
+             Christ and Time—Part Three- "Telling Time" in the Fourth...  <- matched on "time"
+```
+
+The dense leg does reach genuine eschatology. The lexical leg then drags in
+titles that merely contain "time" or "end", and on this query the fusion is
+**worse than dense alone**. `config.DRIVE_RRF_LEXICAL_WEIGHT` already documents
+this failure mode at weight 1.0; it is milder at the shipped 0.5, not absent.
+
+Note this does not overturn the weight choice: on the 8-query set recorded in
+`config.py`, hybrid at 0.5 scored 8/8 against dense's 7/8. It does mean that set
+is too small to have caught this, exactly as the comment there warns. A larger
+ground-truth set is the outstanding work.
+
+---
+
+## The Bible page
+
+A plain English Bible at `/bible` — pick a book and chapter, read it, arrow
+forward and back, search for a phrase. Deliberately unrelated to the RAG
+pipeline: no embeddings, no agent, no PDFs. It shares the database and the
+sidebar and nothing else.
+
+```bash
+python -m library_rag.cli.migrate
+python -m library_rag.cli.bible --load     # ~2 s; expects exactly 31,102 verses
+python -m library_rag.cli.bible --status   # books and verse counts
+```
+
+The text is the [Berean Standard Bible](https://bereanbible.com), placed in the
+public domain in April 2023. `--load` downloads `bsb.txt` (4.3 MB) into
+gitignored `data/` on first run and reads from disk after that; the running web
+app never touches the network.
+
+### One table
+
+[migrations/0006_bible_verses.sql](migrations/0006_bible_verses.sql) — 31,102
+rows, **6 MB**. For scale, one `chunks` row carries 2 KB of embedding, so the
+whole Bible costs less disk than ~3,500 chunks.
+
+```sql
+CREATE TABLE bible_verses (
+    book       SMALLINT NOT NULL,   -- 1..66, canonical order
+    book_name  TEXT     NOT NULL,   -- 'Genesis'
+    chapter    SMALLINT NOT NULL,
+    verse      SMALLINT NOT NULL,
+    text       TEXT     NOT NULL,
+    PRIMARY KEY (book, chapter, verse)
+);
+```
+
+No surrogate id — `(book, chapter, verse)` already names a verse, and its index
+is also the chapter lookup. No book table: 66 names repeated costs a few hundred
+KB and removes a join from every query. No search index — `text ILIKE '%…%'`
+over 31k rows is a sequential scan measured at ~115 ms against Supabase, and an
+index nobody needs is a thing to have to explain.
+
+### Three stages, deliberately separate
+
+[src/library_rag/bible.py](src/library_rag/bible.py) is one module, ~200 lines
+including comments, no classes:
+
+```
+download()   network -> data/bsb.txt     runs once, then the file is there
+parse()      data/bsb.txt -> tuples      no database
+load()       tuples -> Postgres          no filesystem, one COPY, one transaction
+```
+
+`parse()` being pure is what lets most of the tests run with no database at all.
+
+### Two things the data forced
+
+**Book names contain spaces and digits** — `1 Samuel`, `Song of Solomon`,
+`3 John`. The regex takes the name greedily up to the last ` <digits>:<digits>`;
+splitting on spaces breaks on all eighteen of them. Note the source spells it
+**`Psalm`**, singular — kept as-is, because "correcting" it stops lookups
+matching.
+
+**16 verses carry no text** — Matthew 17:21, Mark 9:44, John 5:4, Acts 8:37 and
+the rest: present in the KJV, absent from the earliest manuscripts. The BSB
+keeps the *number* as a placeholder, and so do we. Dropping them would make
+Matthew 17 jump from verse 20 to 22 and read as a loader bug. The page renders
+them as *"— not found in the earliest manuscripts"*, because a blank line just
+looks broken.
+
+### Dig deeper — the librarian, on a verse
+
+Hovering a verse reveals a **✦** button. It runs the **same agent** the Drive
+page runs, given the verse instead of a typed interest:
+
+```
+I am studying this Bible verse and want to go deeper:
+
+John 3:16 — "For God so loved the world that He gave His one and only Son, …"
+
+Find books in the library that would help me understand it.
+```
+
+There is **no new endpoint and no new agent**. `/api/browse` already takes free
+text, and a verse is just a well-specified way of saying what you want to study
+— so this is one composed string and a place to render the result. What was
+shared is the *frontend*: `toolLine`, `resultLine`, `recCard`, `runLibrarian`
+and `wireIndexButtons` moved from `library.html` into `app.js` (−98 lines from
+that page), for the same reason `esc()` lives there — it was about to have a
+second copy.
+
+Measured, unchanged prompt. John 3:16 produced four searches (John commentaries,
+the love of God, eternal life in Johannine theology, the Nicodemus context) and
+six picks including a paper on how John 3:16 itself has been translated.
+Philemon 6 surfaced a journal article devoted entirely to interpreting Philemon
+6. The agent's honest closing on the first: the collection is "strong on
+Johannine theology and thin on classic verse-by-verse commentaries".
+
+The 16 empty verses get no button — there is no text to hand the agent, and an
+action that cannot work is worse than none. One panel is open at a time, since
+the Index buttons index into the open verse's picks.
+
+### Search
+
+Literal substring matching, case-insensitive, in Bible order — typing "love"
+finds the letters. `%` and `_` are escaped before they reach `LIKE`, or a search
+for `100%` would become the pattern `%100%%` and return the entire Bible. Capped
+at 200 results, and the page says when it hit the cap rather than presenting a
+truncated list as complete.
+
+---
+
+## Deploying
+
+The app runs on **Google Cloud Run**, gated by **Google sign-in** against an
+allowlist. At two users this costs **$0** — measured, 1,800 requests and 13,800
+vCPU-seconds a month against free allowances of 2,000,000 and 180,000, so 7.7%
+of the tightest one.
+
+### Sign-in, and why it is not Supabase Auth
+
+Two questions, answered separately. **Who are you?** — Google, via a signed ID
+token the browser hands us and `google-auth` verifies. **May you in?** — the
+`allowed_users` table. Anyone on earth has a Google account, so identity is not
+authorisation.
+
+Not Supabase Auth, for one architectural reason: this app serves **server-rendered
+pages**. A plain navigation to `/bible` arrives before any JavaScript has run, so
+there is no header to attach a browser-held token to and nothing for a gate to
+inspect. A server-set cookie can gate that; a localStorage token cannot. Supabase
+Auth is the right tool when you want per-user data with RLS.
+
+Nothing here is Supabase-specific either: `allowed_users` is a plain Postgres
+table read with `psycopg`, and the whole design moves to any other Postgres
+unchanged. Supabase's dashboard just happens to be a convenient editor for it.
+
+```bash
+python -m library_rag.cli.users --add you@gmail.com
+python -m library_rag.cli.users --add friend@gmail.com --note "borrowed Philemon"
+python -m library_rag.cli.users --list
+```
+
+**The gate is off when `GOOGLE_CLIENT_ID` is unset**, so local development and
+the test suite are unaffected — and the server prints a loud warning when it
+starts unauthenticated, because the failure mode is silent.
+
+The middleware is **default-deny** ([web/auth.py](src/library_rag/web/auth.py)):
+open paths are an explicit short list and everything else needs a session, so a
+route added next month is protected without anyone remembering to protect it.
+A browser gets `302 /login`; a `fetch` gets `401 JSON`, because a login page
+delivered into `await r.json()` is a parse error rather than a message.
+
+### Two Google Cloud projects, not one
+
+This is the non-obvious part. The existing OAuth consent screen is **External +
+Testing**, and Google revokes refresh tokens issued under that status after
+**7 days**. Publishing to production would fix that, but `drive.readonly` is a
+**restricted scope** and publishing with it requires a paid CASA security
+assessment. `openid`/`email`/`profile` are not restricted and need no review.
+
+| | Project A — existing | Project B — new |
+|---|---|---|
+| purpose | Drive access | sign-in + hosting |
+| scope | `drive.readonly` (restricted) | `openid email profile` |
+| consent screen | stays **Testing** | **published**, no assessment |
+| OAuth client | Desktop (`credentials.json`) | **Web application** |
+| used from | your laptop only | the deployed app |
+
+Splitting them is what lets anyone sign in, indefinitely, for free — while the
+restricted scope stays quarantined on the machine that actually indexes.
+
+In **Project B**: enable `run.googleapis.com`, `cloudbuild.googleapis.com` and
+`artifactregistry.googleapis.com`; publish the consent screen; create a **Web
+application** OAuth client with *Authorized JavaScript origins*
+`http://localhost:8000` and your Cloud Run URL. Origins, not redirect URIs —
+this flow never redirects to Google.
+
+### Deploy
+
+```bash
+gcloud run deploy library-rag \
+  --source . --region us-west1 \
+  --max-instances=2 \        # default is 100; this bounds worst-case spend
+  --memory=1Gi --cpu=1 \
+  --timeout=300 \            # agent runs take ~45s and stream
+  --env-vars-file=env.yaml   # gitignored; keeps DATABASE_URL out of shell history
+```
+
+The first deploy uses `--no-allow-unauthenticated`: the Cloud Run URL is unknown
+until the service exists, but the OAuth client needs it as an origin, and
+`GOOGLE_CLIENT_ID` cannot be set until then. Locking the service to IAM for that
+window avoids publishing an ungated app. Get the URL → add the origin → set the
+env vars → redeploy with `--allow-unauthenticated`.
+
+Then set a **spend cap budget** on Cloud Run. Google's spend caps genuinely pause
+the service at 100% rather than only emailing — $5/month is ~13× expected usage.
+
+Image is ~740 MB (PyMuPDF and googleapiclient are 200 MB between them), which
+puts cold start around 5–15s. `LIBRARY_RAG_DATA_DIR=/tmp/data` matters more than
+it looks: [config.py](src/library_rag/config.py) calls `PDF_DIR.mkdir(...)` at
+**import** time, so an unwritable data directory is an import error, not a
+runtime one.
+
+### What the deployed app deliberately cannot do
+
+**No Drive credentials ship in the image** — `.dockerignore` excludes
+`credentials.json` and `token.json`, and a layer is not undone by a later `rm`.
+With Project A in Testing, a mirrored token would be revoked weekly anyway; a
+feature that breaks on a timer is worse than one that is honestly absent.
+**Indexing runs on your laptop**, where the consent flow already exists and where
+extracting a 60 MB scan will not OOM a 1 GB instance.
+
+| | deployed | |
+|---|---|---|
+| Bible reader + search | ✅ | Postgres only |
+| Chat over indexed books | ✅ | Postgres + Anthropic + Voyage |
+| Librarian `search_drive` | ✅ | reads the **mirror**, not Drive |
+| Drive browse + search | ✅ | mirror-backed |
+| PDF viewer | ✅ mostly | signed Supabase Storage URL |
+| Librarian `browse_folder` | ❌ | dropped from the agent's tools automatically |
+| Drive sync, indexing, upload | ❌ | live Drive / heavy CPU |
+
+`exploration.loop.available_tools()` removes `browse_folder` when
+`credentials_status()` reports no Drive: offering a tool that can only error
+wastes the model's turns and fills the trail with failures that look like a bug.
 
 ---
 

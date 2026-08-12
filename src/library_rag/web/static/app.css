@@ -457,10 +457,15 @@ details.trace[open] summary { color: var(--ink); }
 .librarian { margin-bottom: 14px; }
 .librarian .ask { display: flex; gap: 8px; }
 #btrail { font-size: 12.5px; color: var(--dim); margin: 10px 0 0; }
-#btrail .bstep { margin: 3px 0; }
-#btrail .bstep .lbl { display: inline-block; min-width: 84px; font-size: 11px;
-                      text-transform: uppercase; letter-spacing: .06em; }
-#btrail .berr, #bout .berr { color: var(--bad); font-size: 13px; }
+/* Class-scoped, not `#btrail .bstep`. The librarian renders into #btrail on the
+   Drive page and into .dtrail under a verse on the Bible page, and the id
+   selector styled only the first -- so the second ran the steps together on one
+   line with no label column. A shared component cannot be styled by the id of
+   one of its hosts. */
+.bstep { margin: 3px 0; }
+.bstep .lbl { display: inline-block; min-width: 84px; font-size: 11px;
+              text-transform: uppercase; letter-spacing: .06em; }
+.berr { color: var(--bad); font-size: 13px; }
 .rec {
   background: var(--panel); border-radius: 12px; padding: 12px 16px;
   margin: 10px 0 0; display: flex; gap: 14px; align-items: flex-start;
@@ -571,3 +576,93 @@ details.trace[open] summary { color: var(--ink); }
 /* The OAuth callback page (rendered by api.py) uses main > .card. */
 main { max-width: 720px; margin: 0 auto; padding: 40px 24px; }
 main .card h1 { margin-bottom: 8px; }
+
+/* ----------------------------------------------------------------- bible --
+   The reader. Scripture is long-form reading, so the verse column is capped
+   at a comfortable measure rather than filling a wide window, and the verse
+   number sits outside it so the prose edge stays straight. */
+
+.picker {
+  font: inherit; font-size: 13.5px; color: var(--ink);
+  background: var(--surface); border: 0; border-radius: 999px;
+  padding: 8px 14px; cursor: pointer; outline: none; max-width: 210px;
+}
+.picker:hover { background: var(--surface-2); }
+
+.stepper { display: flex; gap: 4px; }
+.btn.step { padding: 7px 14px; font-size: 17px; line-height: 1; background: var(--surface); }
+
+.chaphead { font-size: 22px; font-weight: 500; margin: 6px 0 16px; }
+
+#reader, #results { max-width: 760px; }
+
+.bverse {
+  display: grid; grid-template-columns: 32px minmax(0, 1fr) 28px; gap: 12px;
+  padding: 5px 10px; border-radius: 10px;
+}
+.bverse:hover { background: var(--surface); }
+
+/* Revealed on hover so 31 of these down a chapter do not become visual noise,
+   but kept in the layout (the third grid column is always 28px) so revealing
+   one never reflows the verse text you are reading. */
+.digbtn {
+  border: 0; background: none; color: var(--dim); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 5px 0 0; opacity: 0;
+  transition: opacity .12s;
+}
+.bverse:hover .digbtn, .digbtn:focus-visible { opacity: 1; }
+.digbtn:hover { color: var(--accent-ink); }
+.digbtn:disabled { opacity: .5; cursor: default; }
+
+.dig {
+  background: var(--panel); border-radius: 12px;
+  padding: 12px 16px; margin: 10px 0 6px;
+}
+.dig .dtrail { font-size: 12.5px; color: var(--dim); }
+.bnum { color: var(--dim); font-size: 12px; text-align: right; padding-top: 5px; user-select: none; }
+.btext { font-size: 15.5px; line-height: 1.72; color: var(--ink); }
+
+/* The 16 verses the BSB carries empty. Muted and italic so the line reads as
+   an editorial note about the text rather than as part of it. */
+.bomit { color: var(--dim); font-style: italic; font-size: 13.5px; }
+
+.bfoot {
+  color: var(--dim); font-size: 11.5px; margin: 32px 0 6px; max-width: 760px;
+  border-top: 1px solid var(--line); padding-top: 12px;
+}
+
+/* ---- search results ---- */
+.reshead { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 4px 0 14px; }
+.reshead > div:first-child { flex: 1; min-width: 220px; }
+
+.hit {
+  display: block; width: 100%; text-align: left; font: inherit; cursor: pointer;
+  border: 0; background: var(--surface); border-radius: 12px;
+  padding: 11px 16px; margin-bottom: 7px;
+}
+.hit:hover { background: var(--surface-2); }
+.hit .ref { display: block; font-size: 12.5px; font-weight: 600; color: var(--accent-ink); margin-bottom: 3px; }
+.hit mark { background: var(--accent-soft); color: var(--accent-ink); border-radius: 3px; padding: 0 2px; }
+
+@media (max-width: 720px) { .pagehead .searchpill { display: none; } }
+
+/* ------------------------------------------------------------------ login -- */
+.loginwrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+.loginbox {
+  background: var(--panel); border-radius: 18px; padding: 34px 38px 30px;
+  box-shadow: var(--shadow); width: min(400px, 100%); text-align: center;
+}
+.loginbox .brand { justify-content: center; margin-bottom: 10px; }
+.loginbox .sub { margin: 0 0 26px; }
+.loginbox #gbtn { display: flex; justify-content: center; min-height: 44px; }
+.loginbox .failnote { margin-top: 18px; }
+.loginbox a { color: var(--accent-ink); }
+
+/* Who is signed in, in the sidebar footer. */
+.sideuser {
+  font-size: 11.5px; color: var(--dim); padding: 0 14px 8px;
+  display: flex; align-items: center; gap: 8px;
+}
+.sideuser .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sideuser a { color: var(--muted); text-decoration: none; flex: none; }
+.sideuser a:hover { color: var(--ink); text-decoration: underline; }

@@ -26,3 +26,6 @@ data/
 # the repo root any more -- but they are 20 MB+ and must never enter git
 # history, so the rule stays.
 *.pdf
+
+# Cloud Run env vars: contains DATABASE_URL and API keys.
+env.yaml

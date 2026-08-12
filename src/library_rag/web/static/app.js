@@ -283,3 +283,152 @@ document.addEventListener('click', async e => {
 });
 
 paintAuth();
+
+// ------------------------------------------------------------- librarian --
+// The browse agent, shared by the Drive page (free-text interest) and the Bible
+// page (a verse). Extracted here for the same reason esc() is: it was about to
+// have a second copy, and a second copy is the one that drifts. The agent is
+// identical either way -- /api/browse takes a free-text `interest`, and a verse
+// is just a particularly well-specified one.
+
+const TOOL_LABEL = {
+  search_drive: 'search', browse_folder: 'browse',
+  estimate_pipeline: 'estimate', recommend: 'shortlist',
+};
+
+function toolLine(e) {
+  const i = e.input || {};
+  const arg = i.query || i.name_contains || i.folder_id || '';
+  return `<div class="bstep"><span class="lbl">${esc(TOOL_LABEL[e.name] || e.name)}</span>` +
+         `${arg ? `“${esc(String(arg))}”` : ''}</div>`;
+}
+
+function resultLine(s) {
+  const bits = [];
+  if (s.returned != null) bits.push(`${s.returned} found`);
+  if (s.total_pdfs != null && s.truncated) bits.push(`of ${s.total_pdfs}`);
+  if (s.already_indexed) bits.push(`${s.already_indexed} already yours`);
+  // "hit the limit" used to sit here and was shown on EVERY mirror search --
+  // a KNN ranker always fills its page, so it announced a ceiling that was not
+  // real. Only the live-Drive fallback can genuinely run short.
+  if (s.hit_limit) bits.push('hit the limit');
+  // The honest version of "is this topic actually in the collection": titles
+  // both rankers agreed on. Only worth saying when it is zero -- that is the
+  // case where a full-looking list of 50 is really just nearest neighbours.
+  if (s.word_and_meaning === 0) bits.push('nothing matched on words — nearest by meaning only');
+  if (s.picks != null) bits.push(`${s.picks} picked`);
+  return bits.length
+    ? `<div class="bstep"><span class="lbl"></span>${esc(bits.join(' · '))}</div>` : '';
+}
+
+function recCard(b, i) {
+  // A pick whose file_id the agent never actually saw is shown as an error, not
+  // rendered as a card -- a dead Drive link that looks real is worse than none.
+  if (b.unknown) {
+    return `<div class="rec bad"><div class="body"><div class="t">Unusable suggestion</div>` +
+           `<div class="why">${esc(b.error)}</div></div></div>`;
+  }
+  const size = b.size_mb != null ? `${b.size_mb} MB` : 'size unknown';
+  const action = b.indexed
+    ? `<span class="badge good">Already yours</span>`
+    : `<button class="btn add" data-i="${i}">Index</button>`;
+  return `<div class="rec${b.indexed ? ' owned' : ''}">` +
+    `<div class="body"><div class="t">${esc(b.title)}</div>` +
+    `<div class="why">${esc(b.why || '')}</div>` +
+    `<div class="m">${esc(size)} · <a href="${esc(b.url)}" target="_blank" rel="noopener">view in Drive</a></div>` +
+    `</div>${action}</div>`;
+}
+
+/** Run the librarian, streaming its trail into trailEl and cards into outEl.
+ *  Resolves to the recommendations, which the caller keeps so its Index button
+ *  can look one up by index. */
+async function runLibrarian(interest, trailEl, outEl) {
+  let recs = [];
+  const trail = [];
+  trailEl.innerHTML = '<div class="bstep">looking…</div>';
+  outEl.innerHTML = '';
+
+  const r = await fetch('/api/browse', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ interest }),
+  });
+  if (!r.ok) throw new Error(r.statusText);
+
+  await readEventStream(r, ev => {
+    if (ev.type === 'tool') trail.push(toolLine(ev));
+    else if (ev.type === 'results') trail.push(resultLine(ev.summary));
+    else if (ev.type === 'tool_error') {
+      trail.push(`<div class="bstep berr">${esc(ev.name)} failed — ${esc(ev.message)}</div>`);
+    } else if (ev.type === 'recommendations') {
+      recs = ev.books;
+      outEl.innerHTML = recs.map(recCard).join('');
+    } else if (ev.type === 'answer') {
+      outEl.insertAdjacentHTML('beforeend',
+        `<div class="sub" style="margin-top:10px">${esc(ev.text)}</div>`);
+    } else if (ev.type === 'error') {
+      outEl.insertAdjacentHTML('beforeend', `<div class="berr">${esc(ev.message)}</div>`);
+    }
+    trailEl.innerHTML = trail.join('');
+  }, {
+    terminal: 'done',
+    onStall: secs => {
+      trail.push(`<div class="bstep">no update for ${secs}s — still connected.</div>`);
+      trailEl.innerHTML = trail.join('');
+    },
+  });
+  return recs;
+}
+
+/** Wire the Index buttons inside `root`. `lookup(i)` returns the pick at index
+ *  i -- passed as a function because the caller's recs array is replaced on
+ *  every run, and a captured reference would go stale.
+ *
+ *  The agent recommends; this button acts. Nothing the agent does writes to the
+ *  library -- adding a book is always an explicit choice made here.
+ */
+function wireIndexButtons(root, lookup) {
+  root.addEventListener('click', async e => {
+    const btn = e.target.closest('.add');
+    if (!btn) return;
+    const book = lookup(Number(btn.dataset.i));
+    if (!book) return;
+    btn.disabled = true;
+    btn.textContent = 'Queueing…';
+    try {
+      const r = await fetch('/api/library/drive', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_ids: [book.file_id] }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || `failed (${r.status})`);
+      btn.textContent = d.added.length ? 'Queued' : 'Already yours';
+      // The queue page and the sidebar report the ingest from here on -- no
+      // second progress mechanism needed.
+      if (typeof refreshBooks === 'function') refreshBooks();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Retry';
+      root.insertAdjacentHTML('beforeend',
+        `<div class="berr">${esc(String(err.message || err))}</div>`);
+    }
+  });
+}
+
+// --------------------------------------------------------------- signed in --
+// Who is using the app, bottom of the sidebar. Silent when sign-in is off, so
+// local development looks exactly as it did before the gate existed.
+
+async function paintUser() {
+  const foot = $('#sidefoot');
+  if (!foot) return;
+  let me;
+  try {
+    me = await fetchJSON('/api/auth/me', {}, 10000);
+  } catch { return; }          // never let the gate's chrome break a page
+  if (!me.enabled || !me.email) return;
+  foot.insertAdjacentHTML('beforebegin',
+    `<div class="sideuser"><span class="who" title="${esc(me.email)}">${esc(me.email)}</span>` +
+    `<a href="/logout">Sign out</a></div>`);
+}
+
+paintUser();

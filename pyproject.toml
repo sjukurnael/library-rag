@@ -40,6 +40,10 @@ dependencies = [
     # Only storage is used -- Postgres is spoken natively via psycopg -- but
     # the umbrella package is what Supabase documents and keeps current.
     "supabase>=2.0",
+    # Signs the session cookie for Google sign-in (web/auth.py). Starlette's
+    # SessionMiddleware requires it, and it is the alternative to hand-rolling
+    # HMAC on the one code path where a mistake means anyone can forge a login.
+    "itsdangerous>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -59,6 +63,8 @@ library-rag-evaluate = "library_rag.cli.evaluate:main"
 library-rag-migrate = "library_rag.cli.migrate:main"
 library-rag-report = "library_rag.cli.report:main"
 library-rag-explore = "library_rag.cli.explore:main"
+library-rag-bible = "library_rag.cli.bible:main"
+library-rag-users = "library_rag.cli.users:main"
 
 # src layout: the package is importable ONLY once installed, so a test can never
 # accidentally pass by picking up the working directory instead of the thing

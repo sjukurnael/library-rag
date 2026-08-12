@@ -288,7 +288,26 @@ def search_files(service, name_contains: str, limit: int = 40) -> list:
 
 def download_file(service, file_id: str, dest_path: str) -> None:
     """Stream a file's binary content to dest_path, with retries on
-    retryable errors for each chunk (supports Shared Drives)."""
+    retryable errors for each chunk (supports Shared Drives).
+
+    get_media() is the SAME REST endpoint as get() -- GET /drive/v3/files/{id}
+    -- differing only in `alt`: get() sends alt=json and returns metadata,
+    get_media() sends alt=media and returns the bytes. The Python client splits
+    them into two methods, which is worth keeping rather than "unifying":
+
+      - Do NOT try service.files().get(fileId=..., alt="media"). The
+        discovery-built get() accepts that argument, silently ignores it and
+        emits alt=json anyway -- so it would write a JSON metadata blob into a
+        file named .pdf, with no error until something tried to parse it.
+      - MediaIoBaseDownload reads request.uri to issue ranged chunk requests,
+        so it needs a URI that already carries alt=media.
+
+    Also unset here: acknowledgeAbuse. Drive refuses alt=media with a 403 for a
+    file it has flagged as malware unless that flag is passed. 403 is in
+    RETRYABLE_STATUS (Drive also uses it for rate limiting), so such a file
+    would retry five times and then surface as a permissions error, which is
+    the wrong explanation. Rare enough to leave; noted so it is not a mystery.
+    """
     request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
     with open(dest_path, "wb") as fh:
         downloader = MediaIoBaseDownload(fh, request)

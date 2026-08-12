@@ -79,6 +79,18 @@ def _isolate_data_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SUPABASE_URL", "")
     monkeypatch.setattr(config, "SUPABASE_SERVICE_KEY", "")
 
+    # Sign-in must be OFF in tests, for the same reason and with a sharper
+    # edge: config loads the real .env, so the moment a developer sets
+    # GOOGLE_CLIENT_ID to work on auth, auth_enabled() becomes True for the
+    # WHOLE suite and every API test gets a 401 from the gate. Measured when it
+    # happened: 49 failures across upload, storage, browse and research, none
+    # of which have anything to do with authentication.
+    #
+    # Tests that exercise the gate turn it back on explicitly (see the
+    # `auth_on` fixture in test_auth.py), which is also what keeps this from
+    # hiding a regression in the gate itself.
+    monkeypatch.setattr(config, "GOOGLE_CLIENT_ID", "")
+
 
 def _url_with_db(base_url: str, dbname: str) -> str:
     params = conninfo.conninfo_to_dict(base_url)
@@ -129,7 +141,10 @@ def conn(test_database_url):
     next's counts.
     """
     with db_mod.get_conn(test_database_url) as c:
-        c.execute("TRUNCATE books, drive_files RESTART IDENTITY CASCADE")
+        c.execute(
+            "TRUNCATE books, drive_files, bible_verses, allowed_users "
+            "RESTART IDENTITY CASCADE"
+        )
         c.commit()
         yield c
 
