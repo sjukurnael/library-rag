@@ -1,7 +1,6 @@
 """
 The ingestion commands.
 
-    python -m library_rag.cli.ingest --discover   # enumerate Drive into `books`
     python -m library_rag.cli.ingest              # drain the queue
     python -m library_rag.cli.ingest --local a.pdf b.pdf
     python -m library_rag.cli.ingest --delete 12
@@ -14,14 +13,11 @@ library_rag.ingest.
 """
 import argparse
 import time
-from functools import partial
 from pathlib import Path
 
-from library_rag import config, db
-from library_rag.drive import client as drive_client
+from library_rag import db
 from library_rag.ingest import (
     chunk_embed_and_finish,
-    discover,
     process_queue,
     purge_book,
     register_upload,
@@ -31,10 +27,19 @@ from library_rag.pipeline import extract as extract_mod
 
 
 def run_worker(limit) -> None:
-    """Discover the Drive folder, then drain the queue."""
-    service = drive_client.build_service()
-    with db.get_conn() as conn:
-        discover(conn, config.PILOT_FOLDER_ID, partial(drive_client.list_children, service))
+    """Drain the queue. Nothing else -- this is the whole remote worker.
+
+    Deliberately does NOT enumerate anything. Rows arrive from the producers
+    (the app's index-folder / index-results buttons, which read the Drive
+    mirror, and uploads); a worker that also discovered would re-enumerate one
+    hardcoded folder on every run and force a Drive client on runs whose queue
+    holds nothing but uploads.
+
+    That last part is what makes this safe as a Cloud Run Job entrypoint:
+    process_queue builds a Drive client lazily, only once a Drive book is
+    actually claimed, so an empty or upload-only queue needs no Google
+    credentials at all and exits in seconds.
+    """
     processed = process_queue(limit)
     print(f"Done. Processed {processed} book(s) this run.")
 
@@ -130,18 +135,9 @@ def run_status() -> None:
     print(f"{'total':<12} {total:>6}")
 
 
-def run_discover_only() -> None:
-    service = drive_client.build_service()
-    with db.get_conn() as conn:
-        discover(conn, config.PILOT_FOLDER_ID, partial(drive_client.list_children, service))
-
-
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    parser.add_argument(
-        "--discover", action="store_true", help="Enumerate the pilot folder, then stop."
     )
     parser.add_argument(
         "--limit", type=int, default=None, help="Process at most N books this run."
@@ -177,8 +173,6 @@ def main():
         run_index()
     elif args.rechunk:
         run_rechunk()
-    elif args.discover:
-        run_discover_only()
     else:
         run_worker(args.limit)
 

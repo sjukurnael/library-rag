@@ -36,7 +36,21 @@ ENV LIBRARY_RAG_DATA_DIR=/tmp/data
 # receives SIGTERM directly -- without it the shell swallows the signal and
 # every deploy waits out the 10s kill timeout.
 ENV PORT=8080
+# --forwarded-allow-ips is not optional here, and the failure it prevents is
+# subtle. Cloud Run terminates TLS at Google's edge and forwards to this
+# container over PLAIN HTTP, so uvicorn sees scheme=http. Anything the app
+# builds from the incoming request is then an http:// URL -- including the
+# OAuth redirect_uri from request.url_for(), which Google rejects with
+# `redirect_uri_mismatch` against the https:// URI actually registered.
+#
+# The true scheme arrives as X-Forwarded-Proto. uvicorn honours it only from
+# proxies it trusts, and trusts 127.0.0.1 by default, which Google's frontend
+# is not. '*' is safe HERE precisely because nothing but that frontend can
+# reach the container -- Cloud Run has no other ingress. On a host where the
+# port is directly reachable, '*' would let any caller forge the scheme and
+# client IP, so this is a Cloud Run-specific setting, not a general one.
+#
 # JSON form (so Docker does not wrap this in an implicit shell of its own)
 # around an explicit `sh -c`, which is what expands ${PORT}. `exec` then
-# replaces that shell so uvicorn is PID 1.
-CMD ["sh", "-c", "exec uvicorn library_rag.web.api:app --host 0.0.0.0 --port ${PORT}"]
+# replaces that shell so uvicorn is PID 1 and receives SIGTERM directly.
+CMD ["sh", "-c", "exec uvicorn library_rag.web.api:app --host 0.0.0.0 --port ${PORT} --proxy-headers --forwarded-allow-ips='*'"]

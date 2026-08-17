@@ -1,11 +1,16 @@
 """
-Ingestion worker: pilot-folder PDFs -> markdown -> chunks -> embeddings ->
+Ingestion worker: queued PDFs -> markdown -> chunks -> embeddings ->
 Postgres. Postgres is the work queue over the `books` table (claim via
 UPDATE ... FOR UPDATE SKIP LOCKED), so this is safe to run more than once and
 safe to kill and restart mid-book.
 
+Rows reach the queue from the producers, none of which live here: the API's
+queue_drive_folder / queue_drive_files read the Drive MIRROR, and uploads go
+through register_upload below. Nothing in this module talks to the live Drive
+API except to download bytes for a book already claimed.
+
 Commands live in library_rag.cli.ingest; this module is the importable half
-(discover, register_upload, process_book, process_queue, purge_book) so the API
+(register_upload, process_book, process_queue, purge_book) so the API
 and the tests can drive ingestion without going through argv.
 
 The external services (Drive, Voyage, Mistral OCR) are built once at the top of
@@ -22,27 +27,6 @@ from library_rag.drive import client as drive_client
 from library_rag.pipeline import chunking as chunk_mod
 from library_rag.pipeline import embed as embed_mod
 from library_rag.pipeline import extract as extract_mod
-
-PDF_MIME = "application/pdf"
-
-
-# ------------------------------------------------------------- discover --
-
-def discover(conn, folder_id: str, list_children) -> int:
-    """Enumerate one Drive folder into `books`. `list_children` is a callable
-    folder_id -> list[file resource dict]; the real one is bound to a Drive
-    service, tests pass a fake. Idempotent (upsert on source_id)."""
-    children = list_children(folder_id)
-    pdfs = [c for c in children if c.get("mimeType") == PDF_MIME]
-    for f in pdfs:
-        size_bytes = int(f["size"]) if f.get("size") is not None else None
-        db.upsert_book(
-            conn, f["id"], f.get("name", ""), f.get("md5Checksum"), size_bytes,
-            source="drive",
-        )
-    print(f"Discovered {len(pdfs)} PDF(s) in folder {folder_id} (upserted, idempotent).")
-    return len(pdfs)
-
 
 # --------------------------------------------------------------- sources --
 

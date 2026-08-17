@@ -49,7 +49,7 @@ def upsert_book(
     source: str = "drive",
 ) -> None:
     """Idempotent on source_id. On conflict, refresh title/md5/size ONLY
-    when one of them actually changed -- so re-running --discover never bumps
+    when one of them actually changed -- so re-queuing a folder never bumps
     updated_at or disturbs a book already in flight or done.
 
     A CHANGED md5 is different from a changed title: it means the file's bytes

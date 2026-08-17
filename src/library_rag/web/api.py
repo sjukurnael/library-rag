@@ -37,7 +37,7 @@ from fastapi.responses import (
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-from library_rag import bible, config, db, ingest, storage
+from library_rag import bible, config, db, ingest, jobs, storage
 from library_rag.drive import client as drive_client
 from library_rag.drive import mirror
 from library_rag.drive import store as drive_store
@@ -250,13 +250,32 @@ def _drain_queue(source: str):
     API calls in this process, so credentials are proven and token.json is warm.
 
     A real deployment moves this into its own process -- cli/ingest.py is already
-    exactly that worker. It lives here so a single-user local install does
-    something when you press the button.
+    exactly that worker, and _start_ingest below prefers it whenever
+    INGEST_JOB_NAME is set. This remains the fallback, so a single-user local
+    install with no Cloud project still does something when you press the button.
     """
     try:
         ingest.process_queue(source=source)
     except Exception as e:  # noqa: BLE001 -- a background task has nowhere to raise
         print(f"background ingest failed ({source}): {e}")
+
+
+def _start_ingest(background: BackgroundTasks, source: str) -> None:
+    """Get the queue drained, by whichever worker this deployment has.
+
+    The Job is tried FIRST and SYNCHRONOUSLY -- inside the request, before the
+    response is flushed. That ordering is the entire point. A BackgroundTask
+    starts at the moment Cloud Run stops allocating CPU, so scheduling the
+    trigger there would make the call that fixes the throttling problem the
+    first casualty of it. It is one POST with a 10s ceiling.
+
+    A failed trigger is not an error the user should see: the books are already
+    queued and committed, so the fallback simply does the work here, exactly as
+    before. Only WHO drains changes.
+    """
+    if jobs.run_ingest_job():
+        return
+    background.add_task(_drain_queue, source)
 
 
 @app.post("/api/books/upload")
@@ -311,7 +330,7 @@ async def upload_book(background: BackgroundTasks, file: UploadFile = File(...))
 
     already_indexed = book["status"] == "done"
     if not already_indexed:
-        background.add_task(_drain_queue, "upload")
+        _start_ingest(background, "upload")
 
     return {
         "id": book["id"],
@@ -546,7 +565,7 @@ def add_drive_books(req: AddDriveRequest, background: BackgroundTasks):
             added.append(db.fetch_book_by_source_id(conn, file_id))
 
     if added:
-        background.add_task(_drain_queue, "drive")
+        _start_ingest(background, "drive")
 
     return {
         "added": [{"id": b["id"], "title": b["title"], "status": b["status"]}
@@ -607,7 +626,7 @@ def index_drive_files(req: AddDriveFilesRequest, background: BackgroundTasks):
             f"{config.FOLDER_INDEX_LIMIT_BYTES // (1024 * 1024)} MB bulk-index limit.",
         )
     if counts["queued"]:
-        background.add_task(_drain_queue, "drive")
+        _start_ingest(background, "drive")
     return {
         "queued": counts["queued"],
         "already_indexed": counts["matched"] - counts["queued"],
@@ -642,7 +661,7 @@ def index_drive_folder(folder_id: str, background: BackgroundTasks):
         counts = db.queue_drive_folder(conn, folder_id)
 
     if counts["queued"]:
-        background.add_task(_drain_queue, "drive")
+        _start_ingest(background, "drive")
 
     return {
         "folder": folder["title"],

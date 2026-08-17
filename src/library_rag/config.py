@@ -102,6 +102,21 @@ DATABASE_URL = os.environ.get(
 CLAIM_STALE_MINUTES = 5
 MAX_ATTEMPTS = 3
 
+# Where the worker actually runs, when it is not this process. Set
+# INGEST_JOB_NAME to the Cloud Run Job's name and the API stops draining the
+# queue itself: it queues the rows and asks that Job to do the work (see
+# jobs.py for why -- a BackgroundTask on Cloud Run only gets CPU while a
+# request is in flight, which ingestion by definition is not).
+#
+# EMPTY BY DEFAULT, which is the whole point: local development, `make serve`
+# and the test suite have no Cloud project, get False from run_ingest_job, and
+# fall straight back to the in-process drain that has always been there.
+INGEST_JOB_NAME = os.environ.get("INGEST_JOB_NAME", "")
+INGEST_JOB_REGION = os.environ.get("INGEST_JOB_REGION", "us-west1")
+# Normally inferred from the runtime's own credentials (the metadata server on
+# Cloud Run knows its project); set only to point at a different project.
+INGEST_JOB_PROJECT = os.environ.get("INGEST_JOB_PROJECT", "")
+
 # ---- Drive ----
 # Books / Jensen Bible Self Study Guides -- the pilot folder explore.py
 # picked (23 PDFs, 117.7 MB, mostly digital-native).
