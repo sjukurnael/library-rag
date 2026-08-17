@@ -314,12 +314,19 @@ function statusCell(f, i) {
 }
 
 // A Drive-style row: icon + name, location, size, then the status or action.
+//
+// The path and the Drive link are separate elements rather than one run of
+// text, because only the PATH may be truncated. Both used to sit in a cell that
+// ellipsised as a whole, which meant a book eight folders deep hid the link
+// behind its own breadcrumb. See .fwhere in app.css.
 function fileRow(f, i) {
   const where = f.path ? f.path.split(' / ').slice(0, -1).join(' / ') : '';
   return `<div class="frow">` +
     `<div class="fname">${PDF_ICON}<span class="t" title="${esc(f.title)}">${esc(f.title)}</span></div>` +
-    `<div class="fwhere" title="${esc(where)}">${esc(where)}` +
-    `${where ? ' · ' : ''}<a href="${esc(f.url)}" target="_blank" rel="noopener">Drive</a></div>` +
+    `<div class="fwhere">` +
+    (where ? `<span class="p" title="Click to show the full path">${esc(where)}</span>` +
+             `<span class="sep">·</span>` : '') +
+    `<a href="${esc(f.url)}" target="_blank" rel="noopener">Drive</a></div>` +
     `<div class="fsize">${esc(mb(f.size_mb))}</div>` +
     `<div class="fact">${statusCell(f, i)}</div></div>`;
 }
@@ -427,6 +434,18 @@ $('#files').addEventListener('click', e => {
   if (e.target.closest('.ixdir')) return;
   const dir = e.target.closest('.frow.isfolder');
   if (dir) open(dir.dataset.open);
+});
+
+// Clicking a FILE row discloses its full path, in both the browse and search
+// panes -- one handler, because both render fileRow into #files.
+//
+// Guarded on links and buttons: a click on Drive or Index means that thing,
+// not this. Guarded on the path existing too, so a file at the root does not
+// offer a disclosure with nothing behind it.
+$('#files').addEventListener('click', e => {
+  if (e.target.closest('a, button')) return;
+  const row = e.target.closest('.frow:not(.isfolder)');
+  if (row && row.querySelector('.fwhere .p')) row.classList.toggle('showpath');
 });
 
 // ----------------------------------------------------------- index folder --

@@ -423,7 +423,7 @@ details.trace[open] summary { color: var(--ink); }
 /* Drive-style rows: fill on hover, no borders between rows. */
 .files { display: flex; flex-direction: column; }
 .fhead, .frow {
-  display: grid; grid-template-columns: minmax(0,1fr) minmax(0,220px) 84px 130px;
+  display: grid; grid-template-columns: minmax(0,1fr) minmax(0,300px) 84px 130px;
   gap: 14px; align-items: center; padding: 8px 14px;
 }
 @media (max-width: 1100px) { .fhead, .frow { grid-template-columns: minmax(0,1fr) 84px 130px; }
@@ -442,10 +442,30 @@ details.trace[open] summary { color: var(--ink); }
 .fname .t {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px;
 }
-.fwhere, .fsize {
+.fsize {
   font-size: 12.5px; color: var(--dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* The Drive link is the LAST thing in this cell, so ellipsising the cell as a
+   whole ate the link itself -- the one part of it there is to click. Flex
+   instead, and put the truncation on the path alone: the path shrinks, the
+   link is flex:none and always survives, however deep the folder. */
+.fwhere {
+  display: flex; align-items: baseline; gap: 6px; min-width: 0;
+  font-size: 12.5px; color: var(--dim);
+}
+.fwhere .p {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: pointer;
+}
+.fwhere .p:hover { text-decoration: underline dotted; }
+.fwhere .sep { flex: none; opacity: .5; }
+.fwhere a { flex: none; }
+/* Clicking the row discloses the whole path. A title attribute was the only
+   way to read it before, and hover does not exist on touch. */
+.frow.showpath { align-items: start; }
+.frow.showpath .fwhere { flex-wrap: wrap; }
+.frow.showpath .fwhere .p { white-space: normal; overflow: visible; }
 .fact { display: flex; justify-content: flex-end; }
 .fact .btn { padding: 6px 14px; font-size: 12.5px; opacity: 0; }
 .frow:hover .fact .btn { opacity: 1; }
