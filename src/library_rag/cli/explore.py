@@ -11,6 +11,7 @@ drift apart in what they show.
 
 Run:
     python -m library_rag.cli.explore --ask "books on the Holy Spirit"
+    python -m library_rag.cli.explore --ask "the parables" -n 20
     python -m library_rag.cli.explore              # prompts for the interest
 """
 import argparse
@@ -22,7 +23,7 @@ load_dotenv()
 
 from library_rag import db  # noqa: E402
 from library_rag.drive.client import DriveAuthError  # noqa: E402
-from library_rag.exploration.loop import run  # noqa: E402
+from library_rag.exploration.loop import DEFAULT_COUNT, MAX_COUNT, run  # noqa: E402
 
 
 def _render(event: dict, quiet: bool) -> None:
@@ -55,9 +56,9 @@ def _render(event: dict, quiet: bool) -> None:
         print(f"\nerror: {event['message']}", file=sys.stderr)
 
 
-def run_browse(interest: str, quiet: bool) -> int:
+def run_browse(interest: str, quiet: bool, count: int) -> int:
     with db.get_conn() as conn:
-        for event in run(interest, conn):
+        for event in run(interest, conn, count=count):
             _render(event, quiet)
     return 0
 
@@ -101,9 +102,20 @@ def main():
         help="Skip browsing: queue these Drive file ids and index them.",
     )
     parser.add_argument(
+        "-n", "--count", type=int, default=DEFAULT_COUNT, metavar="N",
+        help=f"Shortlist up to N books (1-{MAX_COUNT}, default {DEFAULT_COUNT}). "
+             "A ceiling, not a quota -- the agent returns fewer when the "
+             "collection runs out of relevant titles.",
+    )
+    parser.add_argument(
         "--quiet", action="store_true", help="Suppress the [agent] tool-call trail."
     )
     args = parser.parse_args()
+    # parser.error, not the ValueError from run(): argparse prints usage and
+    # exits 2, which is what a shell expects from a bad flag -- a traceback
+    # would read as a crash rather than a typo.
+    if not 1 <= args.count <= MAX_COUNT:
+        parser.error(f"--count must be between 1 and {MAX_COUNT}, got {args.count}")
 
     try:
         if args.add:
@@ -112,7 +124,7 @@ def main():
         if not interest:
             print("Nothing to look for.", file=sys.stderr)
             sys.exit(1)
-        sys.exit(run_browse(interest, args.quiet))
+        sys.exit(run_browse(interest, args.quiet, args.count))
     except DriveAuthError as e:
         print(f"\nDrive auth error: {e}", file=sys.stderr)
         sys.exit(1)

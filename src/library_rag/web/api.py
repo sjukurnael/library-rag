@@ -94,6 +94,14 @@ class AskRequest(BaseModel):
 
 class BrowseRequest(BaseModel):
     interest: str = Field(min_length=1, max_length=2000)
+    # How many books to shortlist -- a ceiling the agent underspends when the
+    # collection runs out of genuinely relevant titles (see exploration/loop.py,
+    # system_prompt). Bounded here as well as in the loop because this is the
+    # boundary that faces the network: 51 is a 422 with a field error naming the
+    # limit, not a clamp, so a caller learns the ceiling exists.
+    count: int = Field(
+        default=browse_loop.DEFAULT_COUNT, ge=1, le=browse_loop.MAX_COUNT
+    )
 
 
 class AddDriveRequest(BaseModel):
@@ -516,7 +524,7 @@ def browse_stream(req: BrowseRequest):
     def stream():
         try:
             with db.get_conn() as conn:
-                for event in browse_loop.run(req.interest, conn):
+                for event in browse_loop.run(req.interest, conn, count=req.count):
                     yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:  # noqa: BLE001 -- surface it in the stream, not a 500
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"

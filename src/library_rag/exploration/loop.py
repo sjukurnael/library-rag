@@ -30,6 +30,19 @@ ROOT_FOLDER_ID = config.DRIVE_ROOT_FOLDER_ID
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
 MAX_ITERATIONS = 12
 
+# How many books the reader asked for. A CEILING the agent is invited to
+# underspend, never a quota -- see system_prompt(), where most of this feature
+# actually lives.
+#
+# 50 is the hard maximum and is refused rather than clamped (see run()). It is
+# not an arbitrary round number: at 50 picks the `recommend` tool call alone is
+# roughly 2.5k output tokens, the agent needs several 120-row searches to have a
+# pool worth choosing 50 from, and both push against limits raised below. A
+# request for 51 is a caller that has not thought about cost, so it gets told so
+# instead of silently receiving 50.
+DEFAULT_COUNT = 6
+MAX_COUNT = 50
+
 TOOL_SCHEMAS = [
     {
         "name": "search_drive",
@@ -152,7 +165,24 @@ TOOL_SCHEMAS = [
     },
 ]
 
-SYSTEM_PROMPT = f"""You help someone choose their next book from a large Google \
+def system_prompt(count: int = DEFAULT_COUNT) -> str:
+    """The librarian's instructions, for a reader who asked for up to `count`.
+
+    `count` is a ceiling, and the prompt's job is to make UNDERSPENDING it the
+    obviously correct behaviour. That is the whole reason this is worth handing
+    to an agent rather than raising `limit` on a search: a ranked list of 50 is
+    50 rows whether or not the collection holds 50 relevant books, because the
+    dense leg is a KNN scan with no relevance threshold (see tools.search_drive)
+    -- the tail is nearest neighbours, not candidates. Only a reader of the
+    titles can tell where the real matches stop, so the agent is told to stop
+    there and say so.
+
+    Phrased as "up to N" everywhere, never "N": the failure this guards against
+    is a padded list, where 11 good books and 39 fillers arrive with the same
+    confident one-line justification attached and the reader cannot tell which
+    is which. A short list is a correct answer; a padded one is a useless tool.
+    """
+    return f"""You help someone choose their next book from a large Google \
 Drive library of Bible study guides, commentaries, doctrine books, dissertations \
 and articles. Think of yourself as a librarian who knows the shelves: they tell \
 you what they want to study, you go find the candidates.
@@ -184,12 +214,35 @@ trying another synonym of the same idea.
 Use browse_folder when a search comes back thin and you need to see what is \
 actually on a shelf, or when the reader names a topic area rather than a subject.
 
-Stop when you have enough to choose well. Three or four searches is usually \
-plenty. Exhaustiveness is not the goal -- a good short list is.
+Scale your looking to the size of the list you were asked for. For a handful of \
+books, two or three searches from different angles is plenty. For a larger list, \
+search more angles -- the subject, its narrower aspects, the authors you would \
+expect, the adjacent questions a reader of this would also ask -- and raise \
+`limit` on those searches so you are choosing from a pool wide enough to fill \
+the request honestly. Never try to fill a large request out of one search's \
+results. Exhaustiveness is still not the goal: stop when you have enough to \
+choose well.
 
 WHAT TO RECOMMEND
 
-3 to 6 books. For each, say concretely why it fits what they asked, based on the \
+The reader asked for UP TO {count} book{"" if count == 1 else "s"}. That is a \
+ceiling, not a target. Recommend every book that genuinely fits and then stop -- \
+if the collection holds nine good books on this subject and you were asked for \
+{count}, recommend nine and say in your closing paragraph that nine is what is \
+there. Returning fewer than {count} is a correct and expected outcome, not a \
+failure to be apologised for.
+
+Padding the list toward {count} with weak fits is the one outcome that makes \
+this tool worthless, because every pick carries the same confident one-line \
+reason and the reader cannot tell your real matches from your filler. Judge each \
+title on its own merits, never on the fact that a slot is still open.
+
+Remember what the ranked lists you are reading actually are: every search comes \
+back full whether or not the collection has anything, so the bottom of a result \
+list is nearest neighbours rather than candidates. A title's position in a list \
+you were handed is not evidence that it fits.
+
+For each pick, say concretely why it fits what they asked, based on the \
 title and what you can reasonably infer from it. If a title is ambiguous, say so \
 rather than inventing a description of contents you have not read.
 
@@ -275,14 +328,72 @@ def _summarize(tool_name: str, result: dict) -> dict:
     return {}
 
 
-def run(interest: str, conn, *, client=None, max_iterations: int = MAX_ITERATIONS):
+def _iterations_for(count: int) -> int:
+    """Iteration budget for a request of `count` books.
+
+    MAX_ITERATIONS was calibrated for a shortlist of six, where the prompt's
+    "two or three searches" leaves most of the budget unspent. A larger request
+    is explicitly told to search more angles, which makes the same 12 reachable
+    -- and hitting it emits "Stopped after N rounds without settling on a
+    shortlist", a failure message for what is really just a bigger job. Two
+    extra rounds per additional ten books, hard-capped, so the ceiling stays a
+    runaway guard rather than a budget the agent is expected to spend.
+    """
+    return min(20, MAX_ITERATIONS + 2 * max(0, (count - DEFAULT_COUNT + 9) // 10))
+
+
+def _max_tokens_for(count: int) -> int:
+    """Output ceiling for one turn.
+
+    The binding turn is the `recommend` call: a file_id plus a sentence of
+    justification per pick is ~50 tokens each, so 50 picks is ~2.5k before the
+    closing paragraph (which arrives in a later turn and is not competing for
+    the same budget). 4096 fits six comfortably and fifty only barely, and a
+    truncated tool call loses the entire shortlist -- cheap insurance against
+    discovering that edge in production.
+    """
+    return 4096 if count <= 12 else 8192
+
+
+def run(
+    interest: str,
+    conn,
+    *,
+    count: int = DEFAULT_COUNT,
+    client=None,
+    max_iterations: int | None = None,
+):
     """Yield events: {"type": "tool"|"results"|"thinking"|"recommendations"
     |"answer"|"done", ...}.
+
+    `count` is how many books the reader asked for, 1..MAX_COUNT -- a ceiling
+    the agent is free to underspend, which is most of what system_prompt() is
+    about. Out of range raises ValueError rather than clamping: a caller asking
+    for 51 has not reckoned with what it costs, and silently handing back 50
+    would teach it that the limit is imaginary. Validated HERE, eagerly, which
+    is why this is a plain function returning a generator rather than a
+    generator itself -- inside one, the raise would not fire until the first
+    next() and would surface mid-stream as an SSE error event long after the
+    request was accepted.
 
     `client` is injectable for the same reason conn/voyage/download_file are
     everywhere else here: tests drive the loop with a scripted fake and no
     network.
     """
+    if not isinstance(count, int) or isinstance(count, bool):
+        raise ValueError(f"count must be an integer, got {type(count).__name__}")
+    if not 1 <= count <= MAX_COUNT:
+        raise ValueError(f"count must be between 1 and {MAX_COUNT}, got {count}")
+    return _run(
+        interest,
+        conn,
+        count=count,
+        client=client,
+        max_iterations=max_iterations or _iterations_for(count),
+    )
+
+
+def _run(interest: str, conn, *, count: int, client, max_iterations: int):
     if client is None:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
@@ -300,8 +411,8 @@ def run(interest: str, conn, *, client=None, max_iterations: int = MAX_ITERATION
     for iteration in range(1, max_iterations + 1):
         response = client.messages.create(
             model=MODEL,
-            max_tokens=4096,
-            system=SYSTEM_PROMPT,
+            max_tokens=_max_tokens_for(count),
+            system=system_prompt(count),
             tools=tool_schemas,
             messages=messages,
         )

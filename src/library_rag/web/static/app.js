@@ -367,8 +367,17 @@ function recCard(b, i) {
 
 /** Run the librarian, streaming its trail into trailEl and cards into outEl.
  *  Resolves to the recommendations, which the caller keeps so its Index button
- *  can look one up by index. */
-async function runLibrarian(interest, trailEl, outEl) {
+ *  can look one up by index.
+ *
+ *  `count` is the MOST books to shortlist, not how many come back -- the agent
+ *  returns fewer when the collection runs out of relevant titles, which is the
+ *  intended behaviour and not an error to surface.
+ *
+ *  Omitted, the field is left off the request entirely rather than defaulted
+ *  here, so the default lives in exactly one place (BrowseRequest.count). The
+ *  Bible page, which digs on a single verse and wants a handful, calls this
+ *  with three arguments and gets that default. */
+async function runLibrarian(interest, trailEl, outEl, count) {
   let recs = [];
   const trail = [];
   trailEl.innerHTML = '<div class="bstep">looking…</div>';
@@ -376,9 +385,16 @@ async function runLibrarian(interest, trailEl, outEl) {
 
   const r = await fetch('/api/browse', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ interest }),
+    body: JSON.stringify(count ? { interest, count } : { interest }),
   });
-  if (!r.ok) throw new Error(r.statusText);
+  // A 422 here is the count field failing its 1-50 bound. Worth reading the
+  // body for: "Unprocessable Entity" alone tells the user nothing about which
+  // field or what the limit is.
+  if (!r.ok) {
+    const detail = await r.json().catch(() => null);
+    const msg = detail?.detail?.[0]?.msg || detail?.detail;
+    throw new Error(msg ? `${r.statusText} — ${msg}` : r.statusText);
+  }
 
   await readEventStream(r, ev => {
     if (ev.type === 'tool') trail.push(toolLine(ev));

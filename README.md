@@ -476,8 +476,21 @@ $0.0964 — so `k`, not the number of searches, is the real cost lever.
 The Drive holds ~57,500 PDFs; the indexed library holds a few hundred. The
 bottleneck is not searching what you have indexed — it is **deciding what to
 index next**. The librarian is that triage step: describe what you want to
-study, and an agent runs a few searches and returns 3–6 candidates with a
-reason each and an Add button.
+study, and an agent runs a few searches and returns candidates with a reason
+each and an Add button.
+
+**How many is a ceiling, not a quota.** The "up to N books" control on the
+Drive page (5/10/20/50, capped at 50) sets the most it may return, and the
+system prompt spends four paragraphs making *underspending* it the right
+answer: ask for 50 on a subject the collection is thin on and you should get
+eight, with the closing paragraph saying eight is what is there. That is the
+whole reason this is an agent rather than a `LIMIT` clause — `search_drive`'s
+dense leg is a KNN scan with no relevance threshold, so it returns a full page
+for a real topic and for gibberish alike (measured; see the comment in
+`exploration/tools.py`). Only something that reads the titles can tell where
+the real matches stop. Out-of-range counts are refused, not clamped: `POST
+/api/browse` with `count: 51` is a 422, and `loop.run(count=51)` raises at the
+call rather than mid-stream.
 
 `exploration/loop.py` is a hand-written tool-use loop (~85 lines, no framework)
 with four tools — `search_drive`, `browse_folder`, `estimate_pipeline`,

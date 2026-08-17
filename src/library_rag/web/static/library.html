@@ -65,11 +65,24 @@
           <input type="text" id="bq" autocomplete="off" class="li-input"
                  placeholder="What do you want to study? e.g. the parables, church history…"
                  style="flex:1;border:0;background:var(--panel);border-radius:999px;padding:10px 18px;color:var(--ink);font:inherit;outline:none">
+          <!-- A select, not a number input: the value is a ceiling the agent
+               underspends, so the exact figure never matters and a fixed set of
+               choices needs no validation and shows the range at a glance. -->
+          <label class="bcount" for="bn">up to
+            <select id="bn">
+              <option value="5">5</option>
+              <option value="10" selected>10</option>
+              <option value="20">20</option>
+              <option value="50">50</option>
+            </select>
+            books</label>
           <button type="submit" class="btn primary" id="bgo">Browse</button>
         </form>
         <div class="sub" style="margin-top:8px">
           An agent searches the whole drive by meaning and shortlists books worth
-          indexing next. Books you already have are excluded.
+          indexing next. It returns only the ones that genuinely fit, so a short
+          list means the collection is thin on that subject — not that the search
+          failed. Books you already have are excluded.
         </div>
         <div id="btrail"></div>
         <div id="bout"></div>
@@ -603,7 +616,8 @@ $('#bf').addEventListener('submit', async e => {
   $('#bgo').disabled = true;
   recs = [];
   try {
-    recs = await runLibrarian(interest, $('#btrail'), $('#bout'));
+    recs = await runLibrarian(
+      interest, $('#btrail'), $('#bout'), Number($('#bn').value));
   } catch (err) {
     $('#bout').innerHTML = `<div class="berr">${esc(String(err.message || err))}</div>`;
   } finally {

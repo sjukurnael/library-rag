@@ -456,6 +456,17 @@ details.trace[open] summary { color: var(--ink); }
 /* Librarian (the browse agent) */
 .librarian { margin-bottom: 14px; }
 .librarian .ask { display: flex; gap: 8px; }
+/* "up to [10] books" sits between the question and the Browse button. `flex:
+   none` so it never competes with the text input for width, and the wording is
+   part of the control -- a bare number would read as a promise of ten. */
+.bcount {
+  flex: none; display: flex; align-items: center; gap: 6px;
+  font-size: 13px; color: var(--muted); white-space: nowrap;
+}
+.bcount select {
+  border: 0; background: var(--panel); color: var(--ink); font: inherit;
+  border-radius: 999px; padding: 9px 8px; outline: none; cursor: pointer;
+}
 #btrail { font-size: 12.5px; color: var(--dim); margin: 10px 0 0; }
 /* Class-scoped, not `#btrail .bstep`. The librarian renders into #btrail on the
    Drive page and into .dtrail under a verse on the Bible page, and the id

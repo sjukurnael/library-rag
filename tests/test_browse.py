@@ -87,10 +87,14 @@ class ScriptedClient:
     def __init__(self, script):
         self.script = list(script)
         self.seen = []
+        # Full kwargs, so a test can assert on `system` and `max_tokens` too.
+        # `seen` stays messages-only because it is read positionally elsewhere.
+        self.calls = []
         self.messages = types.SimpleNamespace(create=self._create)
 
     def _create(self, **kw):
         self.seen.append(kw["messages"])
+        self.calls.append(kw)
         if not self.script:
             return FakeResponse([_text("ran out of script")])
         return FakeResponse(self.script.pop(0))
@@ -305,6 +309,93 @@ def test_the_loop_stops_at_its_iteration_leash(conn, drive):
     assert events[-1]["iterations"] == 3
 
 
+# --------------------------------------------------------- how many books --
+
+def test_the_prompt_states_the_count_as_a_ceiling_not_a_quota():
+    """The whole feature is this wording. "Return 20" produces a padded list of
+    20 whatever the collection holds, because the ranked lists the agent reads
+    always come back full -- so the number must reach it as a ceiling, with
+    stopping short named as the correct outcome."""
+    p = browse_loop.system_prompt(20)
+
+    assert "UP TO 20 books" in p
+    assert "ceiling, not a target" in p
+    assert "Returning fewer than 20 is a correct" in p
+    assert "Never pad the list to reach a number" in p, (
+        "the original line still has to survive; it is now load-bearing"
+    )
+
+
+def test_the_prompt_agrees_with_itself_about_one_book():
+    assert "UP TO 1 book." in browse_loop.system_prompt(1)
+
+
+def test_the_count_reaches_the_model(conn, drive):
+    drive.listing = [_pdf("a", "Romans.pdf")]
+    client = ScriptedClient([[_text("done")]])
+
+    list(browse_loop.run("paul", conn, count=20, client=client))
+
+    assert "UP TO 20 books" in client.calls[0]["system"]
+
+
+def test_a_count_over_the_maximum_is_refused_rather_than_clamped(conn):
+    """Silently returning 50 for a request of 51 teaches the caller that the
+    limit is imaginary, and the next request asks for 500."""
+    with pytest.raises(ValueError, match=f"between 1 and {browse_loop.MAX_COUNT}"):
+        browse_loop.run("paul", conn, count=browse_loop.MAX_COUNT + 1)
+
+
+def test_a_count_below_one_is_refused(conn):
+    with pytest.raises(ValueError):
+        browse_loop.run("paul", conn, count=0)
+
+
+def test_the_count_is_validated_before_the_run_starts(conn):
+    """run() is a plain function returning a generator precisely so this raises
+    at the call, not at the first next(). Inside a generator the check would not
+    fire until the stream was already open, turning a rejected request into a
+    mid-stream error event."""
+    with pytest.raises(ValueError):
+        browse_loop.run("paul", conn, count=999)  # no iteration at all
+
+
+def test_a_large_request_buys_more_room_to_answer_in(conn, drive):
+    """A 50-pick `recommend` call is ~2.5k output tokens; truncating it loses
+    the entire shortlist. The extra rounds matter for the same reason -- a large
+    request is told to search more angles, which makes the old leash reachable
+    and would report a bigger job as "stopped without settling"."""
+    drive.listing = [_pdf("a", "Romans.pdf")]
+    small, large = ScriptedClient([[_text("d")]]), ScriptedClient([[_text("d")]])
+
+    list(browse_loop.run("x", conn, count=6, client=small))
+    list(browse_loop.run("x", conn, count=50, client=large))
+
+    assert large.calls[0]["max_tokens"] > small.calls[0]["max_tokens"]
+    assert browse_loop._iterations_for(50) > browse_loop._iterations_for(6)
+
+
+def test_returning_fewer_books_than_asked_for_is_not_an_error(conn, drive):
+    """The point of putting an agent behind this: asked for 20, it finds two
+    that genuinely fit and stops. That has to flow through as an ordinary run --
+    nothing downstream may treat a short list as a failure."""
+    drive.listing = [_pdf("a", "Romans.pdf"), _pdf("b", "Galatians.pdf")]
+    client = ScriptedClient([
+        [_tool("search_drive", "t1", query="Romans")],
+        [_tool("recommend", "t2", picks=[
+            {"file_id": "a", "why": "fits"}, {"file_id": "b", "why": "also fits"},
+        ])],
+        [_text("Only two in the collection really fit.")],
+    ])
+
+    events = list(browse_loop.run("paul", conn, count=20, client=client))
+    done = events[-1]
+
+    assert [e["type"] for e in events][-3:] == ["recommendations", "answer", "done"]
+    assert len(done["recommendations"]) == 2
+    assert "exhausted" not in done, "a short list is a finished run, not a leash hit"
+
+
 # ------------------------------------------------ POST /api/library/drive --
 
 @pytest.fixture
@@ -360,6 +451,61 @@ def test_adding_a_non_pdf_is_refused(web):
 def test_the_add_route_bounds_how_many_books_one_request_can_queue(web):
     r = web.post("/api/library/drive", json={"file_ids": [f"f{i}" for i in range(21)]})
     assert r.status_code == 422, "an unbounded list puts the whole drive in flight"
+
+
+# ------------------------------------------------------- POST /api/browse --
+
+@pytest.fixture
+def browse_web(web, monkeypatch):
+    """`web`, with the agent replaced by a generator that records its count.
+
+    The route is a live Anthropic call otherwise, and what these tests are about
+    is the boundary in front of it: what it accepts, what it refuses, and what
+    it forwards.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-used")
+    calls = []
+
+    def fake_run(interest, conn, *, count):
+        calls.append(count)
+        yield {"type": "done", "recommendations": [], "iterations": 1}
+
+    monkeypatch.setattr(api.browse_loop, "run", fake_run)
+    web.counts = calls
+    return web
+
+
+def test_the_browse_route_refuses_a_count_over_the_maximum(browse_web):
+    """422 at the edge, with the bound named in the field error -- the caller
+    learns the limit exists instead of quietly receiving 50."""
+    r = browse_web.post(
+        "/api/browse", json={"interest": "paul", "count": browse_loop.MAX_COUNT + 1}
+    )
+
+    assert r.status_code == 422
+    assert browse_web.counts == [], "the agent must not run for a rejected request"
+
+
+def test_the_browse_route_refuses_a_count_below_one(browse_web):
+    r = browse_web.post("/api/browse", json={"interest": "paul", "count": 0})
+    assert r.status_code == 422
+
+
+def test_the_browse_route_forwards_the_count_it_was_given(browse_web):
+    r = browse_web.post(
+        "/api/browse", json={"interest": "paul", "count": browse_loop.MAX_COUNT}
+    )
+
+    assert r.status_code == 200
+    assert browse_web.counts == [browse_loop.MAX_COUNT]
+
+
+def test_a_request_without_a_count_keeps_the_old_behaviour(browse_web):
+    """The Bible page's dig-deeper button posts no count at all."""
+    r = browse_web.post("/api/browse", json={"interest": "paul"})
+
+    assert r.status_code == 200
+    assert browse_web.counts == [browse_loop.DEFAULT_COUNT]
 
 
 def test_a_drive_auth_failure_reports_how_to_fix_it(web, monkeypatch):
