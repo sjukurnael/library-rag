@@ -1123,6 +1123,13 @@ main .card h1 { margin-bottom: 8px; }
    A link rather than a button: it opens something to read, it does not change
    anything, and two solid buttons would make the reversible one look like the
    decision. */
+/* The page the quote sits on, inside the quote block and after it -- reading
+   as an attribution rather than as another line of the passage. */
+.pick .q .qcite {
+  margin-top: 6px; font-size: 12px; color: var(--dim);
+  font-style: normal; letter-spacing: .01em;
+}
+
 .pick .foot .openpdf {
   margin-left: auto; font-size: var(--t-meta); color: var(--muted);
   text-decoration: none; white-space: nowrap;

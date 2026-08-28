@@ -30,7 +30,8 @@ from html import escape
 from pathlib import Path
 
 import anthropic
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import (BackgroundTasks, FastAPI, File, HTTPException, Query, Request,
+                     UploadFile)
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -501,7 +502,7 @@ async def upload_book(background: BackgroundTasks, file: UploadFile = File(...))
 
 
 @app.get("/api/books/{book_id}/source")
-def book_source(book_id: int):
+def book_source(book_id: int, page: int | None = Query(default=None, ge=1)):
     """Open the book where it actually lives.
 
     For the 8,681 books that came from Drive that means Drive itself: the whole
@@ -514,12 +515,23 @@ def book_source(book_id: int):
     An upload has no Drive file, so it falls back to our copy rather than
     dead-ending. Four books in this library are uploads; a link that works for
     8,681 and 404s for four is worse than one that always opens something.
+
+    `page`, when given, is appended as a #page= fragment. On the /pdf fallback
+    that lands the reader on the passage exactly. On Drive it is best-effort:
+    Drive's own viewer ignores page anchors, though a browser that opens the
+    file in its native PDF viewer honours them. Sent either way -- it costs
+    nothing, it degrades to "opens at page one", and the page number is printed
+    on the card next to the quote so a reader always has it even when the jump
+    does not happen.
     """
     with db.get_conn() as conn:
         if db.fetch_book(conn, book_id) is None:
             raise HTTPException(404, f"No book with id {book_id}.")
         link = db.drive_link_for_book(conn, book_id)
-    return RedirectResponse(link or f"/api/books/{book_id}/pdf", status_code=302)
+    target = link or f"/api/books/{book_id}/pdf"
+    if page is not None:
+        target = f"{target}#page={page}"
+    return RedirectResponse(target, status_code=302)
 
 
 @app.get("/api/books/{book_id}/pdf")

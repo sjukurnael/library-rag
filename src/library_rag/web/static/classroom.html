@@ -420,15 +420,28 @@ function pickCard(b, i) {
   // Drive, not our copy. The reader wants the whole book where it lives, with
   // its folder one click away -- /pdf serves OUR bytes, which is right for a
   // citation landing on page 87 and wrong for "let me look at this".
-  const href = b.kind === 'drive' ? (b.url || '') : `/api/books/${b.book_id}/source`;
+  // ?page= is passed through to the redirect, which appends it as a #page=
+  // fragment. It lands exactly on an upload's own bytes; on Drive it is
+  // best-effort, because Drive's viewer ignores page anchors. Which is why the
+  // page is also PRINTED under the quote: a reader who does not get jumped
+  // there can still turn to it, and a citation nobody can find is not a
+  // citation. A Drive pick has no chunks and so no page.
+  const base = b.kind === 'drive' ? (b.url || '') : `/api/books/${b.book_id}/source`;
+  const href = base && b.passage_page && b.kind !== 'drive'
+    ? `${base}?page=${b.passage_page}`
+    : base;
+  const at = b.passage_pages ? ` — opens at ${b.passage_pages}` : '';
   const open = href
     ? `<a class="openpdf" href="${esc(href)}" target="_blank" rel="noopener"
-          title="Open the original in Google Drive">Open in Drive ↗</a>`
+          title="Open the whole original in Google Drive${esc(at)}">Open in Drive ↗</a>`
+    : '';
+  const cite = b.passage_pages
+    ? `<div class="qcite">${esc(b.passage_pages)}</div>`
     : '';
   return `<div class="pick${mine ? ' owned' : ''}">
       <div class="t">${esc(b.title || '(untitled)')}</div>
       ${b.why ? `<div class="why">${esc(b.why)}</div>` : ''}
-      ${b.passage ? `<div class="q">“${esc(b.passage)}”</div>` : ''}
+      ${b.passage ? `<div class="q">“${esc(b.passage)}”${cite}</div>` : ''}
       <div class="foot">${b.pages ? b.pages + ' pages' : ''}${open}${action}</div>
     </div>`;
 }

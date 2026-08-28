@@ -384,3 +384,74 @@ def test_every_turn_after_the_first_reuses_the_cached_conversation(conn, monkeyp
     assert marks[0] == [], "the opening brief is a bare string, nothing to cache"
     for turn, found in enumerate(marks[1:], start=1):
         assert len(found) == 1, f"turn {turn}: expected one breakpoint, got {found}"
+
+
+# ------------------------------------------------------ the quoted page --
+
+def test_a_quoted_passage_is_located_on_its_page(conn, monkeypatch):
+    """The page comes from matching the words, not from the model reporting it.
+
+    look_inside hands the model a whitespace-collapsed prefix of a chunk, so the
+    quote that comes back will not equal the stored text byte for byte. Matching
+    has to survive that or the page is silently never found."""
+    book = make_book(conn, "b1", "A Book")
+    make_chunks(conn, book, ["nothing to do with the subject",
+                             "the   cross\n\nis   the place where wrath and mercy meet"])
+    conn.execute("UPDATE chunks SET page_start = 86, page_end = 87 "
+                 "WHERE book_id = %s AND content LIKE '%%wrath%%'", (book,))
+    conn.commit()
+
+    span = db.page_of_passage(conn, book, "the cross is the place where wrath and mercy")
+    assert span == (86, 87)
+
+
+def test_a_passage_that_is_not_in_the_book_gets_no_page(conn):
+    """None, not a guess. A page number nobody can check is worse than none --
+    the whole value of the citation is that a reader can turn to it."""
+    book = make_book(conn, "b1", "A Book")
+    make_chunks(conn, book, ["the cross is the place where wrath and mercy meet"])
+
+    assert db.page_of_passage(conn, book, "a sentence this book never contained") is None
+    assert db.page_of_passage(conn, book, "too short") is None, (
+        "a two-word 'quote' would match half the library"
+    )
+
+
+def test_like_wildcards_in_a_quote_are_literal(conn):
+    """An underscore in a passage is an underscore. Unescaped it means 'any
+    character', which turns a failed match into a wrong one."""
+    book = make_book(conn, "b1", "A Book")
+    make_chunks(conn, book, ["the value of x_1 determines the whole series here"])
+
+    assert db.page_of_passage(conn, book, "the value of x_1 determines the whole") is not None
+    assert db.page_of_passage(conn, book, "the value of xA1 determines the whole") is None
+
+
+def test_a_recommendation_carries_the_page_its_quote_came_from(conn, monkeypatch):
+    """End to end through recommend, which is what the card renders."""
+    book = make_book(conn, "b1", "The Cross of Christ")
+    make_chunks(conn, book, ["penal substitution and the wrath of God poured out"])
+    conn.execute("UPDATE chunks SET page_start = 142, page_end = 142 WHERE book_id = %s",
+                 (book,))
+    conn.commit()
+
+    out = tools.recommend(
+        conn,
+        [{"book_id": book, "why": "central",
+          "passage": "penal substitution and the wrath of God poured out"}],
+        {book: {"title": "The Cross of Christ"}}, {},
+    )
+    pick = out["recommendations"][0]
+    assert pick["passage_page"] == 142
+    assert pick["passage_pages"] == "p.142"
+
+
+def test_a_drive_pick_has_no_page_and_does_not_crash(conn):
+    """A Drive book has no chunks to look in -- the lookup must not be attempted
+    rather than returning something misleading."""
+    out = tools.recommend(
+        conn, [{"file_id": "f1", "why": "looks right"}],
+        {}, {"f1": {"file_id": "f1", "title": "Not Indexed", "url": "https://drive/x"}},
+    )
+    pick = out["recommendations"][0]
+    assert pick.get("passage_page") is None

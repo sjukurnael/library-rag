@@ -532,3 +532,38 @@ def test_an_upload_falls_back_to_our_copy(client, conn):
 
 def test_the_source_route_404s_on_an_unknown_book(client, conn):
     assert client.get("/api/books/999999/source").status_code == 404
+
+
+def test_a_page_is_carried_into_the_redirect_as_a_fragment(client, conn):
+    """?page=87 -> #page=87 on the target.
+
+    Exact on the /pdf fallback, best-effort on Drive, whose viewer ignores page
+    anchors. Sent regardless: it costs nothing, it degrades to opening at page
+    one, and the card prints the page next to the quote so the reader has it
+    either way."""
+    from .conftest import make_book
+    book = make_book(conn, "drive-page-1", "A Drive Book")
+    conn.execute("""INSERT INTO drive_files (file_id, name, mime_type, web_view_link)
+                    VALUES ('drive-page-1', 'A Drive Book', 'application/pdf',
+                            'https://drive.google.com/file/d/xyz/view')""")
+    conn.commit()
+
+    r = client.get(f"/api/books/{book}/source?page=87", follow_redirects=False)
+    assert r.headers["location"] == "https://drive.google.com/file/d/xyz/view#page=87"
+
+    # ...and no fragment at all when no page was asked for, rather than #page=None
+    r = client.get(f"/api/books/{book}/source", follow_redirects=False)
+    assert "#" not in r.headers["location"]
+
+
+def test_a_nonsense_page_is_refused_rather_than_pasted_into_the_url(client, conn):
+    """The value lands in a URL the browser follows, so it is bounded at the
+    edge instead of being interpolated verbatim."""
+    from .conftest import make_book
+    book = make_book(conn, "drive-page-2", "A Drive Book")
+    conn.commit()
+
+    assert client.get(f"/api/books/{book}/source?page=0",
+                      follow_redirects=False).status_code == 422
+    assert client.get(f"/api/books/{book}/source?page=notanumber",
+                      follow_redirects=False).status_code == 422

@@ -1667,3 +1667,43 @@ def classrooms_holding(conn, book_id: int) -> list:
             (book_id,),
         )
         return cur.fetchall()
+
+
+def page_of_passage(conn, book_id: int, passage: str) -> tuple | None:
+    """(page_start, page_end) for a quoted passage, or None if it is not found.
+
+    Matched against the text rather than reported by the model. The librarian
+    quotes a passage look_inside handed it, but the page that passage sat on is
+    not part of what `recommend` asks for -- and a page number retyped by a
+    model is a page number that can be wrong, silently, in a citation whose
+    entire job is to be checkable. So the words are located instead.
+
+    Whitespace is normalised on both sides because look_inside collapses runs
+    of it before the model ever sees the text, so the quote will not match the
+    stored chunk byte for byte. LIKE wildcards in the quote are escaped for the
+    same reason a search box escapes them: an underscore in the passage is an
+    underscore, not "any character".
+
+    Returns None rather than guessing. A passage the model paraphrased, or
+    truncated mid-word, will not be found -- and no page number is a better
+    answer than a plausible one nobody can check.
+    """
+    words = passage.split()
+    if len(words) < 4:
+        return None
+    needle = " ".join(words[:10])
+    for ch in ("\\", "%", "_"):
+        needle = needle.replace(ch, "\\" + ch)
+
+    row = conn.execute(
+        """
+        SELECT page_start, page_end
+        FROM chunks
+        WHERE book_id = %s
+          AND regexp_replace(content, '\\s+', ' ', 'g') ILIKE '%%' || %s || '%%'
+        ORDER BY page_start
+        LIMIT 1
+        """,
+        (book_id, needle),
+    ).fetchone()
+    return (row[0], row[1]) if row else None

@@ -156,10 +156,18 @@ def recommend(conn, picks: list, seen_books: dict, seen_files: dict) -> dict:
                             "error": f"book is not ready to read (status "
                                      f"{row[2] if row else 'missing'})"})
                 continue
+            # Where the quote sits, found by matching the words rather than
+            # asking the model to report it. Only for indexed books: a Drive
+            # pick has no chunks to look in, which is the same reason it has no
+            # passage. None when the words cannot be located -- see
+            # db.page_of_passage on why that is the right answer.
+            span = db.page_of_passage(conn, int(bid), passage) if passage else None
             out.append({
                 "kind": "indexed", "book_id": int(bid), "title": row[0],
                 "pages": row[1], "covers": known.get("covers"),
                 "why": why, "passage": passage,
+                "passage_page": span[0] if span else None,
+                "passage_pages": _pages(*span) if span else None,
             })
             continue
 
