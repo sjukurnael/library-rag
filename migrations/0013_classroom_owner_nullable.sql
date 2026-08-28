@@ -1,0 +1,15 @@
+-- owner_email is nullable. NULL means "made with no sign-in configured".
+--
+-- 0012 declared it NOT NULL, which contradicts how the app is actually allowed
+-- to run: config.auth_enabled() is just bool(GOOGLE_CLIENT_ID), and with it
+-- unset every route is open and there is no user to attribute anything to. That
+-- is the normal state on a laptop and in the test suite, both of which create
+-- classrooms. The constraint made the schema stricter than the product.
+--
+-- The alternative was a sentinel -- 'local', or the empty string -- and it is
+-- worse. A sentinel is a value that sorts, groups and filters like a real
+-- address while naming nobody, so `WHERE owner_email = %s` would one day match
+-- every laptop-made classroom at once. NULL is the honest answer to "who owns
+-- this", and list_classrooms already treats a NULL owner filter as "show
+-- everything" rather than "show nothing".
+ALTER TABLE classrooms ALTER COLUMN owner_email DROP NOT NULL;

@@ -1,0 +1,43 @@
+-- Drop the two indexes that exist to search ALL chunks at once.
+--
+-- Retrieval is moving to study sessions: a reader describes a topic, the
+-- librarian assembles ~15-20 books, and every subsequent search is scoped to
+-- that set. A scoped search never needs a global index -- it reaches ~1,200
+-- chunks through chunks_book_id_idx and compares all of them exactly.
+--
+-- Measured on 203 books / 12,320 chunks, and the numbers do not depend on
+-- corpus size because the btree jumps straight to the books in scope:
+--
+--     books in scope   chunks   rows returned   median
+--          1              105        10/10       12.7 ms
+--         20            2,322        10/10       27.6 ms
+--        100            6,567        10/10       52.6 ms
+--
+-- chunks_hnsw is not merely unnecessary here -- it is WRONG. With it present
+-- the planner picks an HNSW index scan and post-filters on book_id, so it walks
+-- the graph, collects ef_search candidates, discards everything outside the
+-- session, and returns whatever survives. On the same 203 books:
+--
+--     10 books scoped -> returned  0 of 10 rows
+--     20 books scoped -> returned  0 of 10 rows
+--     50 books scoped -> returned 10 of 10 rows
+--
+-- Zero rows, no error. That failure would read as "the librarian picked bad
+-- books", which is the most expensive kind of bug to own.
+--
+-- Size is the second reason. At the projected 2.9M chunks these two would be
+-- 7.6 GB and 2.8 GB against ~700 MB of cache on a 1 GB instance, so a graph
+-- walk's thousand dependent random reads would miss ~90% of the time. Dropping
+-- them removes ~10.4 GB of derived structure and the need to buy RAM.
+--
+-- The tsv COLUMN stays. Only its GIN index goes: a GIN exists to find matches
+-- across the whole table, and ts_rank_cd over ~1,200 scoped rows needs no
+-- index. Keeping the column is what preserves config.SEARCH_MODE = "hybrid" as
+-- a one-flag experiment rather than a rewrite.
+--
+-- Nothing here destroys data. chunks keeps every row, every passage and every
+-- full-precision embedding; both indexes are derived and CREATE INDEX rebuilds
+-- them. That reversibility is the point -- this is the cheap half of an
+-- experiment whose expensive half is the librarian.
+DROP INDEX IF EXISTS chunks_hnsw;
+DROP INDEX IF EXISTS chunks_tsv_idx;
