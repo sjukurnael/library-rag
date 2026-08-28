@@ -79,10 +79,27 @@ function showSource(ti, n) {
     .map(([k, v]) => `<dt>${k}</dt><dd>${esc(String(v))}</dd>`).join('');
   $('#praw').textContent = s.content;
 
+  // Two links, because they answer different questions and neither can be the
+  // other. Our mirrored copy takes #page= and lands on the sentence that was
+  // cited; Drive's viewer ignores page anchors, so a Drive link always opens at
+  // page one. But a reader who wants THE BOOK -- the whole thing, in the folder
+  // it lives in, with everything shelved around it -- wants Drive, not our copy.
+  //
+  // The Drive link is offered whenever there is a book, not only when there is a
+  // page: /api/books/{id}/source redirects to the Drive original and falls back
+  // to our bytes only for the four uploads, which have no Drive file to open.
   const pdf = $('#ppdf');
-  if (s.book_id != null && s.page_start != null) {
-    pdf.innerHTML = `<a href="/api/books/${s.book_id}/pdf#page=${s.page_start}" ` +
-      `target="_blank" rel="noopener">Open the PDF at p.${s.page_start} ↗</a>`;
+  if (s.book_id != null) {
+    const atPage = s.page_start != null
+      ? `<a href="/api/books/${s.book_id}/pdf#page=${s.page_start}" ` +
+        `target="_blank" rel="noopener" ` +
+        `title="Our mirrored copy, opened at the cited page">` +
+        `Open at p.${s.page_start} ↗</a>`
+      : '';
+    pdf.innerHTML = atPage +
+      `<a href="/api/books/${s.book_id}/source" target="_blank" rel="noopener" ` +
+      `title="The original in Google Drive, in the folder it lives in">` +
+      `Open the original in Drive ↗</a>`;
     pdf.hidden = false;
   } else {
     pdf.hidden = true;

@@ -368,6 +368,16 @@ details.trace[open] summary { color: var(--ink); }
   overflow-wrap: anywhere;
 }
 
+/* Two source links: our mirrored copy at the cited page, and the Drive original.
+   Wrapped rather than nowrap -- "Open the original in Drive" is long, and on a
+   narrow panel the second link must drop to its own line instead of overflowing. */
+#panel #ppdf {
+  display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 14px;
+  font-size: 13px;
+}
+#panel #ppdf a { color: var(--accent); text-decoration: none; font-weight: 500; }
+#panel #ppdf a:hover { text-decoration: underline; }
+
 /* --------------------------------------------------------- drive browser -- */
 .toolbar { display: flex; align-items: center; gap: 12px; margin: 4px 0 14px; }
 .toolbar .chip { white-space: nowrap; padding: 9px 16px; border-radius: 999px; }
