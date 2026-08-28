@@ -26,7 +26,7 @@ from library_rag import prompt_cache
 # that costs real money: a run is thirty-odd turns and the conversation is
 # re-sent on every one of them. The env override is kept so the model can be
 # changed on a running deployment without a rebuild.
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
+MODEL = os.environ.get("LIBRARIAN_MODEL", "claude-sonnet-5")
 
 # Higher than the browse agent's 12, because the shape of the work changed. A
 # real run is a broad sweep, a gap-filling sweep, then twenty-odd look_inside
