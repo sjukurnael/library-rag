@@ -2,7 +2,7 @@
 The librarian's tool-use loop: system prompt, tool schemas, and a run() that
 drives the conversation until the model produces a shortlist.
 
-The event contract is deliberately the one exploration/loop.py already yielded
+The event contract is deliberately the one the old browsing agent yielded
 -- thinking / tool / results / tool_error / recommendations / answer / done --
 so the page's existing trail renderer keeps working. What changed is underneath:
 this agent can read the books.

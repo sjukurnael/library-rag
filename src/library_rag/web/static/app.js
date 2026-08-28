@@ -381,7 +381,7 @@ paintAuth();
 // The browse agent, shared by the Drive page (free-text interest) and the Bible
 // page (a verse). Extracted here for the same reason esc() is: it was about to
 // have a second copy, and a second copy is the one that drifts. The agent is
-// identical either way -- /api/browse takes a free-text `interest`, and a verse
+// identical either way -- /api/librarian takes a free-text brief, and a verse
 // is just a particularly well-specified one.
 
 const TOOL_LABEL = {
@@ -448,18 +448,24 @@ function recCard(b, i) {
  *  intended behaviour and not an error to surface.
  *
  *  Omitted, the field is left off the request entirely rather than defaulted
- *  here, so the default lives in exactly one place (BrowseRequest.count). The
- *  Bible page, which digs on a single verse and wants a handful, calls this
- *  with three arguments and gets that default. */
+ *  here, so the default lives in exactly one place (LibrarianRequest.count).
+ *  The Bible page, which digs on a single verse and wants a handful, calls this
+ *  with three arguments and gets that default.
+ *
+ *  Points at /api/librarian. This used to drive the browsing agent, which could
+ *  only ever see filenames; that agent is gone and the librarian reads the books
+ *  themselves. The event contract is the one the old loop yielded -- tool /
+ *  results / tool_error / recommendations / answer / done -- which is why an
+ *  endpoint and a field name were the whole change. */
 async function runLibrarian(interest, trailEl, outEl, count) {
   let recs = [];
   const trail = [];
   trailEl.innerHTML = '<div class="bstep">looking…</div>';
   outEl.innerHTML = '';
 
-  const r = await fetch('/api/browse', {
+  const r = await fetch('/api/librarian', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(count ? { interest, count } : { interest }),
+    body: JSON.stringify(count ? { brief: interest, count } : { brief: interest }),
   });
   // A 422 here is the count field failing its 1-50 bound. Worth reading the
   // body for: "Unprocessable Entity" alone tells the user nothing about which

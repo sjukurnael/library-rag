@@ -46,8 +46,7 @@ from library_rag import bible, config, db, ingest, jobs, storage
 from library_rag.drive import client as drive_client
 from library_rag.drive import mirror
 from library_rag.drive import store as drive_store
-from library_rag.exploration import loop as browse_loop
-from library_rag.exploration import tools as browse_tools
+from library_rag.drive import tools as drive_tools
 from library_rag.librarian import loop as librarian_loop
 from library_rag.pipeline import embed as embed_mod
 from library_rag.retrieval import research
@@ -167,18 +166,6 @@ class AskRequest(BaseModel):
     # Required, not optional-with-a-default. The tutor answers from a shelf or
     # it does not answer; there is no global search to fall back to.
     classroom_id: int
-
-
-class BrowseRequest(BaseModel):
-    interest: str = Field(min_length=1, max_length=2000)
-    # How many books to shortlist -- a ceiling the agent underspends when the
-    # collection runs out of genuinely relevant titles (see exploration/loop.py,
-    # system_prompt). Bounded here as well as in the loop because this is the
-    # boundary that faces the network: 51 is a 422 with a field error naming the
-    # limit, not a clamp, so a caller learns the ceiling exists.
-    count: int = Field(
-        default=browse_loop.DEFAULT_COUNT, ge=1, le=browse_loop.MAX_COUNT
-    )
 
 
 class AddDriveRequest(BaseModel):
@@ -973,43 +960,6 @@ def librarian_stream(req: LibrarianRequest):
     )
 
 
-@app.post("/api/browse")
-def browse_stream(req: BrowseRequest):
-    """Browse the Drive library for books worth reading next.
-
-    Streamed for the same reason /api/research is: the agent runs several Drive
-    searches over tens of seconds, and seeing which ones it chose is what
-    separates a shortlist you can trust from a list of plausible-looking titles.
-
-    Read-only. The agent can look at anything and write nothing; adding a book is
-    a separate, explicit POST that the user triggers by pressing a button.
-    """
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise HTTPException(500, "ANTHROPIC_API_KEY is not set")
-
-    def stream():
-        try:
-            with db.get_conn() as conn:
-                for event in browse_loop.run(req.interest, conn, count=req.count):
-                    yield f"data: {json.dumps(event)}\n\n"
-        except Exception as e:  # noqa: BLE001 -- surface it in the stream, not a 500
-            # The headers went out with the first frame, so a 500 is no longer
-            # available: the only channel left to the reader is the stream
-            # itself. It ends without the terminal 'done' -- correct, the run did
-            # NOT finish -- and this frame is what stops that from being read as
-            # a dropped connection. See _failure_message, and readEventStream in
-            # app.js, which now prefers this reason over its own fallback.
-            log.exception("browse run failed")
-            message = _failure_message(e)
-            yield f"data: {json.dumps({'type': 'error', 'message': message})}\n\n"
-
-    return StreamingResponse(
-        stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
 @app.post("/api/library/drive")
 def add_drive_books(req: AddDriveRequest, background: BackgroundTasks):
     """Add Drive books to the library by file id, and start indexing them.
@@ -1027,7 +977,7 @@ def add_drive_books(req: AddDriveRequest, background: BackgroundTasks):
     service = drive_client.build_service()
     added, already = [], []
     with db.get_conn() as conn:
-        held = browse_tools.indexed_ids(conn)
+        held = drive_tools.indexed_ids(conn)
         for file_id in req.file_ids:
             if file_id in held:
                 already.append({"file_id": file_id, **held[file_id]})

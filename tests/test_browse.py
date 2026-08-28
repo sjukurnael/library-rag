@@ -1,11 +1,14 @@
 """
-The Drive browsing agent: drive-wide search, folder browsing, the
-already-indexed cross-reference, the recommend output channel, and the
-add-to-library route.
+Reading Drive: drive-wide search, folder browsing, the already-indexed
+cross-reference, the add-to-library route, and the OAuth flow behind all of it.
 
 Drive is a fake service throughout -- these assertions are about our query
-construction and our bookkeeping, not about Google's. The Anthropic client is
-scripted for the same reason (see tests/test_research.py).
+construction and our bookkeeping, not about Google's.
+
+The browsing AGENT these tools were built for is gone; the librarian replaced
+it. What is tested here is what outlived it, plus the streaming boundary in
+front of /api/librarian -- which is the same boundary the browse route had, and
+the reason those tests moved rather than being deleted with the agent.
 """
 import json
 import types
@@ -17,8 +20,8 @@ from fastapi.testclient import TestClient
 
 from library_rag import config, db
 from library_rag.drive import client as drive_client
-from library_rag.exploration import loop as browse_loop
-from library_rag.exploration import tools
+from library_rag.drive import tools
+from library_rag.librarian import loop as librarian_loop
 from library_rag.web import api
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -64,42 +67,12 @@ class FakeService:
         return self._files
 
 
-class _Block:
-    def __init__(self, **kw):
-        self.__dict__.update(kw)
-
-
 def _text(s):
     return _Block(type="text", text=s)
 
 
 def _tool(name, tid, **inp):
     return _Block(type="tool_use", name=name, id=tid, input=inp)
-
-
-class FakeResponse:
-    def __init__(self, blocks):
-        self.content = blocks
-        self.stop_reason = (
-            "tool_use" if any(b.type == "tool_use" for b in blocks) else "end_turn"
-        )
-
-
-class ScriptedClient:
-    def __init__(self, script):
-        self.script = list(script)
-        self.seen = []
-        # Full kwargs, so a test can assert on `system` and `max_tokens` too.
-        # `seen` stays messages-only because it is read positionally elsewhere.
-        self.calls = []
-        self.messages = types.SimpleNamespace(create=self._create)
-
-    def _create(self, **kw):
-        self.seen.append(kw["messages"])
-        self.calls.append(kw)
-        if not self.script:
-            return FakeResponse([_text("ran out of script")])
-        return FakeResponse(self.script.pop(0))
 
 
 @pytest.fixture
@@ -224,179 +197,9 @@ def test_browse_caches_by_folder_id(conn, drive):
 
 # -------------------------------------------------------------- recommend --
 
-def test_recommend_enriches_picks_from_what_the_run_saw(conn, drive):
-    drive.listing = [_pdf("a", "Romans.pdf", size_mb=3.5)]
-    seen = {}
-    browse_loop._remember(seen, tools.search_drive(conn, "Romans")["matches"])
-
-    out = tools.recommend(conn, [{"file_id": "a", "why": "verse-by-verse"}], seen)
-    pick = out["recommendations"][0]
-
-    assert pick["title"] == "Romans.pdf"
-    assert pick["size_mb"] == 3.5
-    assert pick["url"].endswith("/view")
-    assert pick["why"] == "verse-by-verse"
-    assert pick["indexed"] is False
-
-
-def test_recommend_flags_a_file_id_the_agent_never_saw(conn):
-    """A hallucinated id must surface, not render as a dead Drive link."""
-    out = tools.recommend(conn, [{"file_id": "made-up", "why": "trust me"}], seen={})
-    pick = out["recommendations"][0]
-
-    assert pick["unknown"] is True
-    assert "no such file_id" in pick["error"]
-    assert "url" not in pick
-
-
 # ------------------------------------------------------------- the loop --
 
-def test_the_loop_streams_tools_then_recommendations_then_the_answer(conn, drive):
-    drive.listing = [_pdf("a", "Romans.pdf")]
-    client = ScriptedClient([
-        [_text("Let me look."), _tool("search_drive", "t1", query="Romans")],
-        [_tool("recommend", "t2", picks=[{"file_id": "a", "why": "fits"}])],
-        [_text("Start with Romans.")],
-    ])
-
-    events = list(browse_loop.run("paul's letters", conn, client=client))
-    kinds = [e["type"] for e in events]
-
-    assert kinds == [
-        "thinking", "tool", "results",
-        "tool", "results", "recommendations",
-        "answer", "done",
-    ]
-    assert events[-2]["text"] == "Start with Romans."
-    assert events[-1]["recommendations"][0]["title"] == "Romans.pdf"
-
-
-def test_a_tool_error_is_reported_to_the_model_instead_of_killing_the_run(conn,
-                                                                         monkeypatch):
-    """The model can recover from a bad call if it is told. Raising out of the
-    loop gives it no chance and loses everything found so far."""
-    def boom(*a, **kw):
-        raise RuntimeError("drive is down")
-
-    monkeypatch.setattr(tools, "search_drive", boom)
-    client = ScriptedClient([
-        [_tool("search_drive", "t1", query="Romans")],
-        [_text("Could not reach Drive.")],
-    ])
-
-    events = list(browse_loop.run("anything", conn, client=client))
-
-    assert [e["type"] for e in events] == ["tool", "tool_error", "answer", "done"]
-
-    # Searched rather than indexed: ScriptedClient records the same list object
-    # every call, and the loop keeps appending to it.
-    results = [
-        block
-        for m in client.seen[-1]
-        for block in (m["content"] if isinstance(m["content"], list) else [])
-        if isinstance(block, dict) and block.get("type") == "tool_result"
-    ]
-    assert "drive is down" in json.loads(results[0]["content"])["error"]
-
-
-def test_the_loop_stops_at_its_iteration_leash(conn, drive):
-    drive.listing = [_pdf("a", "Romans.pdf")]
-    client = ScriptedClient(
-        [[_tool("search_drive", f"t{i}", query="Romans")] for i in range(10)]
-    )
-
-    events = list(browse_loop.run("x", conn, client=client, max_iterations=3))
-
-    assert events[-1]["exhausted"] is True
-    assert events[-1]["iterations"] == 3
-
-
 # --------------------------------------------------------- how many books --
-
-def test_the_prompt_states_the_count_as_a_ceiling_not_a_quota():
-    """The whole feature is this wording. "Return 20" produces a padded list of
-    20 whatever the collection holds, because the ranked lists the agent reads
-    always come back full -- so the number must reach it as a ceiling, with
-    stopping short named as the correct outcome."""
-    p = browse_loop.system_prompt(20)
-
-    assert "UP TO 20 books" in p
-    assert "ceiling, not a target" in p
-    assert "Returning fewer than 20 is a correct" in p
-    assert "Never pad the list to reach a number" in p, (
-        "the original line still has to survive; it is now load-bearing"
-    )
-
-
-def test_the_prompt_agrees_with_itself_about_one_book():
-    assert "UP TO 1 book." in browse_loop.system_prompt(1)
-
-
-def test_the_count_reaches_the_model(conn, drive):
-    drive.listing = [_pdf("a", "Romans.pdf")]
-    client = ScriptedClient([[_text("done")]])
-
-    list(browse_loop.run("paul", conn, count=20, client=client))
-
-    assert "UP TO 20 books" in client.calls[0]["system"]
-
-
-def test_a_count_over_the_maximum_is_refused_rather_than_clamped(conn):
-    """Silently returning 50 for a request of 51 teaches the caller that the
-    limit is imaginary, and the next request asks for 500."""
-    with pytest.raises(ValueError, match=f"between 1 and {browse_loop.MAX_COUNT}"):
-        browse_loop.run("paul", conn, count=browse_loop.MAX_COUNT + 1)
-
-
-def test_a_count_below_one_is_refused(conn):
-    with pytest.raises(ValueError):
-        browse_loop.run("paul", conn, count=0)
-
-
-def test_the_count_is_validated_before_the_run_starts(conn):
-    """run() is a plain function returning a generator precisely so this raises
-    at the call, not at the first next(). Inside a generator the check would not
-    fire until the stream was already open, turning a rejected request into a
-    mid-stream error event."""
-    with pytest.raises(ValueError):
-        browse_loop.run("paul", conn, count=999)  # no iteration at all
-
-
-def test_a_large_request_buys_more_room_to_answer_in(conn, drive):
-    """A 50-pick `recommend` call is ~2.5k output tokens; truncating it loses
-    the entire shortlist. The extra rounds matter for the same reason -- a large
-    request is told to search more angles, which makes the old leash reachable
-    and would report a bigger job as "stopped without settling"."""
-    drive.listing = [_pdf("a", "Romans.pdf")]
-    small, large = ScriptedClient([[_text("d")]]), ScriptedClient([[_text("d")]])
-
-    list(browse_loop.run("x", conn, count=6, client=small))
-    list(browse_loop.run("x", conn, count=50, client=large))
-
-    assert large.calls[0]["max_tokens"] > small.calls[0]["max_tokens"]
-    assert browse_loop._iterations_for(50) > browse_loop._iterations_for(6)
-
-
-def test_returning_fewer_books_than_asked_for_is_not_an_error(conn, drive):
-    """The point of putting an agent behind this: asked for 20, it finds two
-    that genuinely fit and stops. That has to flow through as an ordinary run --
-    nothing downstream may treat a short list as a failure."""
-    drive.listing = [_pdf("a", "Romans.pdf"), _pdf("b", "Galatians.pdf")]
-    client = ScriptedClient([
-        [_tool("search_drive", "t1", query="Romans")],
-        [_tool("recommend", "t2", picks=[
-            {"file_id": "a", "why": "fits"}, {"file_id": "b", "why": "also fits"},
-        ])],
-        [_text("Only two in the collection really fit.")],
-    ])
-
-    events = list(browse_loop.run("paul", conn, count=20, client=client))
-    done = events[-1]
-
-    assert [e["type"] for e in events][-3:] == ["recommendations", "answer", "done"]
-    assert len(done["recommendations"]) == 2
-    assert "exhausted" not in done, "a short list is a finished run, not a leash hit"
-
 
 # ------------------------------------------------ POST /api/library/drive --
 
@@ -455,59 +258,62 @@ def test_the_add_route_bounds_how_many_books_one_request_can_queue(web):
     assert r.status_code == 422, "an unbounded list puts the whole drive in flight"
 
 
-# ------------------------------------------------------- POST /api/browse --
+# ---------------------------------------------------- POST /api/librarian --
 
 @pytest.fixture
 def browse_web(web, monkeypatch):
-    """`web`, with the agent replaced by a generator that records its count.
+    """`web`, with the librarian replaced by a generator that records its count.
 
     The route is a live Anthropic call otherwise, and what these tests are about
     is the boundary in front of it: what it accepts, what it refuses, and what
-    it forwards.
+    it forwards. Voyage is stubbed for the same reason -- the route builds an
+    embedding client before it reaches the loop.
     """
     monkeypatch.setenv("ANTHROPIC_API_KEY", "not-used")
+    monkeypatch.setattr(api.config, "VOYAGE_API_KEY", "not-used")
+    monkeypatch.setattr(api.embed_mod, "build_client", lambda: object())
     calls = []
 
-    def fake_run(interest, conn, *, count):
+    def fake_run(brief, conn, voyage, *, count, classroom_ids=()):
         calls.append(count)
         yield {"type": "done", "recommendations": [], "iterations": 1}
 
-    monkeypatch.setattr(api.browse_loop, "run", fake_run)
+    monkeypatch.setattr(api.librarian_loop, "run", fake_run)
     web.counts = calls
     return web
 
 
-def test_the_browse_route_refuses_a_count_over_the_maximum(browse_web):
+def test_the_librarian_route_refuses_a_count_over_the_maximum(browse_web):
     """422 at the edge, with the bound named in the field error -- the caller
     learns the limit exists instead of quietly receiving 50."""
     r = browse_web.post(
-        "/api/browse", json={"interest": "paul", "count": browse_loop.MAX_COUNT + 1}
+        "/api/librarian", json={"brief": "paul", "count": librarian_loop.MAX_COUNT + 1}
     )
 
     assert r.status_code == 422
     assert browse_web.counts == [], "the agent must not run for a rejected request"
 
 
-def test_the_browse_route_refuses_a_count_below_one(browse_web):
-    r = browse_web.post("/api/browse", json={"interest": "paul", "count": 0})
+def test_the_librarian_route_refuses_a_count_below_one(browse_web):
+    r = browse_web.post("/api/librarian", json={"brief": "paul", "count": 0})
     assert r.status_code == 422
 
 
-def test_the_browse_route_forwards_the_count_it_was_given(browse_web):
+def test_the_librarian_route_forwards_the_count_it_was_given(browse_web):
     r = browse_web.post(
-        "/api/browse", json={"interest": "paul", "count": browse_loop.MAX_COUNT}
+        "/api/librarian", json={"brief": "paul", "count": librarian_loop.MAX_COUNT}
     )
 
     assert r.status_code == 200
-    assert browse_web.counts == [browse_loop.MAX_COUNT]
+    assert browse_web.counts == [librarian_loop.MAX_COUNT]
 
 
 def test_a_request_without_a_count_keeps_the_old_behaviour(browse_web):
     """The Bible page's dig-deeper button posts no count at all."""
-    r = browse_web.post("/api/browse", json={"interest": "paul"})
+    r = browse_web.post("/api/librarian", json={"brief": "paul"})
 
     assert r.status_code == 200
-    assert browse_web.counts == [browse_loop.DEFAULT_COUNT]
+    assert browse_web.counts == [librarian_loop.DEFAULT_COUNT]
 
 
 def _anthropic_error(cls, status, kind, message):
@@ -534,12 +340,12 @@ BALANCE = _anthropic_error(
 
 def _browse_frames(browse_web, monkeypatch, exc):
     """The SSE frames the route emits when the agent raises `exc`."""
-    def boom(interest, conn, *, count):
+    def boom(brief, conn, voyage, *, count, classroom_ids=()):
         raise exc
         yield  # unreachable -- keeps this a generator function
 
-    monkeypatch.setattr(api.browse_loop, "run", boom)
-    r = browse_web.post("/api/browse", json={"interest": "paul"})
+    monkeypatch.setattr(api.librarian_loop, "run", boom)
+    r = browse_web.post("/api/librarian", json={"brief": "paul"})
     assert r.status_code == 200, "headers are already out; a 500 is not available"
     return [
         json.loads(line[6:])

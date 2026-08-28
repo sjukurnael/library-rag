@@ -16,7 +16,7 @@ the next hour, which is why `kind` travels with every recommendation rather than
 being inferred at the last moment by the page.
 """
 from library_rag import config, db
-from library_rag.exploration import tools as drive_tools
+from library_rag.drive import tools as drive_tools
 from library_rag.pipeline import embed as embed_mod
 
 # Re-exported so the loop has one import and the Drive half stays exactly the

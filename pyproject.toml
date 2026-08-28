@@ -65,8 +65,6 @@ library-rag-ingest = "library_rag.cli.ingest:main"
 library-rag-search = "library_rag.cli.search:main"
 library-rag-evaluate = "library_rag.cli.evaluate:main"
 library-rag-migrate = "library_rag.cli.migrate:main"
-library-rag-report = "library_rag.cli.report:main"
-library-rag-explore = "library_rag.cli.explore:main"
 library-rag-bible = "library_rag.cli.bible:main"
 library-rag-users = "library_rag.cli.users:main"
 
