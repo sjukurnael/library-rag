@@ -58,20 +58,29 @@ def google(monkeypatch):
     return calls
 
 
+# Stand-ins for "any route behind the gate". These tests are about the gate, so
+# the route only has to be ordinary: reachable, boring, and not itself gated by
+# something else. They used to be the Bible routes, which stopped being ordinary
+# the day config.BIBLE_ENABLED defaulted to off and four auth tests started
+# failing over a feature they were not testing.
+PROTECTED_API = "/api/classrooms"
+PROTECTED_PAGE = "/library"
+
+
 # ------------------------------------------------------------ the gate off --
 
 def test_with_no_client_id_configured_everything_stays_open(client):
     """Local development and the existing suite must be unaffected. This is the
     default, so if it ever breaks, it breaks everything."""
     assert config.auth_enabled() is False
-    assert client.get("/api/bible/books").status_code == 200
+    assert client.get(PROTECTED_API).status_code == 200
     assert client.get("/", follow_redirects=False).status_code == 200
 
 
 # ------------------------------------------------------------- the gate on --
 
 def test_a_browser_is_redirected_to_the_login_page(auth_on, client):
-    r = client.get("/bible", headers={"accept": "text/html"}, follow_redirects=False)
+    r = client.get(PROTECTED_PAGE, headers={"accept": "text/html"}, follow_redirects=False)
     assert r.status_code == 302
     assert r.headers["location"] == "/login"
 
@@ -79,7 +88,7 @@ def test_a_browser_is_redirected_to_the_login_page(auth_on, client):
 def test_a_fetch_gets_401_json_not_a_login_page(auth_on, client):
     """A 302 to an HTML page would reach the frontend as a JSON parse error,
     which reads as a bug rather than as "your session ended"."""
-    r = client.get("/api/bible/books", headers={"accept": "application/json"})
+    r = client.get(PROTECTED_API, headers={"accept": "application/json"})
     assert r.status_code == 401
     assert r.json()["detail"] == "Not signed in."
 
@@ -122,7 +131,7 @@ def test_an_allowlisted_account_gets_a_session(auth_on, google, allowlisted, cli
     assert r.status_code == 200
     assert r.json()["email"] == "allowed@example.com"
     # And the session actually works on a gated route.
-    assert client.get("/api/bible/books").status_code == 200
+    assert client.get(PROTECTED_API).status_code == 200
     assert client.get("/api/auth/me").json()["email"] == "allowed@example.com"
 
 
@@ -132,13 +141,13 @@ def test_an_account_not_on_the_list_is_refused(auth_on, google, allowlisted, cli
     r = client.post("/api/auth/google", json={"credential": "stranger@example.com"})
     assert r.status_code == 403
     assert "stranger@example.com" in r.json()["detail"]
-    assert client.get("/api/bible/books").status_code == 401
+    assert client.get(PROTECTED_API).status_code == 401
 
 
 def test_a_token_google_cannot_verify_is_refused(auth_on, google, allowlisted, client):
     r = client.post("/api/auth/google", json={"credential": "bad"})
     assert r.status_code == 401
-    assert client.get("/api/bible/books").status_code == 401
+    assert client.get(PROTECTED_API).status_code == 401
 
 
 def test_an_unverified_google_email_is_refused(auth_on, google, conn, client):
@@ -170,9 +179,9 @@ def test_the_email_is_matched_case_insensitively(auth_on, google, conn, client):
 
 def test_signing_out_closes_the_gate_again(auth_on, google, allowlisted, client):
     client.post("/api/auth/google", json={"credential": "allowed@example.com"})
-    assert client.get("/api/bible/books").status_code == 200
+    assert client.get(PROTECTED_API).status_code == 200
     client.get("/logout", follow_redirects=False)
-    assert client.get("/api/bible/books").status_code == 401
+    assert client.get(PROTECTED_API).status_code == 401
 
 
 def test_an_expired_session_stops_working(auth_on, google, allowlisted, client, monkeypatch):
@@ -180,9 +189,9 @@ def test_an_expired_session_stops_working(auth_on, google, allowlisted, client, 
     cookie captured off the wire cannot be replayed forever by something that
     is not a browser honouring max-age."""
     client.post("/api/auth/google", json={"credential": "allowed@example.com"})
-    assert client.get("/api/bible/books").status_code == 200
+    assert client.get(PROTECTED_API).status_code == 200
     monkeypatch.setattr(config, "SESSION_MAX_AGE_SECONDS", -1)
-    assert client.get("/api/bible/books").status_code == 401
+    assert client.get(PROTECTED_API).status_code == 401
 
 
 # --------------------------------------------------------------- allowlist --

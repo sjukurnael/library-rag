@@ -13,25 +13,19 @@
     <div class="brand"><span class="logo"></span>Library</div>
     <nav class="snav">
       <a href="/">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-        Chat</a>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M12 7v10"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Classrooms</a>
       <a href="/library" class="on">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         Drive</a>
       <a href="/queue">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         Processing</a>
-      <a href="/bible">
+      <!--bible--><a href="/bible">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-        Bible</a>
+        Bible</a><!--/bible-->
     </nav>
-    <div class="sidebooks">
-      <button class="sidehead" id="bookstoggle" aria-expanded="false">
-        <span class="chev">▸</span> In the index
-        <span class="count" id="bookcount"></span>
-      </button>
-      <ul id="navbooks" hidden></ul>
-    </div>
+    <div class="sidespace"></div>
     <div class="sideauth" id="sideauth" hidden></div>
     <div class="sidefoot" id="sidefoot">loading…</div>
   </aside>
@@ -41,12 +35,6 @@
       <h1>Drive</h1>
       <span class="sub" id="stat">loading…</span>
       <span style="flex:1"></span>
-      <!-- The librarian is a different feature from search, not a variant of
-           it: search runs the one query you typed, the librarian runs an agent
-           that writes its own. It sits up here with the page's other top-level
-           action (cf. queue.html's Upload) rather than in the toolbar, where
-           being adjacent to the search box implied it modified the search. -->
-      <button class="btn" id="librarianbtn">✦ Ask the librarian</button>
     </div>
     <div class="pagebody">
 
@@ -60,33 +48,10 @@
         <button class="btn" id="sync">Sync from Drive</button>
       </div>
 
-      <div class="card librarian" id="librarian" hidden>
-        <form class="ask" id="bf">
-          <input type="text" id="bq" autocomplete="off" class="li-input"
-                 placeholder="What do you want to study? e.g. the parables, church history…"
-                 style="flex:1;border:0;background:var(--panel);border-radius:999px;padding:10px 18px;color:var(--ink);font:inherit;outline:none">
-          <!-- A select, not a number input: the value is a ceiling the agent
-               underspends, so the exact figure never matters and a fixed set of
-               choices needs no validation and shows the range at a glance. -->
-          <label class="bcount" for="bn">up to
-            <select id="bn">
-              <option value="5">5</option>
-              <option value="10" selected>10</option>
-              <option value="20">20</option>
-              <option value="50">50</option>
-            </select>
-            books</label>
-          <button type="submit" class="btn primary" id="bgo">Browse</button>
-        </form>
-        <div class="sub" style="margin-top:8px">
-          An agent searches the whole drive by meaning and shortlists books worth
-          indexing next. It returns only the ones that genuinely fit, so a short
-          list means the collection is thin on that subject — not that the search
-          failed. Books you already have are excluded.
-        </div>
-        <div id="btrail"></div>
-        <div id="bout"></div>
-      </div>
+      <!-- How much of the drive is actually searchable. Above the search box
+           rather than in the header line, because it is two numbers with two
+           bars and the header is one line shared with the page title. -->
+      <div class="cover" id="cover" hidden></div>
 
       <div class="toolbar">
         <form class="searchpill" id="sf">
@@ -99,8 +64,7 @@
         <button class="btn primary" id="searchbtn" type="submit" form="sf">Search</button>
       </div>
 
-      <div class="split">
-        <div class="tree" id="tree">loading…</div>
+      <div class="browse">
         <div>
           <div class="crumb" id="crumb"></div>
           <!-- Explanations that must not cost you the breadcrumb: the error
@@ -139,6 +103,7 @@ async function refreshStatus() {
     ? `${s.files.toLocaleString()} PDFs · ${s.folders.toLocaleString()} folders · ` +
       `${s.embedded.toLocaleString()} searchable`
     : 'mirror is empty';
+  paintCoverage(s);
   // The banner appears only when there is something to act on: an empty mirror,
   // titles still unembedded (so search is partial), or a sync in flight.
   const need = !s.files || s.pending > 0 || s.running;
@@ -153,6 +118,69 @@ async function refreshStatus() {
   }
   if (s.running) setTimeout(refreshStatus, 2000);
   return s;
+}
+
+// Two bars, never one. Books and bytes are the same fraction only if every PDF
+// is the same size, and on this drive they run from 40 KB to hundreds of
+// megabytes -- so a single figure would always be the flattering one.
+function paintCoverage(s) {
+  const el = $('#cover');
+  // An empty mirror has no denominator, and "0 of 0 · 0%" is a worse answer
+  // than the banner already showing, which says how to fix it.
+  el.hidden = !s.files;
+  if (!s.files) return;
+
+  const note = [];
+  if (s.working_files) {
+    note.push(`${s.working_files.toLocaleString()} more in progress ` +
+              `(${bytes(s.working_bytes)}).`);
+  }
+  note.push(`Counted against the local mirror${syncedOn(s.synced_at)}; ` +
+            `anything added to Drive since is not in these totals.`);
+
+  // Two bars, because they answer different questions and diverge hard on this
+  // drive: 15% of the BOOKS are ready while 45% of the BYTES are, since the
+  // books folder holds the large files and the article folders hold most of the
+  // count. One figure would always flatter whichever is further along.
+  el.innerHTML =
+    coverRow('Books ready', s.indexed_files, s.working_files, s.files,
+             `${s.indexed_files.toLocaleString()} of ${s.files.toLocaleString()}`,
+             'books') +
+    coverRow('Size ready', s.indexed_bytes, s.working_bytes, s.total_bytes,
+             `${bytes(s.indexed_bytes)} of ${bytes(s.total_bytes)}`,
+             'size') +
+    `<div class="cnote">${esc(note.join(' '))}</div>`;
+}
+
+// width goes through CSS max() rather than arriving as a rounded percentage:
+// at 0.35% of a 300px bar the fill is one third of a pixel, so the bar renders
+// empty and reads as broken instead of as early. 3px is the narrowest mark
+// that still looks deliberate. A genuine zero stays a genuine zero.
+function coverRow(label, done, working, total, text, kind) {
+  const w = n => `max(${n > 0 ? 3 : 0}px, ${total ? (n / total) * 100 : 0}%)`;
+  // Each row is its own card, and the percentage is the loudest thing on it --
+  // it is the number anyone actually reads, and it was previously the tail of a
+  // sentence after a slash. `kind` colours the pair so the two bars are told
+  // apart at a glance rather than by reading their labels.
+  return `<div class="crow ${kind}">` +
+    `<span class="clab">${label}</span>` +
+    `<span class="cpct">${pct(done, total)}</span>` +
+    `<span class="cbar">` +
+      `<i class="done" style="width:${w(done)}"></i>` +
+      `<i class="work" style="width:${w(working)}"></i>` +
+    `</span>` +
+    `<span class="cnum">${esc(text)}</span></div>`;
+}
+
+// The date, not "17 days ago". A relative figure needs both ends measured by
+// the same clock, and api.py already refuses to subtract a Postgres timestamp
+// from Date.now() for that reason -- a skewed browser would turn a stale
+// mirror into a fresh one, or the reverse.
+function syncedOn(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return `, last synced ${d.toLocaleDateString(undefined,
+            { day: 'numeric', month: 'short', year: 'numeric' })}`;
 }
 
 // Drive access is checked on load and after every failed action, so an expired
@@ -252,65 +280,36 @@ async function children(parent) {
   return fetchJSON(u, {}, 15000);
 }
 
-function folderRow(f) {
-  return `<li data-id="${esc(f.file_id)}">` +
-    `<div class="row"><span class="tw">▶</span>` +
-    `<span class="nm" title="${esc(f.title)}">${esc(f.title)}</span></div></li>`;
-}
-
-async function buildTree() {
-  const p = progress($('#tree'), { label: 'Loading the library', normal: 4 });
-  try {
-    const d = await children(null);
-    p.stop();
-    $('#tree').innerHTML = d.folders.length
-      ? `<ul>${d.folders.map(folderRow).join('')}</ul>`
-      : '<span class="empty">Nothing mirrored yet — press Sync from Drive above.</span>';
-    open(null, d);
-  } catch (err) {
-    p.stop();
-    failed($('#tree'), `Could not load the library — ${err.message || err}`, buildTree);
-  }
-}
-
-// Lazy: a folder's children are fetched the first time it is expanded. Eagerly
-// building 8,000+ nodes would be one enormous query to render a view where all
-// but a handful of rows are collapsed.
-$('#tree').addEventListener('click', async e => {
-  const row = e.target.closest('.row');
-  if (!row) return;
-  const li = row.parentElement;
-  const id = li.dataset.id;
-  document.querySelectorAll('.tree .row.on').forEach(r => r.classList.remove('on'));
-  row.classList.add('on');
-
-  let sub = li.querySelector('ul');
-  if (sub) {
-    const showing = sub.hidden = !sub.hidden;
-    row.querySelector('.tw').textContent = showing ? '▶' : '▼';
-  } else {
-    const d = await children(id);
-    if (d.folders.length) {
-      li.insertAdjacentHTML('beforeend', `<ul>${d.folders.map(folderRow).join('')}</ul>`);
-      row.querySelector('.tw').textContent = '▼';
-    } else {
-      row.querySelector('.tw').textContent = '·';
-    }
-    open(id, d);
-    return;
-  }
-  open(id);
-});
-
 // ------------------------------------------------------------------ files --
 
+// "Ready", not "Indexed" or "Processed".
+//
+// Indexed is jargon -- a reader does not know what an index is here. Processed
+// describes what WE did to the file, which tells them nothing they can act on.
+// Ready answers the question they are actually asking when they scan this
+// column: can I use this book yet? It is also the word the API already uses --
+// list_books returns `ready`, and classroom_book_ids(ready_only=True) is what
+// gates the tutor's scope -- so the page and the server agree.
+//
+// Every row now states its condition, where an un-indexed one used to show
+// nothing at all: the Index button is revealed on hover, so a row that had no
+// badge looked identical to a blank cell until the mouse arrived. State is
+// always visible; the ACTION is what appears on hover, swapping in place.
+// Two states, and the second one is a control rather than a label.
+//
+// It used to be a "Not ready" badge with the Index button stacked underneath at
+// opacity 0, revealed on hover. A transparent element still takes clicks, so
+// clicking what looked like a label really did queue the book -- and the
+// "Queued" confirmation then faded out the moment the pointer left the row. The
+// button worked; it just never looked like it had. Nothing is hidden now.
 function statusCell(f, i) {
   const has = f.indexed;
   const working = has && !TERMINAL.has(f.status) && f.status !== 'done';
   if (working) return `<span class="badge work">${esc(STAGE[f.status] || f.status)}…</span>`;
-  if (has && f.status === 'done') return `<span class="badge good">In your library</span>`;
+  if (has && f.status === 'done') return `<span class="badge good">Ready</span>`;
   if (has) return `<span class="badge bad">${esc(f.status)}</span>`;
-  return `<button class="btn ix" data-i="${i}">Index</button>`;
+  return `<button class="btn ix" data-i="${i}" ` +
+         `title="Download this book and make it searchable">Index</button>`;
 }
 
 // A Drive-style row: icon + name, location, size, then the status or action.
@@ -321,7 +320,9 @@ function statusCell(f, i) {
 // behind its own breadcrumb. See .fwhere in app.css.
 function fileRow(f, i) {
   const where = f.path ? f.path.split(' / ').slice(0, -1).join(' / ') : '';
-  return `<div class="frow">` +
+  // data-file so a status change can be written into THIS row rather than
+  // rebuilding the list around it.
+  return `<div class="frow" data-file="${esc(f.file_id)}">` +
     `<div class="fname">${PDF_ICON}<span class="t" title="${esc(f.title)}">${esc(f.title)}</span></div>` +
     `<div class="fwhere">` +
     (where ? `<span class="p" title="Click to show the full path">${esc(where)}</span>` +
@@ -395,14 +396,52 @@ function render(d, crumb) {
     (d.files.length
       ? d.files.map(fileRow).join('')
       : (folders.length ? '' :
-         '<div class="empty">No PDFs in this folder — open a subfolder on the left.</div>'));
+         '<div class="empty">Nothing in this folder.</div>'));
 
-  // Poll only while something is genuinely mid-pipeline, for the same reason
-  // the queue page does: a finished or failed book never changes on its own.
-  clearTimeout(pollTimer);
-  if (d.files.some(f => f.indexed && f.status !== 'done' && !TERMINAL.has(f.status))) {
-    pollTimer = setTimeout(() => searching ? null : open(current), 3000);
+  schedulePoll(d.files);
+}
+
+// Write new statuses into the rows that have them, leaving everything else
+// alone. Returns false if the LIST has changed -- a different set of files, or
+// a different order -- which is the only case that needs a redraw.
+//
+// The whole list used to be replaced instead: click Index and 1.2s later the
+// page rebuilt under you, then again every 3 seconds while the book worked.
+// Scroll position, hover, an open path -- all of it went, repeatedly, and it
+// read as the page reloading itself.
+function patchStatuses(files) {
+  if (files.length !== shown.length) return false;
+  for (let i = 0; i < files.length; i++) {
+    if (files[i].file_id !== shown[i].file_id) return false;
   }
+  for (let i = 0; i < files.length; i++) {
+    const row = document.querySelector(
+      `#files .frow[data-file="${CSS.escape(files[i].file_id)}"]`);
+    if (!row) return false;
+    const cell = row.querySelector('.fact');
+    const html = statusCell(files[i], i);
+    // Only touch the DOM when the state actually moved: rewriting identical
+    // markup every 3 seconds cancels an in-flight click and drops focus.
+    if (cell && cell.innerHTML !== html) cell.innerHTML = html;
+  }
+  shown = files;
+  return true;
+}
+
+// Poll only while something is genuinely mid-pipeline, for the same reason the
+// queue page does: a finished or failed book never changes on its own.
+function schedulePoll(files) {
+  clearTimeout(pollTimer);
+  const working = files.some(f => f.indexed && f.status !== 'done' && !TERMINAL.has(f.status));
+  if (!working) return;
+  pollTimer = setTimeout(async () => {
+    if (searching) return;
+    try {
+      const d = await children(current);
+      if (!patchStatuses(d.files)) return render(d, d.breadcrumb || []);
+      schedulePoll(d.files);
+    } catch { /* transient: the next click or navigation will resync */ }
+  }, 3000);
 }
 
 async function open(id, prefetched) {
@@ -416,7 +455,7 @@ async function open(id, prefetched) {
     render(d, d.breadcrumb || []);
   } catch (err) {
     p.stop();
-    failed($('#files'), `Could not open that folder — ${err.message || err}`,
+    failInto($('#files'), `Could not open that folder — ${err.message || err}`,
            () => open(id));
   }
 }
@@ -459,14 +498,13 @@ async function queueFolder(btn) {
     const d = await fetchJSON(`/api/drive/folders/${encodeURIComponent(btn.dataset.dir)}/index`,
                               { method: 'POST' }, 30000);
     btn.textContent = d.queued ? `Queued ${d.queued}` : 'Already yours';
-    refreshBooks();
     // Give the "Queued N" a moment to be read, then re-render so any of the
     // queued files visible in this view pick up their working badges.
     if (d.queued && !searching) setTimeout(() => open(current), 2500);
   } catch (err) {
     btn.disabled = false;
     btn.textContent = 'Index folder';
-    failed($('#crumb'), `Could not queue that folder — ${err.message || err}`, null);
+    failInto($('#crumb'), `Could not queue that folder — ${err.message || err}`, null);
   }
 }
 
@@ -501,12 +539,11 @@ $('#crumb').addEventListener('click', async e => {
       body: JSON.stringify({ file_ids: ids })
     }, 30000);
     btn.textContent = d.queued ? `Queued ${d.queued}` : 'Already yours';
-    refreshBooks();
     if (d.queued) setTimeout(runSearch, 2500);
   } catch (err) {
     btn.disabled = false;
     btn.textContent = 'Index all';
-    failed($('#files'), `Could not queue those results — ${err.message || err}`, runSearch);
+    failInto($('#files'), `Could not queue those results — ${err.message || err}`, runSearch);
   }
 });
 
@@ -514,10 +551,12 @@ $('#crumb').addEventListener('click', async e => {
 
 // Failures offer the action that resolves them. A dead end with no way forward
 // is what makes a page feel broken rather than merely slow.
-function failed(el, message, retry) {
-  el.innerHTML = `<div class="failnote">${esc(message)}` +
-    (retry ? `<button class="retry">Try again</button>` : '') + `</div>`;
-  if (retry) el.querySelector('.retry').addEventListener('click', retry);
+// Writes the shared failure block into an element. Renamed from `failed` so it
+// stops shadowing app.js's function of that name: two globals called `failed`
+// with different signatures on different pages is how the classroom pages ended
+// up calling one and getting the other.
+function failInto(el, message, retry) {
+  el.innerHTML = failed(message, null, retry);
 }
 
 async function runSearch() {
@@ -563,7 +602,7 @@ async function runSearch() {
       : '<div class="empty">Nothing matched. Try fewer or more general words.</div>';
   } catch (err) {
     p.stop();
-    failed($('#files'), `Search failed after ${p.seconds()}s — ${err.message || err}`,
+    failInto($('#files'), `Search failed after ${p.seconds()}s — ${err.message || err}`,
            runSearch);
   }
 }
@@ -588,6 +627,21 @@ $('#files').addEventListener('click', async e => {
   const btn = e.target.closest('.ix');
   if (!btn) return;
   const f = shown[Number(btn.dataset.i)];
+
+  // Asked before it happens, because it is not instant and it is not free:
+  // a download from Drive, a full text extraction, and Voyage tokens for every
+  // passage. The size is the part that tells you how long to expect.
+  const ok = await confirmDialog({
+    title: 'Process this book?',
+    note: `“${f.title}”${f.size_mb != null ? ` · ${mb(f.size_mb)}` : ''}\n\n`
+        + 'It will be downloaded from Drive, read page by page and split into '
+        + 'passages, then embedded so it can be searched. A large book takes a '
+        + 'few minutes; you can watch it on the Processing page.',
+    confirm: 'Index it',
+    danger: false,
+  });
+  if (!ok) return;
+
   btn.disabled = true;
   btn.textContent = 'Queueing…';
   try {
@@ -597,59 +651,47 @@ $('#files').addEventListener('click', async e => {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ file_ids: [f.file_id] })
     }, 30000);
-    btn.textContent = d.added.length ? 'Queued' : 'Already yours';
-    refreshBooks();
-    if (!searching) setTimeout(() => open(current), 1200);
+    // The pill becomes the status, in place. Nothing else on the page moves.
+    const cell = btn.closest('.fact');
+    if (cell) {
+      cell.innerHTML = d.added.length
+        ? `<span class="badge work">Queued</span>`
+        : `<span class="badge good">Ready</span>`;
+    }
+    if (d.added.length) {
+      f.indexed = true;
+      f.status = d.added[0].status;
+      // Start watching THIS row rather than reloading the folder to find out
+      // what we already know.
+      if (!searching) schedulePoll(shown);
+    }
   } catch (err) {
     btn.disabled = false;
     btn.textContent = 'Index';
-    failed($('#crumb'), `Could not queue that book — ${err.message || err}`, null);
+    failInto($('#crumb'), `Could not queue that book — ${err.message || err}`, null);
     // Most likely cause by far, and the one with a fix the user can act on.
     refreshAuth();
   }
 });
 
-// ------------------------------------------------------------- librarian --
-// Same SSE contract as /api/research: `data: {json}\n\n` frames off a reader.
-// Streamed because the agent runs several Drive searches over tens of seconds,
-// and showing which ones it chose is what separates a shortlist you can trust
-// from a list of plausible-looking titles.
-
-$('#librarianbtn').addEventListener('click', () => {
-  const el = $('#librarian');
-  el.hidden = !el.hidden;
-  $('#librarianbtn').classList.toggle('on', !el.hidden);
-  if (!el.hidden) $('#bq').focus();
-});
-
-// toolLine / resultLine / recCard / runLibrarian / wireIndexButtons all live
-// in app.js now -- the Bible page runs the same agent on a verse, and two copies
-// of this rendering is the one that drifts.
-
-let recs = [];
-
-$('#bf').addEventListener('submit', async e => {
-  e.preventDefault();
-  const interest = $('#bq').value.trim();
-  if (!interest) return;
-  $('#bgo').disabled = true;
-  recs = [];
-  try {
-    recs = await runLibrarian(
-      interest, $('#btrail'), $('#bout'), Number($('#bn').value));
-  } catch (err) {
-    $('#bout').innerHTML = `<div class="berr">${esc(String(err.message || err))}</div>`;
-  } finally {
-    $('#bgo').disabled = false;
-  }
-});
-
-wireIndexButtons($('#bout'), i => recs[i]);
 
 refreshAuth();
 refreshStatus();
-buildTree();
-refreshBooks();
+paintLibraryFoot();
+// The root listing. buildTree() used to fetch this as a side effect of drawing
+// the folder column; with the column gone, nothing opened the drive and the
+// page loaded to an empty list.
+open('');
+
+// Arriving from a classroom's "Jump to Drive": land on the book that was asked
+// for rather than at the root of a 57,000-file mirror. The dialog cannot index
+// -- that decision belongs here, next to the coverage bars that say what it
+// costs -- so it hands the title over and this page finds it.
+const _jump = new URLSearchParams(location.search).get('q');
+if (_jump) {
+  $('#sq').value = _jump;
+  runSearch();
+}
 </script>
 </body>
 </html>

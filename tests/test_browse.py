@@ -10,6 +10,8 @@ scripted for the same reason (see tests/test_research.py).
 import json
 import types
 
+import anthropic
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -506,6 +508,102 @@ def test_a_request_without_a_count_keeps_the_old_behaviour(browse_web):
 
     assert r.status_code == 200
     assert browse_web.counts == [browse_loop.DEFAULT_COUNT]
+
+
+def _anthropic_error(cls, status, kind, message):
+    """A real SDK exception, built the way the SDK builds one from a response.
+
+    Constructed rather than raised by a live call for the obvious reason, but
+    from the genuine class and the genuine wire body -- `_failure_message` reads
+    `exc.body` and `exc.type`, so a hand-rolled stand-in would test the stub."""
+    body = {"type": "error", "error": {"type": kind, "message": message}}
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    return cls(
+        f"Error code: {status} - {body}",
+        response=httpx.Response(status, request=request, json=body),
+        body=body,
+    )
+
+
+BALANCE = _anthropic_error(
+    anthropic.BadRequestError, 400, "invalid_request_error",
+    "Your credit balance is too low to access the Anthropic API. Please go to "
+    "Plans & Billing to upgrade or purchase credits.",
+)
+
+
+def _browse_frames(browse_web, monkeypatch, exc):
+    """The SSE frames the route emits when the agent raises `exc`."""
+    def boom(interest, conn, *, count):
+        raise exc
+        yield  # unreachable -- keeps this a generator function
+
+    monkeypatch.setattr(api.browse_loop, "run", boom)
+    r = browse_web.post("/api/browse", json={"interest": "paul"})
+    assert r.status_code == 200, "headers are already out; a 500 is not available"
+    return [
+        json.loads(line[6:])
+        for line in r.text.split("\n\n") if line.startswith("data: ")
+    ]
+
+
+def test_an_empty_balance_is_reported_as_an_empty_balance(browse_web, monkeypatch):
+    """The failure this whole path exists for. For a week every browse run died
+    1.2s in on a flat Anthropic balance, and the page said "the connection ended
+    before the run finished -- the server may have restarted": a billing problem
+    presented as a server problem, so nobody looked at billing.
+
+    The reason has to reach the reader as words they can act on, which means the
+    route must not forward the SDK's dict repr and must not stay silent."""
+    frames = _browse_frames(browse_web, monkeypatch, BALANCE)
+
+    assert [f["type"] for f in frames] == ["error"]
+    message = frames[0]["message"]
+    assert "out of credit" in message
+    assert "console.anthropic.com" in message
+    # The shape that caused the confusion: a dict repr, or the bare word "400".
+    assert "{" not in message and "Error code" not in message
+
+
+def test_a_failed_run_does_not_end_with_the_terminal_event(browse_web, monkeypatch):
+    """A run that died did NOT finish, and saying otherwise would leave the page
+    rendering an empty shortlist as a real answer. The error frame is what makes
+    the missing 'done' legible -- app.js reads the two together."""
+    frames = _browse_frames(browse_web, monkeypatch, BALANCE)
+
+    assert not any(f["type"] == "done" for f in frames)
+
+
+def test_a_failed_run_is_logged_where_someone_can_find_it_later(
+        browse_web, monkeypatch, caplog):
+    """The reason the outage was invisible: the only copy of it was in a
+    browser. A week of Cloud Run logs showed 200s and nothing else."""
+    with caplog.at_level("ERROR", logger="library_rag.web"):
+        _browse_frames(browse_web, monkeypatch, BALANCE)
+
+    assert "credit balance" in caplog.text, "the raw error belongs in the logs"
+
+
+@pytest.mark.parametrize("exc, expected", [
+    (BALANCE, "out of credit"),
+    (_anthropic_error(anthropic.AuthenticationError, 401, "authentication_error",
+                      "invalid x-api-key"), "ANTHROPIC_API_KEY"),
+    (_anthropic_error(anthropic.RateLimitError, 429, "rate_limit_error",
+                      "rate limit exceeded"), "wait a moment"),
+    (_anthropic_error(anthropic.NotFoundError, 404, "not_found_error",
+                      "model: claude-opus-5"), "model: claude-opus-5"),
+])
+def test_each_upstream_refusal_says_which_one_it_was(exc, expected):
+    """Four failures a reader would act on in four different ways -- top up,
+    fix a key, wait, fix a model id. Collapsing them into one sentence is how
+    the wrong one gets acted on."""
+    assert expected in api._failure_message(exc)
+
+
+def test_an_unrecognised_failure_keeps_its_type_name():
+    """The fallback has to stay useful. `str(KeyError("run_id"))` is `'run_id'`
+    -- quoted, contextless, and easily read as a typo rather than a fault."""
+    assert api._failure_message(KeyError("run_id")) == "KeyError: 'run_id'"
 
 
 def test_a_drive_auth_failure_reports_how_to_fix_it(web, monkeypatch):

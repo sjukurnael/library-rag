@@ -62,9 +62,23 @@ def _load_credentials():
         return creds
 
     if creds and creds.expired and creds.refresh_token:
+        # Serialised, because Google rotates the refresh token when it is spent:
+        # concurrent workers presenting the same one all lose but the first.
+        # Re-read INSIDE the lock -- whoever held it before us has almost
+        # certainly just saved a valid token, and refreshing again would spend a
+        # rotation for nothing and hand the next waiter a dead grant.
         try:
-            creds.refresh(Request())
-            store.save_token(TOKEN_FILE, json.loads(creds.to_json()), "refresh")
+            with store.refresh_lock():
+                fresh = store.load_token(TOKEN_FILE)
+                if fresh:
+                    try:
+                        creds = Credentials.from_authorized_user_info(fresh, SCOPES)
+                    except Exception:  # noqa: BLE001 -- fall through to refresh
+                        pass
+                if creds.valid:
+                    return creds
+                creds.refresh(Request())
+                store.save_token(TOKEN_FILE, json.loads(creds.to_json()), "refresh")
             return creds
         except Exception as e:
             raise DriveAuthError(

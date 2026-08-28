@@ -5,7 +5,7 @@ import pytest
 
 from library_rag import config, db
 from library_rag.pipeline import chunking, embed
-from tests.conftest import deterministic_vector
+from tests.conftest import deterministic_vector, lexical_vector, make_book
 
 
 def _seed_book(conn, status="chunked"):
@@ -130,3 +130,55 @@ def test_a_book_that_stops_extracting_drops_its_old_chunks(conn):
     assert conn.execute(
         "SELECT count(*) FROM chunks WHERE book_id = %s", (book_id,)
     ).fetchone()[0] == 0, "stale chunks still answer searches for a failed book"
+
+
+def test_finishing_a_book_also_builds_its_topic_profile(conn, monkeypatch):
+    """A book with chunks but no topic vectors is searchable by the tutor and
+    INVISIBLE to the librarian: find_books reads book_topic_vectors, so the book
+    simply never comes up and nothing anywhere reports an error. Three books sat
+    like that until a coverage count caught it.
+
+    So the profile is part of finishing, not a separate backfill."""
+    from library_rag import ingest
+    from library_rag.pipeline import embed as embed_mod
+
+    monkeypatch.setattr(embed_mod, "embed_documents",
+                        lambda texts, client: ([lexical_vector(t) for t in texts], 0))
+    book = make_book(conn, "profiled", "A Book About The Covenant", status="discovered")
+    md = "\n\n".join(
+        f"## Chapter {i}\n\nThe covenant with Abraham and its later readers, part {i}."
+        for i in range(1, 9))
+
+    n, _ = ingest.chunk_embed_and_finish(conn, book, md, object())
+    assert n > 0
+
+    vectors = conn.execute(
+        "SELECT count(*) FROM book_topic_vectors WHERE book_id = %s", (book,)
+    ).fetchone()[0]
+    assert vectors > 0, "the book finished ingestion invisible to the librarian"
+    assert conn.execute("SELECT status::text FROM books WHERE id = %s",
+                        (book,)).fetchone()[0] == "done"
+
+
+def test_a_failed_profile_still_leaves_a_searchable_book(conn, monkeypatch):
+    """The chunks are committed before the profile is attempted. A profile that
+    cannot be built must leave a working book behind rather than roll one back:
+    searchable-but-undiscoverable is a smaller problem than not indexed at all."""
+    from library_rag import ingest
+    from library_rag.pipeline import embed as embed_mod
+    from library_rag.pipeline import profile as profile_mod
+
+    monkeypatch.setattr(embed_mod, "embed_documents",
+                        lambda texts, client: ([lexical_vector(t) for t in texts], 0))
+    monkeypatch.setattr(profile_mod, "build",
+                        lambda conn_, bid: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    book = make_book(conn, "halfway", "Half Profiled", status="discovered")
+    n, _ = ingest.chunk_embed_and_finish(
+        conn, book, "## One\n\nSome text about the covenant.", object())
+
+    assert n > 0
+    assert conn.execute("SELECT status::text FROM books WHERE id = %s",
+                        (book,)).fetchone()[0] == "done", "a profile failure must not fail the book"
+    assert conn.execute("SELECT count(*) FROM chunks WHERE book_id = %s",
+                        (book,)).fetchone()[0] == n

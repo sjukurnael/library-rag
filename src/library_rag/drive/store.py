@@ -27,6 +27,7 @@ per user: everyone with access to this app is looking at the SAME Drive folder,
 so a second token would add another person's whole-Drive read access to the
 blast radius while granting the app nothing it could not already reach.
 """
+import contextlib
 import json
 import os
 
@@ -173,3 +174,59 @@ def clear_token() -> None:
 # `config` is imported for symmetry with the rest of the package and to keep the
 # module importable in isolation; the database URL it holds is read by db.
 _ = config
+
+
+# Serialises token refresh across every process that shares this token.
+#
+# Google rotates the refresh token when it is used, so a refresh is a
+# read-modify-write on a value only one caller may hold at a time. Ten ingest
+# workers starting together all read the same expired token, all present the
+# same refresh_token, and Google honours exactly one -- the other nine get
+# "invalid_grant: Token has been expired or revoked" and mark a perfectly good
+# book failed. Measured: two books lost per stampede, and the access token
+# expires hourly, so a 36-hour run would do this three dozen times.
+#
+# A Postgres advisory lock rather than a file lock, because the token itself
+# already lives in Postgres (drive_credentials) and the lock has to cover a
+# laptop and a Cloud Run container equally -- a flock on a local path would
+# protect neither from the other. Session-scoped, so closing the connection
+# releases it even if the process dies mid-refresh.
+_REFRESH_LOCK_KEY = 0x44524956  # "DRIV"
+
+
+@contextlib.contextmanager
+def refresh_lock():
+    """Hold the cross-process Drive-refresh lock, if a database is reachable.
+
+    Degrades to a no-op when there is no database or no drive_credentials table.
+    That is the single-process, file-backed case, which cannot have the race
+    this exists to prevent -- and failing closed would mean a laptop with no
+    Postgres could not talk to Drive at all.
+
+    Exactly ONE yield, on every path. The obvious shape for this --
+    try: ... yield ... except Exception: yield -- is wrong, because an exception
+    raised by the CALLER's body is thrown back in at the yield, caught by that
+    except, and answered with a second yield. Python reports the result as
+    "generator didn't stop after throw()", which then surfaces as a Drive auth
+    failure and marks a good book failed, hiding whatever actually went wrong.
+    ExitStack keeps acquisition failures separate from body failures.
+    """
+    with contextlib.ExitStack() as stack:
+        conn = None
+        try:
+            from library_rag import db
+
+            conn = stack.enter_context(db.get_conn())
+            if not _table_exists(conn):
+                conn = None
+        except Exception:  # noqa: BLE001 -- no database is a normal answer here
+            conn = None
+
+        if conn is not None:
+            conn.execute("SELECT pg_advisory_lock(%s)", (_REFRESH_LOCK_KEY,))
+            stack.callback(
+                lambda: conn.execute(
+                    "SELECT pg_advisory_unlock(%s)", (_REFRESH_LOCK_KEY,)
+                )
+            )
+        yield

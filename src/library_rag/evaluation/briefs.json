@@ -1,0 +1,49 @@
+{
+  "_README": [
+    "Study briefs for the librarian evaluation -- what a reader SAYS before they",
+    "know which books they need, not a question with one right answer.",
+    "",
+    "There is deliberately no ground truth. questions.json pins each question to",
+    "(book, page range), which worked at 203 books and stopped working at 8,680:",
+    "'John' resolves to 424 titles, and hundreds of books legitimately answer 'what",
+    "does it mean to seek first the kingdom of God?'. Curated ground truth expires",
+    "as a corpus grows, and expires silently.",
+    "",
+    "SCORED AGAINST THE ABSENT BRIEFS BELOW, not against random books. Scoring",
+    "against a random sample was the first attempt and it was a tautology: nearest-",
+    "neighbour search returns nearer-than-random results by construction, so every",
+    "brief passed 20/20 -- including 'quantum chromodynamics' and 'optimising the",
+    "PostgreSQL query planner', against a theology library.",
+    "",
+    "The absent briefs fix that. They name subjects this corpus genuinely does not",
+    "hold, so the nearest thing they can reach marks the floor: whatever distance a",
+    "nonsense query achieves is what 'no real match' looks like in this embedding",
+    "space. A real recommendation has to beat it. The bar is recomputed on every",
+    "run, so it follows the corpus and survives a change of embedding model.",
+    "",
+    "Briefs were written against the corpus's actual subject matter. A brief on a",
+    "topic the library does not hold measures nothing except that absence -- which",
+    "is exactly what the absent list is for."
+  ],
+  "briefs": [
+    "I'm studying the atonement -- why Christ's death saves",
+    "The composition and editing of the Hebrew Psalter",
+    "Paul's imprisonment and the prison epistles",
+    "The historical Jesus and the criteria of authenticity",
+    "Baptism in early Judaism and early Christianity",
+    "The doctrine of the Holy Spirit and spiritual gifts",
+    "How the New Testament writers use the Old Testament",
+    "Archaeology of Iron Age Israel and the Levant",
+    "The Lord's Prayer and prayer in the early church",
+    "Wisdom literature -- Proverbs, Job and Ecclesiastes",
+    "Old Testament prophecy and the Day of the Lord",
+    "Justification by faith in Paul and the Reformation"
+  ],
+  "absent": [
+    "Quantum chromodynamics and lattice gauge theory",
+    "Eighteenth-century Japanese woodblock printing technique",
+    "Optimising PostgreSQL query planner statistics",
+    "Marine biology of deep-sea hydrothermal vent communities",
+    "Formula One aerodynamics and ground effect"
+  ]
+}

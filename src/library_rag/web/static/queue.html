@@ -13,25 +13,19 @@
     <div class="brand"><span class="logo"></span>Library</div>
     <nav class="snav">
       <a href="/">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-        Chat</a>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M12 7v10"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Classrooms</a>
       <a href="/library">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         Drive</a>
       <a href="/queue" class="on">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         Processing</a>
-      <a href="/bible">
+      <!--bible--><a href="/bible">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-        Bible</a>
+        Bible</a><!--/bible-->
     </nav>
-    <div class="sidebooks">
-      <button class="sidehead" id="bookstoggle" aria-expanded="false">
-        <span class="chev">▸</span> In the index
-        <span class="count" id="bookcount"></span>
-      </button>
-      <ul id="navbooks" hidden></ul>
-    </div>
+    <div class="sidespace"></div>
     <div class="sideauth" id="sideauth" hidden></div>
     <div class="sidefoot" id="sidefoot">loading…</div>
   </aside>
@@ -57,7 +51,7 @@
         <div class="tile bad"><div class="n" id="t-failed">–</div><div class="l">Need attention</div></div>
       </div>
 
-      <div class="sectionhead">Queue</div>
+      <div class="sectionhead" id="queuehead">Queue</div>
       <div class="runs" id="runs"><div class="empty">loading…</div></div>
 
       <div class="sectionhead">Indexed</div>
@@ -173,6 +167,83 @@ function doneRow(b) {
       title="Remove this book">&times;</button></div></div>`;
 }
 
+// Clearing the stopped books. Only `failed` and `needs_ocr` -- a stuck book
+// has no passages, so nothing searchable is lost, and the PDFs stay in the
+// Drive mirror and can be indexed again. The server enforces that; this is just
+// the way to ask for it.
+const SPANS = [
+  ['0', 'Everything stopped'],
+  ['24', 'Older than 24 hours'],
+  ['168', 'Older than 7 days'],
+  ['720', 'Older than 30 days'],
+];
+
+async function countStuck(hours) {
+  const q = hours ? `?older_than_hours=${hours}` : '';
+  try { return (await fetchJSON(`/api/books/stuck${q}`, {}, 15000)).total; }
+  catch { return null; }
+}
+
+async function clearStuck() {
+  const r = await openDialog({
+    title: 'Clear stopped books',
+    note: 'These are books that failed or need OCR. They have no passages, so '
+        + 'nothing searchable is removed — the PDFs stay in your Drive and can '
+        + 'be indexed again later.',
+    confirm: 'Clear',
+    danger: true,
+    fields: [{ name: 'hours', label: 'How far back', choices: SPANS, value: '0',
+               hint: 'Counting…' }],
+    // The count is the whole confirmation. A number you have not seen is not
+    // something you can agree to.
+    onChange: async (v, wrap) => {
+      const hint = wrap.querySelector('.hint[data-for="hours"]');
+      if (!hint) return;
+      const n = await countStuck(Number(v.hours));
+      if (!wrap.isConnected) return;   // dialog closed while we were counting
+      hint.textContent = n === null ? 'Could not count them.'
+        : n === 0 ? 'Nothing matches — nothing will be removed.'
+        : `${n.toLocaleString()} book(s) will be removed.`;
+    },
+  });
+  if (!r) return;
+  const hours = Number(r.hours) || null;
+  try {
+    const out = await fetchJSON('/api/books/stuck/clear', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ older_than_hours: hours }),
+    }, 120000);
+    booksLimit = 50;
+    await refreshBooks();
+    await openDialog({
+      title: `Removed ${out.deleted.toLocaleString()} book(s)`,
+      note: out.removed_files
+        ? `${out.removed_files} file(s) were deleted with them.`
+        : 'No stored files needed removing.',
+      fields: [], confirm: 'OK', cancel: 'Close',
+    });
+  } catch (e) {
+    // A timeout says nothing about whether the SERVER finished. This one had
+    // not: 353 books took over two minutes, the browser gave up at 120s, and
+    // the page announced a failure for a deletion that completed a minute
+    // later. For a destructive call, "the request failed" and "the work did
+    // not happen" are different claims and only the second one matters -- so
+    // ask what is actually left rather than reporting the request.
+    const left = await countStuck(hours);
+    await refreshBooks();
+    await openDialog({
+      title: left === 0 ? 'Cleared' : 'Could not finish clearing',
+      note: left === null
+        ? `${e.message || e}\n\nOpen the Processing page to see what remains.`
+        : left === 0
+          ? 'The request did not come back in time, but the books were removed.'
+          : `${e.message || e}\n\n${left.toLocaleString()} still stopped. `
+            + 'Nothing else was touched — run it again to finish.',
+      fields: [], confirm: 'OK', cancel: 'Close',
+    });
+  }
+}
+
 onBooks((d, err) => {
   if (err) { $('#qsub').textContent = 'server unreachable'; return; }
   const pending = d.pending || [];
@@ -180,21 +251,41 @@ onBooks((d, err) => {
   const stuck = pending.filter(b => TERMINAL.has(b.status));
 
   $('#t-active').textContent = active.length;
-  $('#t-done').textContent = d.books.length;
+  $('#t-done').textContent = d.total_books.toLocaleString();
   $('#t-chunks').textContent = d.total_chunks.toLocaleString();
   $('#t-failed').textContent = stuck.length;
   $('#qsub').textContent = active.length
     ? `${active.length} book(s) in flight — updates every 3s`
     : 'nothing is processing right now';
 
+  // The clear control lives on the QUEUE heading, beside the list it empties.
+  const qh = $('#queuehead');
+  if (qh) {
+    qh.innerHTML = 'Queue' + (stuck.length
+      ? ` <button class="btn clearstuck" id="clearstuck">Clear ${stuck.length} stopped</button>`
+      : '');
+    const cb = $('#clearstuck');
+    if (cb) cb.onclick = clearStuck;
+  }
+
   $('#runs').innerHTML = pending.length
     ? pending.map(pendingRow).join('')
     : `<div class="empty">The queue is empty. Upload a PDF here, or pick a book
        on the <a href="/library">Drive page</a> — it will appear here the moment
        it is queued.</div>`;
-  $('#doneruns').innerHTML = d.books.length
-    ? d.books.map(doneRow).join('')
-    : `<div class="empty">Nothing indexed yet.</div>`;
+  // One page of a list 8,679 long. The count above is the real total; this is
+  // a window onto it, and the button asks for a wider one.
+  const more = d.total_books - d.books.length;
+  $('#doneruns').innerHTML = (d.books.length
+      ? d.books.map(doneRow).join('')
+      : `<div class="empty">Nothing indexed yet.</div>`)
+    + (more > 0
+        ? `<div class="morerow"><button class="btn" id="morebooks">Show 50 more</button>
+             <span class="sub">${d.books.length.toLocaleString()} of
+             ${d.total_books.toLocaleString()}</span></div>`
+        : '');
+  const btn = $('#morebooks');
+  if (btn) btn.onclick = () => { btn.disabled = true; btn.textContent = 'Loading…'; showMoreBooks(); };
 });
 
 $('#file').addEventListener('change', async e => {

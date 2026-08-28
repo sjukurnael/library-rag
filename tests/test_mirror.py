@@ -87,10 +87,28 @@ TREE = [
 ]
 
 
+# Derived, not typed out: the coverage assertions below are about a fraction,
+# and a hand-copied denominator would let a change to TREE make them pass while
+# measuring the wrong whole.
+TOTAL_BYTES = sum(int(i["size"]) for i in TREE if "size" in i)
+
+
 @pytest.fixture
 def synced(conn):
     mirror.sync(conn, FakeService(TREE))
     return conn
+
+
+def _size(fid: str) -> int:
+    return next(int(i["size"]) for i in TREE if i["id"] == fid)
+
+
+def _indexed(conn, fid: str, status: str = "done") -> None:
+    """Put one mirror PDF into `books` at a given stage of the pipeline."""
+    db.upsert_book(conn, fid, f"{fid}.pdf", f"md5-{fid}", _size(fid),
+                   source="drive")
+    db.set_status(conn, db.fetch_book_by_source_id(conn, fid)["id"], status)
+    conn.commit()
 
 
 # ------------------------------------------------------------------- sync --
@@ -400,8 +418,84 @@ def test_children_route_with_no_parent_returns_roots(web):
 def test_sync_status_route_reports_pending_titles(web, synced):
     s = web.get("/api/drive/sync").json()
     assert s == {"folders": 4, "files": 3, "embedded": 0, "pending": 3,
+                 "total_bytes": TOTAL_BYTES, "indexed_files": 0,
+                 "indexed_bytes": 0, "working_files": 0, "working_bytes": 0,
                  "synced_at": s["synced_at"]}
     assert s["synced_at"] is not None
+
+
+# ------------------------------------------------------------- coverage --
+#
+# What fraction of the drive is actually searchable, by count and by bytes.
+# Both are reported raw: the numerator, the denominator and nothing rounded,
+# so the browser can say "<0.1%" without the server having decided that for it.
+
+def test_coverage_counts_a_finished_book_by_count_and_by_bytes(synced):
+    _indexed(synced, "pdf2")
+    s = db.drive_sync_status(synced)
+    assert (s["indexed_files"], s["files"]) == (1, 3)
+    assert (s["indexed_bytes"], s["total_bytes"]) == (_size("pdf2"), TOTAL_BYTES)
+
+
+def test_coverage_is_not_the_same_fraction_by_count_as_by_bytes(synced):
+    """The reason there are two numbers at all. pdf1 is 3 MB of an 18 MB drive:
+    a third of the books and a sixth of the bytes, and either one alone would
+    be a flattering account of the other."""
+    _indexed(synced, "pdf1")
+    s = db.drive_sync_status(synced)
+    assert s["indexed_files"] / s["files"] == pytest.approx(1 / 3)
+    assert s["indexed_bytes"] / s["total_bytes"] == pytest.approx(0.169, abs=0.01)
+
+
+@pytest.mark.parametrize("status", ["discovered", "downloaded", "extracted",
+                                    "chunked", "failed", "needs_ocr"])
+def test_an_unfinished_book_is_working_not_indexed(synced, status):
+    """A row in `books` is not coverage. A book that failed, or is waiting on
+    OCR, cannot be searched, and counting it would overstate the one number
+    whose entire job is not to."""
+    _indexed(synced, "pdf3", status)
+    s = db.drive_sync_status(synced)
+    assert (s["indexed_files"], s["indexed_bytes"]) == (0, 0)
+    assert (s["working_files"], s["working_bytes"]) == (1, _size("pdf3"))
+
+
+def test_indexed_and_working_never_overlap(synced):
+    _indexed(synced, "pdf1")
+    _indexed(synced, "pdf2", "failed")
+    s = db.drive_sync_status(synced)
+    assert s["indexed_files"] + s["working_files"] == 2
+    assert s["indexed_bytes"] + s["working_bytes"] == _size("pdf1") + _size("pdf2")
+
+
+def test_uploads_are_not_a_fraction_of_drive(synced):
+    """An uploaded book is not in Drive, so it cannot be part of a percentage
+    of it -- even when its source_id collides with a mirror file id."""
+    db.upsert_book(synced, "pdf2", "Some Upload.pdf", "m", 999, source="upload")
+    db.set_status(synced, db.fetch_book_by_source_id(synced, "pdf2")["id"], "done")
+    s = db.drive_sync_status(synced)
+    assert (s["indexed_files"], s["indexed_bytes"]) == (0, 0)
+
+
+def test_a_pdf_drive_reported_no_size_for_still_counts_as_a_book(synced):
+    """Drive omits `size` on some files. That is a missing byte figure, not a
+    missing book: the count must still move, and the byte total must not become
+    NULL and take the whole percentage with it."""
+    synced.execute(
+        "UPDATE drive_files SET size_bytes = NULL WHERE file_id = 'pdf2'")
+    _indexed(synced, "pdf2")
+    s = db.drive_sync_status(synced)
+    assert s["indexed_files"] == 1
+    assert s["indexed_bytes"] == 0
+    assert s["total_bytes"] == TOTAL_BYTES - _size("pdf2")
+
+
+def test_an_empty_mirror_reports_zeroes_rather_than_nulls(conn):
+    """Nothing synced yet. Every field has to be a number the browser can
+    divide by -- a NULL total would render as "NaN%" on the first visit."""
+    s = db.drive_sync_status(conn)
+    assert (s["files"], s["total_bytes"], s["indexed_files"],
+            s["indexed_bytes"], s["working_files"], s["working_bytes"]) \
+        == (0, 0, 0, 0, 0, 0)
 
 
 def test_search_route_rejects_an_empty_query(web):

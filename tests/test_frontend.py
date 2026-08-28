@@ -43,3 +43,12 @@ def test_both_pages_boot_with_their_shared_script():
     the script. Nothing else in the suite sees it -- GET / still returns 200,
     and a missing dependency is not a syntax error. It shipped exactly once."""
     _run("pages_boot.mjs")
+
+
+@needs_node
+def test_librarian_buttons_follow_drive_status():
+    """`_driveOk` gates every librarian action button, and it is only ever read.
+    Nothing assigning it leaves the buttons permanently disabled against a
+    healthy server -- no error, no blank page, just dead controls blaming
+    Drive. pages_boot.mjs cannot see it; it only asks whether the script runs."""
+    _run("drive_gate.mjs")

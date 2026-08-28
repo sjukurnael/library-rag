@@ -1,0 +1,781 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library — classroom</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <a class="brand" href="/"><span class="logo"></span>Library</a>
+
+    <nav class="snav">
+      <a href="/" class="on">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M12 7v10"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Classrooms</a>
+      <a href="/library">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        Drive</a>
+      <a href="/queue">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Processing</a>
+      <!--bible--><a href="/bible">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Bible</a><!--/bible-->
+    </nav>
+
+    <div class="sidelabel">Classrooms</div>
+    <ul class="roomlist" id="roomlist"></ul>
+
+    <div class="sideauth" id="sideauth" hidden></div>
+    <div class="sidefoot" id="sidefoot">loading…</div>
+  </aside>
+  <div class="page">
+    <div class="roomhead">
+      <h1 id="title">&nbsp;</h1>
+      <span class="meta" id="headmeta"></span>
+      <span class="grow"></span>
+      <button class="btn" id="rename">Rename</button>
+      <button class="btn" id="railtoggle" aria-pressed="true">Books</button>
+    </div>
+
+    <div class="roomsplit">
+      <div class="chatcol">
+        <div class="chatinner">
+
+
+          <div class="msgs" id="msgs"></div>
+
+          <div class="composer">
+            <form id="f">
+              <input id="q" autocomplete="off" placeholder="Ask about these books…">
+              <button class="send" id="go" type="submit" title="Ask">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+              </button>
+            </form>
+            <div class="note">The tutor answers only from the books on this shelf.</div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- The shelf. A rail, not an overlay: checking what an answer is made
+           of is the normal case, not an interruption. -->
+      <aside class="rail" id="rail">
+        <div class="railhead">
+          <span class="t">Bookshelf</span>
+          <button class="x" id="railclose" title="Hide">&times;</button>
+        </div>
+        <!-- Both ways of putting a book here, together, above the books they
+             put there. The librarian belongs with them rather than over the
+             conversation: it fills the shelf, it does not answer from it. -->
+        <div class="railadd">
+          <button class="btn asklib" id="asklib">
+            <span class="libmark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5c.36 4.32 2.83 6.79 7.15 7.15-4.32.36-6.79 2.83-7.15 7.15-.36-4.32-2.83-6.79-7.15-7.15 4.32-.36 6.79-2.83 7.15-7.15z"/><path d="M18.6 15.2c.16 1.9 1.25 2.99 3.15 3.15-1.9.16-2.99 1.25-3.15 3.15-.16-1.9-1.25-2.99-3.15-3.15 1.9-.16 2.99-1.25 3.15-3.15z"/></svg>
+            </span>
+            Ask the librarian</button>
+          <button class="btn" id="addbooks">Add books from Drive</button>
+        </div>
+        <div class="railbody" id="shelf"></div>
+      </aside>
+    </div>
+  </div>
+</div>
+
+<!-- The librarian. A dialog because it is an errand: you go and ask, it comes
+     back with books, you put the ones you want on the shelf and close it. -->
+<div class="modal" id="libmodal" hidden>
+  <div class="modalbox lib">
+    <div class="modalhead">
+      <span class="libmark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5c.36 4.32 2.83 6.79 7.15 7.15-4.32.36-6.79 2.83-7.15 7.15-.36-4.32-2.83-6.79-7.15-7.15 4.32-.36 6.79-2.83 7.15-7.15z"/><path d="M18.6 15.2c.16 1.9 1.25 2.99 3.15 3.15-1.9.16-2.99 1.25-3.15 3.15-.16-1.9-1.25-2.99-3.15-3.15 1.9-.16 2.99-1.25 3.15-3.15z"/></svg>
+      </span>
+      <span class="t">Ask the librarian</span>
+      <button class="x" id="libclose" title="Close">&times;</button>
+    </div>
+    <div class="modalbody">
+      <p class="say">Describe what you want to study. The librarian reads the
+        whole library, opens what looks relevant, and comes back with the
+        passage that justifies each book.</p>
+      <form class="libform" id="lf" novalidate>
+        <input id="lq" autocomplete="off"
+               placeholder="e.g. the atonement — why Christ's death saves">
+        <!-- How many books to come back with, and therefore how long to take:
+             the librarian opens each candidate before recommending it, so the
+             count is the main thing driving the run. Measured on the same
+             brief: 12 books took 203s, 5 took 116s. A ceiling, not a promise --
+             it returns fewer when the library is thin. -->
+        <label class="bcount" for="lc">up to
+          <input id="lc" type="number" min="1" max="20" step="1" value="12"
+                 inputmode="numeric"> books</label>
+        <button class="btn primary" id="lgo" type="submit">Find books</button>
+      </form>
+      <div class="liberr" id="lcerr" hidden></div>
+      <div id="ltrail"></div>
+      <div id="lout"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Add books. A dialog, so the conversation and the shelf stay where they were. -->
+<div class="modal" id="addmodal" hidden>
+  <div class="modalbox">
+    <div class="modalhead">
+      <span class="t">Add books from Drive</span>
+      <button class="x" id="addclose" title="Close">&times;</button>
+    </div>
+    <div class="modalbody">
+      <form id="sf" class="searchpill">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <input id="sq" autocomplete="off" placeholder="Search titles across the drive…">
+      </form>
+      <div id="crumb" class="crumb"></div>
+      <div id="files"></div>
+    </div>
+  </div>
+</div>
+
+<!-- The citation panel. Structure matches app.css's #panel rules; the old
+     markup used class names the stylesheet had never heard of, so every
+     citation opened an unstyled column of raw text. -->
+<div id="panel">
+  <div class="phead">
+    <div class="ptitle" id="ptitle"></div>
+    <button class="close" id="pclose" title="Close">&times;</button>
+  </div>
+  <div class="pbody">
+    <dl class="meta" id="pmeta"></dl>
+    <div id="ppdf"></div>
+    <div class="rawhead">The passage</div>
+    <pre class="raw" id="praw"></pre>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+// One classroom: the shelf, the tutor that may only read it, and the librarian
+// that fills it. The shelf lives on a rail rather than swapping the page out,
+// so adding a book never costs you the conversation you were having.
+
+const CID = Number(location.pathname.split('/').pop());
+let ROOM = null, SHELF = [], MAXBOOKS = 30;
+
+// --------------------------------------------------------------- the rail --
+
+function shelfRow(b, i) {
+  const state = b.ready
+    ? '<span class="badge good">Ready</span>'
+    : `<span class="badge work">${esc(STAGE[b.status] || b.status)}…</span>`;
+  return `<div class="shelfbook">
+      <div class="sbtop">
+        <span class="sbname" title="${esc(b.title)}">${esc(b.title)}</span>
+        <span class="sbstate">${state}</span>
+        <button class="sbrm" data-id="${b.book_id}"
+                title="Remove from this classroom">&times;</button>
+      </div>
+      ${b.rationale ? `<div class="sbwhy">${esc(b.rationale)}</div>` : ''}
+    </div>`;
+}
+
+function paintShelf() {
+  const el = $('#shelf');
+  el.innerHTML = SHELF.length
+    ? SHELF.map(shelfRow).join('')
+    : `<div class="blank">
+         <div class="t">No books yet</div>
+         <div class="d">Ask the librarian for some, or add them from Drive.</div>
+       </div>`;
+
+  const ready = SHELF.filter(b => b.ready).length;
+  const arriving = SHELF.length - ready;
+  const size = SHELF.reduce((a, b) => a + (b.size_bytes || 0), 0);
+  $('#headmeta').textContent =
+    `${SHELF.length} of ${MAXBOOKS} books` +
+    (size ? ` · ${bytes(size)}` : '') +
+    (arriving ? ` · ${arriving} arriving` : '');
+
+  const full = SHELF.length >= MAXBOOKS;
+  $('#addbooks').disabled = full;
+  $('#addbooks').title = full
+    ? `This classroom is full (${MAXBOOKS} books). Remove one to add another.` : '';
+  // tutor.js defines it and loads after this script, so the very first paint
+  // can land before it exists.
+  if (typeof paintChatBlank === 'function') paintChatBlank();
+}
+
+async function loadRoom() {
+  const d = await fetchJSON(`/api/classrooms/${CID}`, {}, 15000);
+  ROOM = d.classroom; SHELF = d.books; MAXBOOKS = d.max_books;
+  $('#title').textContent = ROOM.name;
+  document.title = `Library — ${ROOM.name}`;
+  paintShelf();
+}
+
+$('#shelf').addEventListener('click', async e => {
+  const btn = e.target.closest('.sbrm');
+  if (!btn) return;
+
+  // Asked first, because the cost is invisible: the shelf just gets shorter,
+  // and what actually changes is every answer from here on. Names the book,
+  // and says what survives -- the book itself stays in the library and on any
+  // other classroom using it.
+  const book = SHELF.find(b => String(b.book_id) === String(btn.dataset.id));
+  const ok = await confirmDialog({
+    title: 'Remove this book from the shelf?',
+    note: `“${book ? book.title : 'This book'}”\n\n`
+        + 'The tutor will stop searching it, so future answers cannot cite it — '
+        + 'including follow-ups in this conversation. The book stays in your '
+        + 'library and on any other classroom that uses it, and you can add it '
+        + 'back at any time.',
+    confirm: 'Remove from shelf',
+  });
+  if (!ok) return;
+
+  btn.disabled = true;
+  try {
+    const d = await fetchJSON(`/api/classrooms/${CID}/books/${btn.dataset.id}`,
+                              { method: 'DELETE' }, 15000);
+    SHELF = d.books.map(b => ({ ...b, ready: b.status === 'done' }));
+    paintShelf();
+    repaintOffers();
+    paintRoomList(CID);
+  } catch (err) {
+    btn.disabled = false;
+    await openDialog({ title: 'Could not remove that book',
+                       note: String(err.message || err),
+                       fields: [], confirm: 'OK', cancel: 'Close' });
+  }
+});
+
+// One write path for the librarian's cards, the tutor's suggestions and the
+// Drive rows, so the cap and the readiness rule are enforced in one place.
+async function addBooks(bookIds, addedBy, rationale, rationales) {
+  try {
+    const d = await fetchJSON(`/api/classrooms/${CID}/books`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ book_ids: bookIds, added_by: addedBy,
+                             rationale: rationale || null,
+                             rationales: rationales || null }),
+    }, 20000);
+    SHELF = d.books.map(b => ({ ...b, ready: b.status === 'done' }));
+    paintShelf();
+    paintRoomList(CID);
+    return true;
+  } catch (e) {
+    // The 409 already names the numbers, so the message is the whole content.
+    await openDialog({ title: 'Could not add that book',
+                       note: String(e.message || e),
+                       fields: [], confirm: 'OK', cancel: 'Close' });
+    return false;
+  }
+}
+
+// Everything that offers "Add to classroom" has to agree about what is already
+// on the shelf, or a stale card invites a click that silently does nothing.
+function repaintOffers() {
+  if (RECS.length) paintPicks();
+  if (SHOWN.length && !$('#addmodal').hidden) {
+    $('#files').innerHTML = SHOWN.map(driveRow).join('');
+  }
+  if (typeof repaintSuggestions === 'function') repaintSuggestions();
+}
+
+const onShelf = id => SHELF.some(s => s.book_id === id);
+
+// -------------------------------------------------------------- librarian --
+
+// What the librarian is doing, in a reader's words.
+//
+// The raw trail was a log: one line per tool call, labelled with the tool's own
+// name and a count that was always 12 -- `returned` is capped at whatever k the
+// model asked for, so it restates the request rather than reporting a finding.
+// Twelve identical "12 found" lines scrolling past is not progress anyone can
+// read.
+//
+// So the default view is three phases with numbers that actually move: distinct
+// books surfaced (deduped across every search, which is why the summary carries
+// book_ids), books opened and read, books picked. The log is still there, one
+// click away, and is what the run-review screen will eventually show in full.
+
+const PHASES = [
+  { key: 'search', label: 'Searching the library' },
+  { key: 'verify', label: 'Reading inside the books' },
+  { key: 'pick',   label: 'Choosing the shelf' },
+];
+
+let LIB = null;
+
+function newLibState() {
+  return {
+    at: 'search',            // which phase is live
+    topics: [],              // the sub-topics it decided to search
+    books: new Set(),        // distinct book ids surfaced, across all searches
+    opened: [],              // {book, passages}
+    drive: 0,                // Drive lookups, which search unindexed files
+    picks: null,
+    best: null,              // closest distance seen; the real quality signal
+    thin: false,
+    log: [],                 // the raw trail, kept for the details view
+    failed: null,
+  };
+}
+
+// Distance -> words. The bands come from cli/eval_librarian.py: real briefs
+// land at 0.26-0.36 and subjects this library does not hold bottom out above
+// PROFILE_RELEVANCE_FLOOR (0.50).
+function strength(d) {
+  if (d == null) return '';
+  if (d <= 0.36) return 'strong match';
+  if (d <= 0.45) return 'good match';
+  if (d <= 0.50) return 'partial match';
+  return 'thin here';
+}
+
+function phaseDetail(key, L) {
+  if (key === 'search') {
+    if (!L.topics.length) return 'starting…';
+    const bits = [`${L.topics.length} angle${L.topics.length === 1 ? '' : 's'}`];
+    if (L.books.size) bits.push(`${L.books.size} book${L.books.size === 1 ? '' : 's'} found`);
+    if (L.drive) bits.push(`${L.drive} drive lookup${L.drive === 1 ? '' : 's'}`);
+    if (L.best != null) bits.push(strength(L.best));
+    return bits.join(' · ');
+  }
+  if (key === 'verify') {
+    if (!L.opened.length) return L.at === 'verify' ? 'opening the first one…' : '';
+    const last = L.opened[L.opened.length - 1];
+    const n = L.opened.length;
+    // Not sliced here: .det ellipsises in CSS, and cutting the string first
+    // means the browser never sees an overflow to mark, so a truncated title
+    // ends mid-word with nothing to say it was truncated.
+    return `${n} opened · ${last.book || ''}`;
+  }
+  if (key === 'pick') {
+    if (L.picks == null) return '';
+    return `${L.picks} book${L.picks === 1 ? '' : 's'}`;
+  }
+  return '';
+}
+
+function paintLib() {
+  const L = LIB;
+  if (!L) return;
+  const order = PHASES.map(p => p.key);
+  // 'done' is not one of the phases, so indexOf gives -1 and every phase would
+  // compare as "not started yet" -- a finished run rendered as three grey dots.
+  const finished = L.at === 'done';
+  const now = finished ? order.length : order.indexOf(L.at);
+  const html = PHASES.map((p, i) => {
+    const state = i < now ? 'done'
+                : (i === now && !L.failed) ? 'now'
+                : 'todo';
+    const det = phaseDetail(p.key, L);
+    return `<div class="ph ${state}">
+        <span class="dot"></span>
+        <span class="lab">${esc(p.label)}</span>
+        <span class="det">${esc(det)}</span>
+      </div>`;
+  }).join('');
+
+  const thin = L.thin && L.at !== 'pick'
+    ? `<div class="thinnote">The library looks thin on this — expect fewer books,
+         or try describing it another way.</div>` : '';
+
+  $('#ltrail').innerHTML =
+    `<div class="phases">${html}</div>${thin}` +
+    (L.log.length
+      ? `<details class="rawtrail"><summary>${L.log.length} steps</summary>
+           <div class="rawbody">${L.log.join('')}</div></details>`
+      : '');
+}
+
+const LTOOL = { find_books: 'searching', look_inside: 'reading',
+                search_drive: 'drive', browse_folder: 'browsing',
+                recommend: 'shortlist' };
+
+function logStep(label, text) {
+  LIB.log.push(`<div class="bstep"><span class="lbl">${esc(label)}</span>${esc(text)}</div>`);
+}
+
+function pickCard(b, i) {
+  if (b.unknown) {
+    return `<div class="pick bad"><div class="t">Unusable suggestion</div>
+      <div class="why">${esc(b.error || 'the librarian named something it had not seen')}</div></div>`;
+  }
+  const mine = onShelf(b.book_id);
+  // The two populations never look alike: an indexed book is answerable now,
+  // a Drive file is minutes of work away.
+  const action = b.kind === 'drive'
+    ? `<span class="badge">needs indexing first</span>`
+    : mine
+      ? `<span class="badge good">on this shelf</span>`
+      : `<button class="btn primary add" data-i="${i}">Add</button>`;
+  // A way to see the actual PDF before deciding. The librarian quotes one
+  // passage; a reader who wants to weigh a 400-page book on that quote alone is
+  // being asked to trust a sentence. Indexed books open through our own route
+  // (signed storage URL, local cache, or a one-time Drive fetch); a Drive pick
+  // has no book row yet, so it opens in Drive itself.
+  // Drive, not our copy. The reader wants the whole book where it lives, with
+  // its folder one click away -- /pdf serves OUR bytes, which is right for a
+  // citation landing on page 87 and wrong for "let me look at this".
+  const href = b.kind === 'drive' ? (b.url || '') : `/api/books/${b.book_id}/source`;
+  const open = href
+    ? `<a class="openpdf" href="${esc(href)}" target="_blank" rel="noopener"
+          title="Open the original in Google Drive">Open in Drive ↗</a>`
+    : '';
+  return `<div class="pick${mine ? ' owned' : ''}">
+      <div class="t">${esc(b.title || '(untitled)')}</div>
+      ${b.why ? `<div class="why">${esc(b.why)}</div>` : ''}
+      ${b.passage ? `<div class="q">“${esc(b.passage)}”</div>` : ''}
+      <div class="foot">${b.pages ? b.pages + ' pages' : ''}${open}${action}</div>
+    </div>`;
+}
+
+let RECS = [];
+
+// Which picks can actually go on the shelf: indexed (a Drive file has no
+// chunks yet) and not already there.
+const addablePicks = () => RECS
+  .map((b, i) => ({ b, i }))
+  .filter(({ b }) => !b.unknown && b.kind !== 'drive' && b.book_id
+                     && !onShelf(b.book_id));
+
+// The picks, with a bar above them offering the whole shortlist at once. The
+// bar only appears when there is more than one thing left to add -- for a
+// single book it would just be a second copy of that book's own button.
+function paintPicks() {
+  const out = $('#lout');
+  if (!RECS.length) { out.innerHTML = ''; return; }
+  const can = addablePicks();
+  const bar = can.length > 1
+    ? `<div class="pickbar">
+         <span class="n">${RECS.length} recommendation${RECS.length === 1 ? '' : 's'}</span>
+         <button class="btn primary addall" id="addall">Add all ${can.length}</button>
+       </div>`
+    : '';
+  out.innerHTML = bar + RECS.map(pickCard).join('');
+}
+
+async function runLibrarian(brief, count) {
+  const outEl = $('#lout');
+  LIB = newLibState(); RECS = [];
+  outEl.innerHTML = '';
+  paintLib();
+  $('#lgo').disabled = true;
+  try {
+    const r = await fetch('/api/librarian', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ brief, count, classroom_id: CID }),
+    });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+
+    await readEventStream(r, ev => {
+      const L = LIB;
+      if (ev.type === 'tool') {
+        const i = ev.input || {};
+        const q = String(i.topic || i.question || i.query || i.folder_id || '');
+        if (ev.name === 'find_books') { L.at = 'search'; L.topics.push(q); }
+        else if (ev.name === 'look_inside') { L.at = 'verify'; }
+        else if (ev.name === 'recommend') { L.at = 'pick'; }
+        else if (ev.name === 'search_drive' || ev.name === 'browse_folder') L.drive++;
+        logStep(LTOOL[ev.name] || ev.name, q.slice(0, 90));
+      } else if (ev.type === 'results') {
+        const s = ev.summary || {};
+        (s.book_ids || []).forEach(id => L.books.add(id));
+        if (s.nearest != null && (L.best === null || s.nearest < L.best)) L.best = s.nearest;
+        // Thin is only meaningful while it is still searching, and only if
+        // NOTHING has come back strong: one thin angle among five is normal.
+        if (ev.name === 'find_books') L.thin = L.best == null || L.best > 0.50;
+        if (ev.name === 'look_inside' && s.book) {
+          L.opened.push({ book: s.book, passages: s.passages });
+        }
+        if (ev.name === 'recommend') L.picks = s.picks;
+        const bits = [];
+        if (s.returned != null) bits.push(`${s.returned} returned`);
+        if (s.passages != null) bits.push(`${s.passages} passages`);
+        if (s.book) bits.push(String(s.book).slice(0, 40));
+        if (s.nearest != null) bits.push(`nearest ${s.nearest}`);
+        if (s.picks != null) bits.push(`${s.picks} picked`);
+        if (bits.length) logStep('', bits.join(' · '));
+      } else if (ev.type === 'tool_error') {
+        LIB.log.push(`<div class="bstep berr">${esc(ev.name)} failed — ${esc(ev.message)}</div>`);
+      } else if (ev.type === 'recommendations') {
+        RECS = ev.books;
+        LIB.at = 'pick';
+        LIB.picks = RECS.length;
+        paintPicks();
+      } else if (ev.type === 'answer') {
+        outEl.insertAdjacentHTML('beforeend',
+          `<div class="libsay">${esc(ev.text)}</div>`);
+      } else if (ev.type === 'error') {
+        LIB.failed = ev.message;
+        LIB.log.push(`<div class="bstep berr">${esc(ev.message)}</div>`);
+      }
+      paintLib();
+    }, { terminal: 'done', onStall: () => {
+      LIB.log.push('<div class="bstep"><span class="lbl"></span>Still working — a thorough search takes a minute.</div>');
+      paintLib();
+    } });
+    // Every phase closed out, so a finished run does not sit on "Choosing…".
+    LIB.at = 'done';
+    paintLib();
+  } catch (e) {
+    $('#ltrail').innerHTML = failed('The librarian stopped', e, () => runLibrarian(brief, count));
+  } finally {
+    $('#lgo').disabled = false;
+  }
+}
+
+// Each book keeps its own evidence, whether it goes on one at a time or all at
+// once -- the shelf shows why every book is there, and one quote stamped across
+// twelve of them would make eleven lie about themselves.
+const rationaleFor = b => b.passage ? `${b.why} — “${b.passage}”` : (b.why || null);
+
+$('#lout').addEventListener('click', async e => {
+  const all = e.target.closest('.addall');
+  if (all) {
+    const can = addablePicks();
+    if (!can.length) return;
+    all.disabled = true;
+    all.textContent = `Adding ${can.length}…`;
+    const ids = can.map(({ b }) => b.book_id);
+    const rationales = {};
+    for (const { b } of can) {
+      const r = rationaleFor(b);
+      if (r) rationales[String(b.book_id)] = r;
+    }
+    const ok = await addBooks(ids, 'librarian', null, rationales);
+    if (ok) repaintOffers();
+    else { all.disabled = false; all.textContent = `Add all ${can.length}`; }
+    return;
+  }
+
+  const btn = e.target.closest('.add');
+  if (!btn) return;
+  const b = RECS[Number(btn.dataset.i)];
+  btn.disabled = true;
+  const ok = await addBooks([b.book_id], 'librarian', rationaleFor(b));
+  if (ok) repaintOffers(); else btn.disabled = false;
+});
+
+// The ceiling is 20. Not a clamp: silently turning 50 into 20 answers a
+// different question from the one that was asked, and the reader has no way to
+// tell it happened. Say so and let them decide.
+const MAX_BOOKS = 20;
+
+function readCount() {
+  const el = $('#lc'), err = $('#lcerr');
+  const raw = el.value.trim();
+  const n = Number(raw);
+  let problem = null;
+  if (raw === '' || !Number.isInteger(n)) problem = 'Give a whole number of books.';
+  else if (n < 1) problem = 'Ask for at least one book.';
+  else if (n > MAX_BOOKS) problem = `${n} is more than this can do — ${MAX_BOOKS} is the most.`;
+  err.hidden = !problem;
+  err.textContent = problem || '';
+  el.classList.toggle('bad', !!problem);
+  return problem ? null : n;
+}
+
+// Clear the complaint as soon as it stops being true.
+$('#lc').addEventListener('input', () => { if (!$('#lcerr').hidden) readCount(); });
+
+$('#lf').addEventListener('submit', e => {
+  e.preventDefault();
+  const count = readCount();
+  if (count === null) { $('#lc').focus(); return; }
+  const brief = $('#lq').value.trim();
+  if (!brief) { $('#lq').focus(); return; }
+  runLibrarian(brief, count);
+});
+
+function setLibOpen(open) {
+  $('#libmodal').hidden = !open;
+  if (open) $('#lq').focus();
+}
+$('#asklib').onclick = () => setLibOpen(true);
+$('#libclose').onclick = () => setLibOpen(false);
+$('#libmodal').addEventListener('click', e => {
+  if (e.target.id === 'libmodal') setLibOpen(false);   // the backdrop
+});
+
+// ---------------------------------------------------------- add-books dialog --
+// Only browses and adds: no folder-indexing, no coverage bars. A reader here is
+// filling one shelf.
+
+let SHOWN = [], CURRENT = null;
+
+function driveRow(f, i) {
+  const ready = f.indexed && f.status === 'done';
+  const mine = ready && onShelf(f.book_id);
+  const act = mine
+    ? '<span class="badge good">on this shelf</span>'
+    : ready
+      ? `<button class="btn primary dadd" data-i="${i}">Add</button>`
+      : f.indexed
+        ? `<span class="badge work">${esc(STAGE[f.status] || f.status)}…</span>`
+        // Not indexed, so there is nothing to add to a shelf yet. Indexing is
+        // minutes of download, extraction and embedding -- a decision that
+        // belongs on the Drive page beside the coverage bars that show what it
+        // costs, not on a button in a dialog whose job is picking books.
+        : `<a class="btn jump" href="/library?q=${encodeURIComponent(f.title || f.name || '')}"
+             title="Not indexed yet — open it on the Drive page to index it">Jump to Drive</a>`;
+  return `<div class="frow" data-id="${esc(f.file_id)}">
+      <div class="fname"><span class="t" title="${esc(f.title || f.name)}">${esc(f.title || f.name)}</span></div>
+      <div class="fsize">${f.size_mb ? f.size_mb + ' MB' : ''}</div>
+      <div class="fact">${act}</div>
+    </div>`;
+}
+
+function folderRow(f) {
+  return `<div class="frow isfolder" data-id="${esc(f.file_id)}">
+      <div class="fname">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             class="ic-folder"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        <span class="t" title="${esc(f.title)}">${esc(f.title)}</span>
+      </div>
+      <div class="fsize">${f.size_mb != null ? mb(f.size_mb) : ''}</div>
+      <div class="fact"></div>
+    </div>`;
+}
+
+function paintCrumb(trail) {
+  // Always rooted, so there is a way back out of a folder six levels down.
+  // Breadcrumb entries carry `name`; the folder and file rows carry `title`.
+  const parts = [`<a data-id="">All of Drive</a>`].concat(
+    (trail || []).map((c, i) => i === trail.length - 1
+      ? `<span class="here">${esc(c.name)}</span>`
+      : `<a data-id="${esc(c.file_id)}">${esc(c.name)}</a>`));
+  $('#crumb').innerHTML = parts.join('<span class="sep">/</span>');
+}
+
+async function openFolder(id) {
+  const p = progress($('#files'), { label: 'Opening folder', normal: 3 });
+  try {
+    // The root is the endpoint with NO parent parameter. `?parent=` with an
+    // empty value is a different question and answers with nothing, which is
+    // why this dialog opened on "No PDFs in this folder" every time.
+    const url = id ? `/api/drive/children?parent=${encodeURIComponent(id)}`
+                   : '/api/drive/children';
+    const d = await fetchJSON(url, {}, 20000);
+    p.stop();
+    CURRENT = id;
+    // The API returns folders and files as two lists, not one list with a flag.
+    const folders = d.folders || [];
+    SHOWN = d.files || [];
+    paintCrumb(d.breadcrumb);
+    $('#files').innerHTML =
+      folders.map(folderRow).join('') +
+      SHOWN.map(driveRow).join('') +
+      (folders.length || SHOWN.length ? ''
+        : '<div class="empty">This folder is empty.</div>');
+  } catch (e) {
+    p.stop();
+    $('#files').innerHTML = failed('Could not open that folder', e, () => openFolder(id));
+  }
+}
+
+async function runSearch(q) {
+  const p = progress($('#files'), { label: 'Searching titles', normal: 8 });
+  try {
+    const d = await fetchJSON(`/api/drive/search?q=${encodeURIComponent(q)}`, {}, 30000);
+    p.stop();
+    SHOWN = d.results || d.matches || [];
+    $('#crumb').innerHTML = `<span class="here">${SHOWN.length} results</span>` +
+      `<span class="sep">·</span><a id="backto">back to browsing</a>`;
+    $('#files').innerHTML = SHOWN.length
+      ? SHOWN.map(driveRow).join('')
+      : '<div class="empty">Nothing matched that.</div>';
+  } catch (e) {
+    p.stop();
+    $('#files').innerHTML = failed('Search failed', e, () => runSearch(q));
+  }
+}
+
+$('#files').addEventListener('click', async e => {
+  const add = e.target.closest('.dadd');
+  if (add) {
+    const f = SHOWN[Number(add.dataset.i)];
+    add.disabled = true;
+    if (await addBooks([f.book_id], 'reader', null)) repaintOffers();
+    else add.disabled = false;
+    return;
+  }
+  const row = e.target.closest('.frow.isfolder');
+  if (row) openFolder(row.dataset.id);
+});
+
+$('#crumb').addEventListener('click', e => {
+  const a = e.target.closest('a');
+  if (!a) return;
+  if (a.id === 'backto') openFolder(CURRENT); else openFolder(a.dataset.id);
+});
+
+$('#sf').addEventListener('submit', e => {
+  e.preventDefault();
+  const q = $('#sq').value.trim();
+  if (q) runSearch(q);
+});
+
+function setAddOpen(open) {
+  $('#addmodal').hidden = !open;
+  if (open) {
+    if (CURRENT === null) openFolder('');
+    $('#sq').focus();
+  }
+}
+$('#addbooks').onclick = () => setAddOpen(true);
+$('#addclose').onclick = () => setAddOpen(false);
+$('#addmodal').addEventListener('click', e => {
+  if (e.target.id === 'addmodal') setAddOpen(false);   // click the backdrop
+});
+
+// ------------------------------------------------------------- the shell --
+
+function setRailOpen(open) {
+  $('#rail').hidden = !open;
+  $('#railtoggle').setAttribute('aria-pressed', String(open));
+  $('#railtoggle').classList.toggle('on', open);
+}
+$('#railtoggle').onclick = () => setRailOpen($('#rail').hidden);
+$('#railclose').onclick = () => setRailOpen(false);
+
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (!$('#addmodal').hidden) setAddOpen(false);
+  else if (!$('#libmodal').hidden) setLibOpen(false);
+});
+
+$('#rename').onclick = async () => {
+  const r = await openDialog({
+    title: 'Rename classroom',
+    confirm: 'Save',
+    fields: [{ name: 'name', label: 'Name', value: ROOM.name, required: true,
+               needed: 'A classroom needs a name.' }],
+  });
+  if (!r || r.name === ROOM.name) return;
+  try {
+    await fetchJSON(`/api/classrooms/${CID}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: r.name }),
+    }, 15000);
+    await loadRoom();
+    paintRoomList(CID);
+  } catch (e) {
+    await openDialog({ title: 'Could not rename it', note: String(e.message || e),
+                       fields: [], confirm: 'OK', cancel: 'Close' });
+  }
+};
+
+setRailOpen(true);
+paintRoomList(CID);
+paintLibraryFoot();
+loadRoom().catch(e => {
+  $('#shelf').innerHTML = failed('Could not open this classroom', e, () => location.reload());
+});
+</script>
+<script src="/static/tutor.js"></script>
+</body>
+</html>

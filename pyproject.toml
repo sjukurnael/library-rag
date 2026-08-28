@@ -24,6 +24,10 @@ dependencies = [
     "psycopg[binary]>=3.2.0",
     "pgvector>=0.3.6",
     "langchain-text-splitters>=0.3.0",
+    # k-means over a book's chunk embeddings, for the librarian's topic
+    # vectors (pipeline/profile.py). Already present transitively, but this
+    # is a direct dependency now and a transitive one can vanish.
+    "numpy>=1.26",
     "voyageai>=0.3.0",
     "tiktoken>=0.8.0",
     "mistralai>=1.2.0",

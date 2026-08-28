@@ -52,6 +52,68 @@ function mb(n) {
   return n >= 1024 ? `${(n / 1024).toFixed(1)} GB` : `${n} MB`;
 }
 
+// Raw byte counts, which the mirror's totals arrive as. Separate from mb()
+// rather than dividing at the call site: these span half a megabyte to 143 GB,
+// so the unit has to be picked per value, and picking it here is what stops
+// one line reading "506 MB" and the line below it "0.5 GB".
+function bytes(n) {
+  if (n == null) return 'size unknown';
+  // Bare "0", not "0 KB". This reads inside "0 of 142.8 GB", where a unit on
+  // the empty side is noise attached to nothing.
+  if (!n) return '0';
+  if (n >= 1073741824) return `${(n / 1073741824).toFixed(1)} GB`;
+  if (n >= 1048576) return `${Math.round(n / 1048576)} MB`;
+  return `${Math.round(n / 1024)} KB`;
+}
+
+// A share of a whole, worded so it can never claim more than it has.
+//
+// Both guards exist because this app's real numbers sit at the ends of the
+// range: 0.35% would print as "0%" and read as "nothing has been indexed" when
+// 199 books have, and a whole drive bar one book would round to a finished
+// "100%". Neither rounding is wrong by much and both are wrong about the thing
+// the reader is actually asking.
+function pct(part, whole) {
+  if (!whole || !part) return '0%';
+  const p = (part / whole) * 100;
+  if (p < 0.1) return '<0.1%';
+  if (p >= 99.95 && part < whole) return '99.9%';
+  return `${p.toFixed(p < 10 ? 1 : 0)}%`;
+}
+
+// --------------------------------------------------------------- failure --
+// A dead end with no way forward is what makes a page feel broken rather than
+// merely slow, so a failure states what broke and offers the action that fixes
+// it.
+//
+// Returns HTML rather than writing into an element, because callers put it in
+// very different places -- innerHTML of a trail, insertAdjacentHTML at the top
+// of a list. It lived in library.html for a while and the classroom pages
+// called it anyway: six call sites, all of them a ReferenceError the moment
+// anything failed, in the one code path whose entire job is to report failure.
+//
+// The retry callback cannot survive a trip through a string, so it is parked in
+// a registry and reached by id from one delegated listener.
+const _retries = new Map();
+let _retryId = 0;
+
+function failed(message, err, retry) {
+  const detail = err ? String(err.message || err) : '';
+  let attr = '';
+  if (retry) { _retries.set(++_retryId, retry); attr = ` data-retry="${_retryId}"`; }
+  return `<div class="failnote"><span class="fmsg">${esc(message)}` +
+         `${detail ? ' — ' + esc(detail) : ''}</span>` +
+         (retry ? `<button class="retry"${attr}>Try again</button>` : '') +
+         `</div>`;
+}
+
+document.addEventListener('click', e => {
+  const b = e.target.closest('.retry[data-retry]');
+  if (!b) return;
+  const fn = _retries.get(Number(b.dataset.retry));
+  if (fn) fn();
+});
+
 // ------------------------------------------------------------- progress --
 // Every wait in this app is long enough to be mistaken for a hang: a search
 // embeds a query over the network, the agents run for tens of seconds, and a
@@ -119,6 +181,15 @@ async function fetchJSON(url, opts = {}, timeoutMs = 30000) {
 // whatever half-drawn trail it had, silently, forever. Ending without the
 // terminal event is a failure and is reported as one.
 //
+// But a stream that ends WITHOUT the terminal event has usually said why first.
+// Once the response headers are out the server cannot answer with a 500, so a
+// crash mid-run arrives as an `error` frame and then the stream stops -- both
+// halves of the same event. Reporting only the second half is how a flat
+// Anthropic balance came to read as "the server may have restarted" for a week:
+// the real reason was sent, rendered, and then overwritten by the guess. So the
+// last `error` message wins, and the generic sentence below is the last resort
+// it was meant to be -- for a connection that died with nothing to say.
+//
 // `onStall` fires when no frame has arrived for `stallMs`. Not a timeout: these
 // runs are legitimately long, and killing one that is merely slow is worse than
 // waiting. It only changes what the user is told.
@@ -126,7 +197,7 @@ async function readEventStream(response, onEvent, opts = {}) {
   const { terminal = null, onStall = null, stallMs = 45000 } = opts;
   const reader = response.body.getReader();
   const dec = new TextDecoder();
-  let buf = '', sawTerminal = false, stallTimer = null;
+  let buf = '', sawTerminal = false, stallTimer = null, reason = null;
 
   const arm = () => {
     clearTimeout(stallTimer);
@@ -145,6 +216,9 @@ async function readEventStream(response, onEvent, opts = {}) {
         arm();
         const ev = JSON.parse(p.slice(6));
         if (terminal && ev.type === terminal) sawTerminal = true;
+        // Captured before onEvent, which is allowed to throw on this very
+        // frame (the chat page does) -- and then this line would never run.
+        if (ev.type === 'error' && ev.message) reason = String(ev.message);
         onEvent(ev);
       }
     }
@@ -152,8 +226,9 @@ async function readEventStream(response, onEvent, opts = {}) {
     clearTimeout(stallTimer);
   }
   if (terminal && !sawTerminal) {
-    throw new Error('The connection ended before the run finished — the server ' +
-                    'may have restarted. Nothing was lost; try again.');
+    throw new Error(reason ||
+      'The connection ended before the run finished — the server may have ' +
+      'restarted. Nothing was lost; try again.');
   }
 }
 
@@ -167,10 +242,17 @@ const bookListeners = [];
 function onBooks(fn) { bookListeners.push(fn); }
 
 let bookTimer = null;
+// How much of the indexed list to ask for. Raised by "show more" rather than
+// paged with an offset: the list is sorted by title and re-fetched every few
+// seconds while work is in flight, so an offset window would shuffle under the
+// reader as books finish and join it.
+let booksLimit = 50;
+function showMoreBooks(n = 50) { booksLimit += n; return refreshBooks(); }
+
 async function refreshBooks() {
   clearTimeout(bookTimer);
   let d = null, err = null;
-  try { d = await fetchJSON('/api/books', {}, 15000); }
+  try { d = await fetchJSON(`/api/books?limit=${booksLimit}`, {}, 20000); }
   catch (e) { err = e; }
   for (const fn of bookListeners) fn(d, err);
   // Only a book actually moving through the pipeline justifies polling; one
@@ -179,63 +261,48 @@ async function refreshBooks() {
   if (working || err) bookTimer = setTimeout(refreshBooks, working ? 3000 : 15000);
 }
 
-// The sidebar's own listener. Registered unconditionally: every page has the
-// sidebar, and a page that somehow lacks it just no-ops on the null lookups.
+// The sidebar footer. All that survives of the sidebar's book feed: the list
+// it used to render was every book in the library -- 8,679 rows behind a
+// dropdown -- which was unreadable long before it was expensive, and expensive
+// enough (1.1 MB, ~10s per fetch) to make the pages carrying it feel broken.
+//
+// Only queue.html still calls refreshBooks(), because the queue IS this data.
+// Everywhere else the footer comes from paintLibraryFoot() and 258 bytes.
 onBooks((d, err) => {
-  const list = $('#navbooks'), count = $('#bookcount'), foot = $('#sidefoot');
-  if (!list) return;
-  if (err) {
-    if (foot) foot.textContent = 'index unavailable — is the server up?';
-    return;
-  }
-  const working = (d.pending || []).filter(b => !TERMINAL.has(b.status));
-  list.innerHTML =
-    working.map(b =>
-      `<li class="working" title="${esc(b.title)}"><span class="t">${esc(b.title)}</span>` +
-      `<span class="m">${esc(stageLabel(b))}${b.claim_age_s == null && b.status === 'discovered' ? '' : '…'}</span></li>`
-    ).join('') +
-    d.books.map(b =>
-      `<li title="${esc(b.title)} — ${b.pages ?? '?'} pages, ${b.chunks} chunks">` +
-      `<span class="t">${esc(b.title)}</span><span class="m">${b.chunks}</span>` +
-      `<button class="del" data-id="${b.id}" data-title="${esc(b.title)}" ` +
-      `title="Remove this book">&times;</button></li>`
-    ).join('');
-  if (count) count.textContent = String(d.books.length);
-  if (foot) foot.textContent =
-    `${d.books.length} books · ${d.total_chunks.toLocaleString()} passages indexed`;
+  const foot = $('#sidefoot');
+  if (!foot) return;
+  foot.textContent = err
+    ? 'index unavailable — is the server up?'
+    : `${d.total_books.toLocaleString()} books · ${d.total_chunks.toLocaleString()} passages indexed`;
 });
-
-// The index list is a dropdown, and it ALWAYS starts collapsed -- the point is
-// that the sidebar stays calm until the list is asked for. Deliberately not
-// remembered across loads: a persisted "open" makes the list permanent again
-// the moment anyone expands it once, which is exactly the state this exists
-// to avoid.
-const _booksToggle = $('#bookstoggle'), _booksList = $('#navbooks');
-function setBooksOpen(open) {
-  if (!_booksToggle || !_booksList) return;
-  _booksList.hidden = !open;
-  _booksToggle.classList.toggle('open', open);
-  _booksToggle.setAttribute('aria-expanded', String(open));
-}
-if (_booksToggle && _booksList) {
-  _booksToggle.addEventListener('click', () => setBooksOpen(_booksList.hidden));
-}
 
 // Delete is a hard delete of the row, its chunks and its files, so confirm by
 // name rather than a bare "are you sure" that says nothing about what goes.
 // Delegated at the document so the sidebar list and the queue page share it.
 document.addEventListener('click', async e => {
-  const btn = e.target.closest('.del');
+  // [data-title], not bare .del: a classroom's Delete button is also a .del
+  // with a data-id, so this handler used to fire alongside it and offer to
+  // delete the BOOK whose id matched the classroom's. Book buttons are the
+  // ones that carry a title; classroom buttons carry data-name.
+  const btn = e.target.closest('.del[data-title]');
   if (!btn || !btn.dataset.id) return;
   const { id, title } = btn.dataset;
-  if (!confirm(`Remove "${title}" from the library?\n\nThis deletes its passages and the uploaded file. You can add it again later.`)) return;
+  const ok = await confirmDialog({
+    title: `Remove "${title}"?`,
+    note: 'This deletes its passages and the uploaded file, and takes it off '
+        + 'every classroom it is on. You can add it again later.',
+    confirm: 'Remove book',
+  });
+  if (!ok) return;
   btn.disabled = true;
   try {
     await fetchJSON(`/api/books/${id}`, { method: 'DELETE' });
     refreshBooks();
   } catch (err) {
     btn.disabled = false;
-    alert(`Could not remove "${title}" — ${err.message || err}`);
+    await openDialog({ title: `Could not remove "${title}"`,
+                       note: String(err.message || err),
+                       fields: [], confirm: 'OK', cancel: 'Close' });
   }
 });
 
@@ -250,11 +317,18 @@ let _authConnecting = false;
 let _driveOk = false;
 
 async function paintAuth() {
-  const el = $('#sideauth');
-  if (!el) return;
   let a;
   try { a = await fetchJSON('/api/drive/auth/status', {}, 15000); }
   catch { return; }
+  // Assign before painting, and before the missing-element bail below. Every
+  // page calls paintAuth() at boot, so this is what keeps _driveOk true;
+  // leaving it at its `false` initialiser disabled every Index button on the
+  // librarian panel even with Drive connected. The bail has to come after,
+  // because bible.html renders librarian picks without a #sideauth indicator
+  // -- returning early there would keep its buttons dead for the same reason.
+  _driveOk = !!a.ok;
+  const el = $('#sideauth');
+  if (!el) return a;
   el.hidden = false;
   if (a.ok) {
     el.innerHTML = `<span class="authdot ok"></span> Google Drive connected`;
@@ -474,3 +548,204 @@ async function paintUser() {
 }
 
 paintUser();
+
+
+// -------------------------------------------------------------- dialogs --
+// One in-app dialog for asking a question and for confirming something you
+// cannot undo. Replaces window.prompt and window.confirm, which are OS chrome
+// in the wrong typeface, cannot be labelled, cannot explain what they are
+// asking for, and cannot refuse an empty answer -- prompt() returns a string or
+// null and has no way to say "that one is needed" without opening a second box.
+//
+// Resolves to an object of field values, or null if dismissed. Building the DOM
+// here rather than in every page keeps it on pages that never declared it.
+
+function openDialog({ title, note, fields = [], confirm = 'Save',
+                      cancel = 'Cancel', danger = false, onChange = null }) {
+  return new Promise(resolve => {
+    const wrap = document.createElement('div');
+    wrap.className = 'modal';
+    wrap.innerHTML = `
+      <div class="modalbox sm" role="dialog" aria-modal="true">
+        <form class="dlg" novalidate>
+          <div class="dlgtitle">${esc(title)}</div>
+          ${note ? `<div class="dlgnote">${esc(note)}</div>` : ''}
+          ${fields.map(f => `<label class="field">
+              <span class="lab">${esc(f.label)}</span>
+              ${f.choices
+                ? `<select name="${esc(f.name)}">${f.choices.map(([v, t]) =>
+                     `<option value="${esc(v)}"${String(v) === String(f.value) ? ' selected' : ''}>${esc(t)}</option>`
+                   ).join('')}</select>`
+                : f.multiline
+                  ? `<textarea name="${esc(f.name)}" rows="3"
+                       placeholder="${esc(f.placeholder || '')}">${esc(f.value || '')}</textarea>`
+                  : `<input name="${esc(f.name)}" autocomplete="off"
+                       placeholder="${esc(f.placeholder || '')}" value="${esc(f.value || '')}">`}
+              ${f.hint ? `<span class="hint" data-for="${esc(f.name)}">${esc(f.hint)}</span>` : ''}
+            </label>`).join('')}
+          <div class="dlgfoot">
+            <button type="button" class="btn ghost cancel">${esc(cancel)}</button>
+            <button type="submit" class="btn ${danger ? 'danger' : 'primary'}">${esc(confirm)}</button>
+          </div>
+        </form>
+      </div>`;
+    document.body.appendChild(wrap);
+
+    const form = wrap.querySelector('form');
+    if (onChange) {
+      wrap.addEventListener('change', () => {
+        const cur = {};
+        for (const f of fields) {
+          const el = form.elements[f.name];
+          cur[f.name] = el ? el.value : '';
+        }
+        onChange(cur, wrap);
+      });
+      // Paint once up front, so the dialog opens saying the right thing.
+      queueMicrotask(() => wrap.dispatchEvent(new Event('change')));
+    }
+
+    const first = wrap.querySelector('input, textarea, select');
+    // Focus, and put the caret after any existing value rather than selecting
+    // it: this dialog renames as often as it creates, and a pre-selected name
+    // is one keystroke from being destroyed.
+    if (first) {
+      first.focus();
+      if (first.value && first.setSelectionRange)
+        first.setSelectionRange(first.value.length, first.value.length);
+    } else {
+      wrap.querySelector('.btn.primary, .btn.danger').focus();
+    }
+
+    let done = false;
+    const close = value => {
+      if (done) return;
+      done = true;
+      document.removeEventListener('keydown', onKey, true);
+      wrap.remove();
+      resolve(value);
+    };
+    function onKey(e) {
+      if (e.key === 'Escape') { e.stopPropagation(); close(null); }
+      // Enter in a textarea is a newline; Cmd/Ctrl-Enter submits from anywhere.
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) form.requestSubmit();
+    }
+    // Capture, so Escape closes this and not something behind it.
+    document.addEventListener('keydown', onKey, true);
+    wrap.addEventListener('click', e => { if (e.target === wrap) close(null); });
+    wrap.querySelector('.cancel').addEventListener('click', () => close(null));
+
+    form.addEventListener('submit', e => {
+      e.preventDefault();
+      const out = {};
+      for (const f of fields) {
+        const el = form.elements[f.name];
+        out[f.name] = (el ? el.value : '').trim();
+      }
+      // A required field that is empty keeps the dialog open and says so, which
+      // is the one thing prompt() could not do at all.
+      const missing = fields.find(f => f.required && !out[f.name]);
+      if (missing) {
+        const el = form.elements[missing.name];
+        el.focus();
+        el.closest('.field').querySelector('.hint')?.remove();
+        el.insertAdjacentHTML('afterend',
+          `<span class="hint err">${esc(missing.needed || 'This one is needed.')}</span>`);
+        return;
+      }
+      close(out);
+    });
+  });
+}
+
+// A yes/no with no fields. Separate name because the call reads better and the
+// destructive case should be obvious at the call site.
+function confirmDialog({ title, note, confirm = 'Delete', danger = true }) {
+  return openDialog({ title, note, fields: [], confirm, danger })
+    .then(r => r !== null);
+}
+
+// ------------------------------------------------------ the library foot --
+// The "N books" line in the sidebar footer, for pages that do NOT list books.
+//
+// It used to come from refreshBooks(), which fetches every book in the library:
+// 8,679 rows, 1.1 MB, 9.7 seconds -- to render two numbers. Worse, that poll
+// repeats every 3 seconds while anything is being processed, and 353 books are,
+// so a classroom page left open issued a continuous stream of 1.1 MB requests
+// for a footer with no list under it. When one of them passed the 15s timeout
+// the footer read "index unavailable — is the server up?", which is how a
+// working server came to accuse itself.
+//
+// /api/drive/sync/progress answers the same question in 258 bytes and 0.47s.
+async function paintLibraryFoot() {
+  const foot = $('#sidefoot');
+  if (!foot) return;
+  try {
+    const s = await fetchJSON('/api/drive/sync/progress', {}, 15000);
+    foot.textContent = `${(s.indexed_files || 0).toLocaleString()} books ready`
+      + (s.working_files ? ` · ${s.working_files.toLocaleString()} arriving` : '');
+  } catch {
+    // Silent. This is a footnote; a page whose real work is fine should not be
+    // captioned with an error about a number nobody asked for.
+    foot.textContent = '';
+  }
+}
+
+// ------------------------------------------------------- classroom list --
+// The sidebar list, shared by the classrooms page and by each classroom. A
+// classroom is a conversation, so the list of them belongs where a chat app
+// keeps its conversations: down the left, always visible, one click apart.
+
+async function paintRoomList(currentId) {
+  const el = $('#roomlist');
+  if (!el) return null;
+  try {
+    const d = await fetchJSON('/api/classrooms', {}, 15000);
+    el.innerHTML = d.classrooms.length
+      ? d.classrooms.map(c => {
+          // A shelf with nothing on it cannot answer anything, so it says so
+          // rather than showing a 0 that reads like any other count.
+          const ct = c.book_count ? String(c.book_count) : '—';
+          return `<li><a href="/classroom/${c.id}"` +
+                 `${c.id === currentId ? ' class="on"' : ''}` +
+                 ` title="${esc(c.name)}"><span class="nm">${esc(c.name)}</span>` +
+                 `<span class="ct">${ct}</span></a></li>`;
+        }).join('')
+      : '<li class="none">No classrooms yet. Make one to start studying.</li>';
+    return d;
+  } catch (e) {
+    el.innerHTML = `<li class="none">Could not load your classrooms.</li>`;
+    return null;
+  }
+}
+
+// Named, then opened. Creating one and leaving the reader on the list is a
+// dead end -- the next thing anyone wants is to put books on it.
+async function newClassroom() {
+  // Name only. A classroom needs a label you can pick out of a sidebar, and
+  // nothing more: the `brief` column is display-only -- the librarian reads the
+  // topic you type into ITS box, never the classroom's stored description -- so
+  // a second field here asked for something no code went on to use.
+  const r = await openDialog({
+    title: 'New classroom',
+    note: 'A classroom is a small shelf of books. Every answer comes from those '
+        + 'books and nothing else.',
+    confirm: 'Create classroom',
+    fields: [
+      { name: 'name', label: 'What are you studying?', required: true,
+        needed: 'Give it a name so you can find it again.',
+        placeholder: 'The atonement' },
+    ],
+  });
+  if (!r) return;
+  try {
+    const d = await fetchJSON('/api/classrooms', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: r.name }),
+    }, 15000);
+    location.href = `/classroom/${d.classroom.id}`;
+  } catch (e) {
+    await openDialog({ title: 'Could not create it', note: String(e.message || e),
+                       fields: [], confirm: 'OK', cancel: 'Close' });
+  }
+}

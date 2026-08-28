@@ -18,20 +18,25 @@ implementation of it. search.py remains the deterministic control: same question
 chunking or embedding change actually helped. The agent varies run to run, so it
 is the better product and the worse measuring instrument.
 """
+import contextlib
 import json
+import logging
 import os
+import re
 import secrets
 import tempfile
 import time
 from html import escape
 from pathlib import Path
 
+import anthropic
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
+    Response,
     StreamingResponse,
 )
 from pydantic import BaseModel, Field
@@ -43,12 +48,20 @@ from library_rag.drive import mirror
 from library_rag.drive import store as drive_store
 from library_rag.exploration import loop as browse_loop
 from library_rag.exploration import tools as browse_tools
+from library_rag.librarian import loop as librarian_loop
 from library_rag.pipeline import embed as embed_mod
 from library_rag.retrieval import research
 from library_rag.web import auth
 
 app = FastAPI(title="library-rag")
 _STATIC = Path(__file__).resolve().parent / "static"
+
+# An agent run that dies reports itself to the PAGE, over the stream it was
+# already using. That is right for the reader and useless for anyone reading
+# logs afterwards: a whole week of "the librarian is broken" left no trace in
+# Cloud Run, because the only copy of the reason was in a browser. Failures go
+# both places now.
+log = logging.getLogger("library_rag.web")
 
 # Order matters: SessionMiddleware must be added AFTER AuthMiddleware so that it
 # runs OUTSIDE it. Starlette applies middleware in reverse order of addition, and
@@ -88,8 +101,72 @@ def _drive_auth_handler(request, exc):
     return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
+def _failure_message(exc: Exception) -> str:
+    """One sentence a reader can act on, for a failure they did not cause.
+
+    Same intent as _drive_auth_handler above: an exception that already knows
+    what is wrong should say so, not arrive as a bare 500 or a dict repr. Both
+    agent routes used to hand `str(exc)` straight to the page, and for an
+    Anthropic SDK error that string is the wire body --
+
+        Error code: 400 - {'type': 'error', 'error': {'type':
+        'invalid_request_error', 'message': 'Your credit balance is too low to
+        access the Anthropic API. Please go to Plans & Billing to upgrade or
+        purchase credits.'}, 'request_id': 'req_011Ce...'}
+
+    -- which buries the only clause the reader needs inside two levels of
+    punctuation. Worse, ending the stream is itself a symptom, so the page's
+    missing-terminal check would overwrite even that with "the connection ended
+    before the run finished", and a week of empty-balance runs read as a flaky
+    server. This is the string that has to be right for that not to happen.
+
+    The API's own `error.message` is written for a human, so it is quoted rather
+    than replaced. What gets added is the part the API cannot know: that the
+    account is this app's, and what the reader can do about it. Balance is
+    matched on the message text because the API reports it as a generic
+    `invalid_request_error` -- there is no distinct error type to key on.
+    """
+    if isinstance(exc, anthropic.APIStatusError):
+        body = exc.body if isinstance(exc.body, dict) else {}
+        err = body.get("error") if isinstance(body.get("error"), dict) else {}
+        detail = str(err.get("message") or "").strip()
+        kind = exc.type or err.get("type")
+        if "credit balance" in detail.lower():
+            return (
+                "The Anthropic account behind this app is out of credit, so the "
+                "agent could not run. Add credit under Plans & Billing at "
+                "console.anthropic.com and try again -- nothing else is wrong, "
+                "and nothing was lost."
+            )
+        if kind == "authentication_error":
+            # rstrip: the API's message is a sentence of its own ("API key is
+            # invalid."), and parenthesising it as-is reads "(API key is
+            # invalid.)." -- a stray period that makes the line look mangled.
+            reason = detail.rstrip(".") or "no reason given"
+            return (
+                f"Anthropic rejected this app's API key ({reason}). "
+                "ANTHROPIC_API_KEY needs to be set to a working key."
+            )
+        if kind in {"rate_limit_error", "overloaded_error"}:
+            return (
+                f"Anthropic is refusing new work right now: {detail or kind}. "
+                "This one is temporary -- wait a moment and try again."
+            )
+        if detail:
+            return f"Anthropic refused the request: {detail}"
+        return f"Anthropic returned HTTP {exc.status_code} with no explanation."
+    if isinstance(exc, anthropic.APIConnectionError):
+        return f"Could not reach the Anthropic API: {exc}"
+    # Everything else, with the type name in front: a bare str() on a KeyError
+    # is the key and nothing else, which reads as a typo rather than a fault.
+    return f"{type(exc).__name__}: {exc}"
+
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
+    # Required, not optional-with-a-default. The tutor answers from a shelf or
+    # it does not answer; there is no global search to fall back to.
+    classroom_id: int
 
 
 class BrowseRequest(BaseModel):
@@ -110,7 +187,42 @@ class AddDriveRequest(BaseModel):
     file_ids: list[str] = Field(min_length=1, max_length=20)
 
 
-def _page(name: str) -> FileResponse:
+class ClassroomRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    brief: str | None = Field(default=None, max_length=2000)
+
+
+class ClassroomBooksRequest(BaseModel):
+    # Bounded at the cap rather than at some larger round number, so a caller
+    # learns the ceiling from a 422 naming the field instead of from a 409 after
+    # the fact. The cap itself is re-checked in db.add_classroom_books, because
+    # this bound cannot know how many books the shelf already holds.
+    book_ids: list[int] = Field(min_length=1, max_length=config.CLASSROOM_MAX_BOOKS)
+    added_by: str = Field(default="reader", pattern="^(reader|librarian)$")
+    rationale: str | None = Field(default=None, max_length=2000)
+    # Per-book, keyed by book id as a string (JSON has no integer keys). Adding
+    # a whole shortlist at once has to keep each book's OWN evidence: the shelf
+    # shows why every book is there, and a batch that stamped one quote across
+    # twelve books would make eleven of them lie about themselves.
+    rationales: dict[str, str] | None = Field(default=None)
+
+
+class LibrarianRequest(BaseModel):
+    brief: str = Field(min_length=1, max_length=2000)
+    count: int = Field(
+        default=librarian_loop.DEFAULT_COUNT, ge=1, le=librarian_loop.MAX_COUNT
+    )
+    # When present, the librarian is told what is already on the shelf so it can
+    # look for what is missing rather than recommending it back.
+    classroom_id: int | None = None
+
+
+# The Bible nav entry in every page, between markers, so config.BIBLE_ENABLED
+# can take it out in one place instead of five.
+_BIBLE_NAV = re.compile(r"[ \t]*<!--bible-->.*?<!--/bible-->\n?", re.S)
+
+
+def _page(name: str) -> Response:
     """Serve one of the HTML pages, revalidated every time.
 
     Same reasoning as static_file below, and it belongs here MORE, not less:
@@ -118,13 +230,40 @@ def _page(name: str) -> FileResponse:
     cached page is stale JS that no amount of reloading app.js can fix. The
     symptom is a UI change that is live on the server and invisible in the
     browser, which reads as a broken feature rather than a stale cache.
+
+    With the Bible disabled the nav entry is stripped server-side rather than
+    hidden in CSS or JavaScript: a link that is merely invisible is still in the
+    document, still focusable by keyboard, and still points at a route that now
+    returns 404. Removing it is the honest version, and it costs one regex on a
+    file we were already reading.
     """
-    return FileResponse(_STATIC / name, headers={"Cache-Control": "no-cache"})
+    if config.BIBLE_ENABLED:
+        return FileResponse(_STATIC / name, headers={"Cache-Control": "no-cache"})
+    html = _BIBLE_NAV.sub("", (_STATIC / name).read_text(encoding="utf-8"))
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/")
 def index():
-    return _page("index.html")
+    """Classrooms, not a chat box.
+
+    The old front door was a question box over the whole library, and it stopped
+    being answerable when migration 0010 removed the global chunk index. It was
+    also the wrong first screen: a reader has to choose a shelf before a question
+    means anything, so the list of shelves is where the story starts.
+    """
+    return _page("classrooms.html")
+
+
+@app.get("/classroom/{classroom_id}")
+def classroom_page(classroom_id: int):
+    """One classroom: its shelf, its tutor, and the way to add more books.
+
+    The id is read from the path by the page itself rather than templated in --
+    every asset URL in this app is absolute (/static/app.css), so a nested path
+    changes nothing about how the page loads.
+    """
+    return _page("classroom.html")
 
 
 @app.get("/library")
@@ -147,7 +286,7 @@ def static_file(name: str):
     """Shared CSS/JS. Whitelisted rather than mounted as a directory: this
     process also holds credentials.json and token.json, and a path parameter
     that reaches the filesystem is the wrong thing to be casual about."""
-    if name not in {"app.css", "app.js"}:
+    if name not in {"app.css", "app.js", "tutor.js"}:
         raise HTTPException(404, "No such asset.")
     # no-cache means "revalidate every time", not "never cache": the browser
     # still keeps the bytes and the ETag makes revalidation a cheap 304. Without
@@ -158,26 +297,47 @@ def static_file(name: str):
     )
 
 
+# One page of the indexed list. 8,679 books is not a list anyone reads to the
+# end, and fetching it whole cost 1.1 MB and 9.3 s before the page could paint.
+BOOKS_PAGE = 50
+BOOKS_MAX_PAGE = 200
+
+
 @app.get("/api/books")
-def books():
+def books(limit: int = BOOKS_PAGE, offset: int = 0):
     """What is actually searchable, plus what is on its way.
 
-    `books` is the searchable set -- the UI must never imply coverage we lack.
-    `pending` is everything else, so an upload the user just made is visible
-    while it works rather than vanishing until it finishes. A book that failed
-    stays in `pending` with its error: silently dropping it would tell the user
-    their upload succeeded.
+    `books` is the searchable set -- the UI must never imply coverage we lack --
+    and is PAGED: `total_books` is the real size, `books` is one window onto it.
+    `pending` is everything else and is not paged, because it is bounded by how
+    much work is in flight rather than by how big the library is; an upload the
+    user just made must be visible while it works rather than vanishing until it
+    finishes. A book that failed stays in `pending` with its error: silently
+    dropping it would tell the user their upload succeeded.
     """
+    limit = max(1, min(int(limit), BOOKS_MAX_PAGE))
+    offset = max(0, int(offset))
     with db.get_conn() as conn:
+        # Counted per row rather than by joining chunks and grouping. The old
+        # form aggregated all 1.76M chunk rows to produce 8,679 numbers; this
+        # one does 50 index lookups. See migrations/0015 for the measurements.
         done = conn.execute(
             """
-            SELECT b.id, b.title, b.page_count, count(c.id) AS chunks
-            FROM books b JOIN chunks c ON c.book_id = b.id
+            SELECT b.id, b.title, b.page_count,
+                   (SELECT count(*) FROM chunks c WHERE c.book_id = b.id) AS chunks
+            FROM books b
             WHERE b.status = 'done'
-            GROUP BY b.id, b.title, b.page_count
-            ORDER BY b.title
-            """
+            ORDER BY b.title, b.id
+            LIMIT %s OFFSET %s
+            """,
+            (limit, offset),
         ).fetchall()
+        total_books = conn.execute(
+            "SELECT count(*) FROM books WHERE status = 'done'"
+        ).fetchone()[0]
+        # Was sum() over the per-book counts, which only works when every book
+        # is in the response. 486 ms against a paged list that no longer knows.
+        total_chunks = conn.execute("SELECT count(*) FROM chunks").fetchone()[0]
         # claim_age_s is computed HERE rather than shipping claimed_at for the
         # browser to subtract from Date.now(). Both timestamps are Postgres's,
         # so the answer cannot be wrong because a client's clock is; a skewed
@@ -197,7 +357,10 @@ def books():
         "books": [
             {"id": r[0], "title": r[1], "pages": r[2], "chunks": r[3]} for r in done
         ],
-        "total_chunks": sum(r[3] for r in done),
+        "total_books": total_books,
+        "limit": limit,
+        "offset": offset,
+        "total_chunks": total_chunks,
         "pending": [
             {
                 "id": r[0], "title": r[1], "status": r[2],
@@ -350,6 +513,28 @@ async def upload_book(background: BackgroundTasks, file: UploadFile = File(...))
     }
 
 
+@app.get("/api/books/{book_id}/source")
+def book_source(book_id: int):
+    """Open the book where it actually lives.
+
+    For the 8,681 books that came from Drive that means Drive itself: the whole
+    original, in the viewer the reader already knows, with the folder it sits in
+    one click away. The /pdf route below serves OUR copy -- right for the
+    citation panel, which wants to land on a specific page and cannot rely on
+    Drive being reachable, and wrong for "let me look at this book" where the
+    reader wants the real thing.
+
+    An upload has no Drive file, so it falls back to our copy rather than
+    dead-ending. Four books in this library are uploads; a link that works for
+    8,681 and 404s for four is worse than one that always opens something.
+    """
+    with db.get_conn() as conn:
+        if db.fetch_book(conn, book_id) is None:
+            raise HTTPException(404, f"No book with id {book_id}.")
+        link = db.drive_link_for_book(conn, book_id)
+    return RedirectResponse(link or f"/api/books/{book_id}/pdf", status_code=302)
+
+
 @app.get("/api/books/{book_id}/pdf")
 def book_pdf(book_id: int):
     """The book's ORIGINAL bytes, for the citation panel's "open the real
@@ -394,6 +579,52 @@ def book_pdf(book_id: int):
     )
 
 
+class ClearStuckRequest(BaseModel):
+    # None means every stuck book regardless of age. Hours rather than a date
+    # so the client sends what the reader picked ("last 24 hours") and the
+    # cutoff is computed by Postgres against its own clock -- a browser with a
+    # skewed clock must not be able to widen or narrow what gets deleted.
+    older_than_hours: int | None = Field(default=None, ge=1, le=24 * 365 * 10)
+
+
+@app.get("/api/books/stuck")
+def list_stuck(older_than_hours: int | None = None):
+    """How many books are stopped, so the UI can say what a clear would remove
+    BEFORE it removes it. Deleting 353 things on a count you have not seen is
+    not a confirmation, it is a surprise."""
+    with db.get_conn() as conn:
+        rows = db.stuck_books(conn, older_than_hours)
+    return {"total": len(rows),
+            "books": [{"id": r["id"], "title": r["title"], "status": r["status"]}
+                      for r in rows[:20]]}
+
+
+@app.post("/api/books/stuck/clear")
+def clear_stuck(req: ClearStuckRequest):
+    """Delete books that stopped, and only those.
+
+    `status = 'done'` is never touched: a stuck book has no chunks, so nothing
+    searchable is lost and the reader is not one mis-click away from deleting
+    their library from a maintenance screen.
+
+    Reversible in the sense that matters -- drive_files is a separate table, so
+    the PDFs stay browsable on the Drive page and can be indexed again.
+
+    Goes through the same purge as deleting one book by hand, so the files it
+    owns are cleaned up by the one code path that knows which those are.
+    """
+    with db.get_conn() as conn:
+        rows = db.stuck_books(conn, req.older_than_hours)
+        # Batched. One book at a time meant two round trips and up to two
+        # object-store calls each: 353 books took over two minutes, outlasting
+        # the browser's own timeout, so the page reported a failure for work
+        # that had in fact completed.
+        result = ingest.purge_books(conn, [r["id"] for r in rows])
+    log.info("cleared %d stuck books (older_than_hours=%s), %d files",
+             result["deleted"], req.older_than_hours, len(result["removed"]))
+    return {"deleted": result["deleted"], "removed_files": len(result["removed"])}
+
+
 @app.delete("/api/books/{book_id}")
 def delete_book(book_id: int):
     """Remove a book and everything it owns.
@@ -413,76 +644,146 @@ def delete_book(book_id: int):
     }
 
 
-# A research run is detached from the HTTP connection that started it. The old
-# shape -- POST holds one SSE stream open for the whole run -- meant navigating
-# to another page killed the agent mid-thought, because closing the response
-# closed the generator. Now POST only starts the run; events accumulate in this
-# registry whether or not anyone is watching, and the events route below can be
-# attached, dropped and re-attached freely. In memory, like _sync_state and
-# _auth_flows: a restart loses in-flight runs, which is correct for a
-# single-user local app (and the page tells the user so via the 404).
-_research_runs: dict[str, dict] = {}
-_RESEARCH_KEEP = 20  # finished runs kept for late re-attach, oldest pruned
+# A research run is long-running work that outlives the request which started
+# it, so its state is a row in Postgres rather than a dict in this process --
+# the same reasoning as the books queue, written up in migrations/0009. POST
+# writes the row and returns; the worker appends events as it goes; the events
+# route below reads them back. That is what lets a run survive a redeploy, and
+# what makes a run_id mean something on an instance other than the one that
+# minted it.
+#
+# The remaining weakness is WHERE the worker runs. _run_research is still a
+# BackgroundTask, and Cloud Run stops allocating CPU the moment the last request
+# finishes, so a run nobody is watching can stall -- exactly the trap
+# _start_ingest documents and sidesteps by triggering a Job inside the request.
+# The difference now is the failure is recorded instead of vanishing: the row
+# stays at 'running' with a stale heartbeat, and the next reader closes it out
+# as 'interrupted'. Moving this to a Job is the next step, and it is a smaller
+# one from here, because the queue it would read from already exists.
 
 
-def _run_research(run_id: str, question: str) -> None:
-    """The agent loop, feeding the registry instead of a response. Runs on the
-    BackgroundTasks threadpool; list.append is atomic under the GIL, so the
-    streaming reader needs no lock to tail it."""
-    record = _research_runs[run_id]
+def _run_research(run_id: str, question: str, classroom_id: int) -> None:
+    """The tutor loop, writing its trail to Postgres as it produces it.
+
+    Every event is committed as it happens rather than batched at the end: a
+    run killed halfway through should leave the half it finished, which is the
+    entire difference between a record and a receipt.
+
+    The classroom is re-read here rather than passed in as a list of ids. A
+    classroom is living -- books can be added or removed between the POST that
+    minted this run and the moment it starts -- and the shelf that matters is
+    the one standing when the question is actually asked.
+    """
+    answer = None
     try:
         voyage = embed_mod.build_client()
         with db.get_conn() as conn:
-            for event in research.run(question, conn, voyage):
-                record["events"].append(event)
+            book_ids = db.classroom_book_ids(conn, classroom_id)
+            for event in research.run(question, conn, voyage, book_ids):
+                db.append_research_event(conn, run_id, event)
+                if event["type"] == "answer":
+                    answer = event.get("text")
+                elif event["type"] == "done":
+                    # The loop yields exactly one 'done' and stops, so this
+                    # runs after the last event -- which is what lets a reader
+                    # treat a terminal status as "one more drain and we are
+                    # finished" rather than having to guess.
+                    db.finish_research_run(
+                        conn,
+                        run_id,
+                        status="done",
+                        answer=answer,
+                        stop_reason=event.get("stop_reason"),
+                        iterations=event.get("iterations"),
+                        searches=event.get("searches"),
+                        usage=event.get("usage"),
+                    )
     except Exception as e:  # noqa: BLE001 -- a background task has nowhere to raise
-        record["events"].append({"type": "error", "message": str(e)})
-    finally:
-        record["done"] = True
+        # A FRESH connection: the one above may be the thing that broke, and a
+        # failure nobody can record is the failure mode this table exists to
+        # remove. Best-effort -- if Postgres itself is down there is nowhere
+        # left to write, and the stale heartbeat becomes the report instead.
+        log.exception("research run %s failed", run_id)
+        message = _failure_message(e)
+        with contextlib.suppress(Exception):
+            with db.get_conn() as conn:
+                db.append_research_event(
+                    conn, run_id, {"type": "error", "message": message}
+                )
+                db.finish_research_run(conn, run_id, status="failed", error=message)
 
 
-def _research_event_frames(record: dict, after: int):
+def _research_event_frames(run_id: str, after: int):
     """SSE frames for one run, starting at event index `after`.
 
-    Tail-follows the record: drain what is buffered, then poll until the run
-    is done AND drained -- both, because `done` can flip while events are still
-    unread. The 0.25s poll is imperceptible next to a loop that thinks in
-    tens of seconds, and costs nothing while blocked in sleep.
+    Tail-follows the table the way the old version tailed a list. Two changes
+    the move to Postgres forces:
+
+    Status is read BEFORE draining, not after. Reading it the other way round
+    can see 'running', drain, and return between the drain and the flip to
+    'done' -- losing whatever was written in that gap. Read first and a
+    terminal status is a promise that the drain which follows it is complete.
+
+    A stale heartbeat ends the stream. In memory the reader and the writer died
+    together, so "still running" was always true or the record was gone. A
+    reader can now outlive its writer, and without this check a run killed by a
+    redeploy would leave every watcher polling forever.
     """
     i = max(0, after)
-    while True:
-        events = record["events"]
-        while i < len(events):
-            yield f"data: {json.dumps(events[i])}\n\n"
-            i += 1
-        if record["done"] and i >= len(record["events"]):
-            return
-        time.sleep(0.25)
+    with db.get_conn() as conn:
+        while True:
+            state = db.research_run_state(conn, run_id, config.RESEARCH_STALE_SECONDS)
+            if state is None:
+                return
+            for row in db.fetch_research_events(conn, run_id, i):
+                yield f"data: {json.dumps(row['payload'])}\n\n"
+                i = row["seq"] + 1
+            if state["status"] != "running":
+                return
+            if state["stale"]:
+                db.mark_research_interrupted(conn, run_id)
+                # Ends without the terminal 'done' event, so the page's own
+                # missing-terminal check reports it as the failure it is. The
+                # frame is here so the user gets the reason rather than a
+                # generic broken-connection message.
+                yield "data: " + json.dumps(
+                    {"type": "error", "message": db.RESEARCH_INTERRUPTED}
+                ) + "\n\n"
+                return
+            # Imperceptible next to a loop that thinks in tens of seconds, and
+            # one indexed range scan per tick while blocked in sleep.
+            time.sleep(0.25)
 
 
 @app.post("/api/research")
 def research_start(req: AskRequest, background: BackgroundTasks):
-    """Start a research run and return its id -- the events route streams it.
+    """Start a tutor run against a classroom and return its id.
 
     Split from the stream so the run survives the client: the chat page can
-    navigate away mid-run and re-attach to the same run_id when it returns.
+    navigate away mid-run and re-attach to the same run_id when it returns, on
+    whichever instance answers that second request.
+
+    A classroom is REQUIRED, and this is the route where that becomes visible.
+    Since migration 0010 there is no global chunk index, so an unscoped question
+    is not a broader search -- it is a sequential scan of 1.76M chunks that
+    exhausts the request timeout without returning anything. Refusing with a
+    422 that names the missing field is the honest failure; hanging for five
+    minutes is what this replaced.
     """
     if not config.VOYAGE_API_KEY:
         raise HTTPException(500, "VOYAGE_API_KEY is not set")
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(500, "ANTHROPIC_API_KEY is not set")
 
-    # Prune finished runs first; an in-flight run is never evicted, because
-    # its worker would keep appending to a record nobody can reach.
-    while len(_research_runs) >= _RESEARCH_KEEP:
-        stale = next((k for k, r in _research_runs.items() if r["done"]), None)
-        if stale is None:
-            break
-        del _research_runs[stale]
-
     run_id = secrets.token_hex(16)
-    _research_runs[run_id] = {"question": req.question, "events": [], "done": False}
-    background.add_task(_run_research, run_id, req.question)
+    # Committed before the response, so the client cannot beat its own run to
+    # the events route. No pruning: the point of a durable run is that it stays.
+    with db.get_conn() as conn:
+        if db.fetch_classroom(conn, req.classroom_id) is None:
+            raise HTTPException(404, "No such classroom.")
+        db.create_research_run(conn, run_id, req.question,
+                               classroom_id=req.classroom_id)
+    background.add_task(_run_research, run_id, req.question, req.classroom_id)
     return {"run_id": run_id}
 
 
@@ -495,14 +796,179 @@ def research_events(run_id: str, after: int = 0):
     of a demo. `after` is how a returning page skips what it already rendered
     from its saved copy and picks up live at the first unseen event.
     """
-    record = _research_runs.get(run_id)
-    if record is None:
-        raise HTTPException(
-            404, "That run is gone — the server may have restarted. Ask again."
-        )
+    with db.get_conn() as conn:
+        if db.research_run_state(conn, run_id, config.RESEARCH_STALE_SECONDS) is None:
+            # A missing row means a bad id, not a restart -- restarts no longer
+            # lose runs. Saying so is the difference between a user retrying and
+            # a user reasonably concluding the server is unreliable.
+            raise HTTPException(404, "No run with that id.")
     return StreamingResponse(
-        _research_event_frames(record, after),
+        _research_event_frames(run_id, after),
         media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ------------------------------------------------------------ classrooms --
+# A classroom is the shelf the tutor answers from. Everything here is CRUD over
+# that shelf; nothing here runs an agent. The deny-by-default middleware in
+# web/auth.py protects each of these with no code, so the only auth decision is
+# that none of them belongs in OPEN_PATHS.
+
+
+def _classroom_or_404(conn, classroom_id: int):
+    row = db.fetch_classroom(conn, classroom_id)
+    if row is None:
+        raise HTTPException(404, "No such classroom.")
+    return row
+
+
+@app.get("/api/classrooms")
+def list_classrooms(request: Request):
+    """Every classroom, newest-used first, with its book count.
+
+    Not filtered by owner. The allowlist is a handful of people sharing one
+    Drive, so a classroom another reader built is far more likely to be useful
+    than intrusive -- and a study group assembling a shelf together is a feature
+    rather than a leak. Adding the filter later is one WHERE clause; taking a
+    shared classroom away from someone who came to rely on it is not.
+    """
+    with db.get_conn() as conn:
+        return {"classrooms": db.list_classrooms(conn),
+                "max_books": config.CLASSROOM_MAX_BOOKS,
+                "me": auth.current_user(request)}
+
+
+@app.post("/api/classrooms")
+def create_classroom(req: ClassroomRequest, request: Request):
+    with db.get_conn() as conn:
+        cid = db.create_classroom(conn, auth.current_user(request),
+                                  req.name.strip(), req.brief)
+        return {"classroom": db.fetch_classroom(conn, cid), "books": []}
+
+
+@app.get("/api/classrooms/{classroom_id}")
+def get_classroom(classroom_id: int):
+    """The shelf, including books that are still arriving.
+
+    `ready` is reported per book rather than filtered out: a book mid-ingest
+    belongs on the shelf the reader assembled, and hiding it would look like the
+    add silently failed. The tutor's scope excludes it separately.
+    """
+    with db.get_conn() as conn:
+        row = _classroom_or_404(conn, classroom_id)
+        books = db.classroom_books(conn, classroom_id)
+        return {
+            "classroom": row,
+            "books": [{**b, "ready": b["status"] == "done"} for b in books],
+            "max_books": config.CLASSROOM_MAX_BOOKS,
+        }
+
+
+@app.patch("/api/classrooms/{classroom_id}")
+def rename_classroom(classroom_id: int, req: ClassroomRequest):
+    with db.get_conn() as conn:
+        _classroom_or_404(conn, classroom_id)
+        db.rename_classroom(conn, classroom_id, req.name.strip(), req.brief)
+        return {"classroom": db.fetch_classroom(conn, classroom_id)}
+
+
+@app.delete("/api/classrooms/{classroom_id}")
+def delete_classroom(classroom_id: int):
+    """Deletes the shelf and its conversation. Never the books."""
+    with db.get_conn() as conn:
+        _classroom_or_404(conn, classroom_id)
+        db.delete_classroom(conn, classroom_id)
+        return {"deleted": classroom_id}
+
+
+@app.post("/api/classrooms/{classroom_id}/books")
+def add_classroom_books(classroom_id: int, req: ClassroomBooksRequest):
+    """Put books on the shelf.
+
+    Only books that are READY. A book still being ingested has no chunks, so
+    adding it would put something on the shelf the tutor cannot read -- and the
+    reader would discover that later, as a missing answer rather than as a
+    refusal. The Drive view offers "Index" for those instead, and the row
+    becomes addable when it finishes.
+    """
+    with db.get_conn() as conn:
+        _classroom_or_404(conn, classroom_id)
+        rows = conn.execute(
+            "SELECT id, title, status::text FROM books WHERE id = ANY(%s)",
+            (req.book_ids,),
+        ).fetchall()
+        found = {r[0]: (r[1], r[2]) for r in rows}
+
+        missing = [b for b in req.book_ids if b not in found]
+        if missing:
+            raise HTTPException(404, f"No such book(s): {missing}")
+        not_ready = [found[b][0] for b in req.book_ids if found[b][1] != "done"]
+        if not_ready:
+            raise HTTPException(
+                409,
+                "These are still being prepared and cannot be added yet: "
+                + ", ".join(not_ready[:3])
+                + ("..." if len(not_ready) > 3 else ""),
+            )
+
+        try:
+            per_book = req.rationales or {}
+            added = db.add_classroom_books(
+                conn, classroom_id,
+                [(b, req.added_by, per_book.get(str(b)) or req.rationale)
+                 for b in req.book_ids],
+            )
+        except db.ClassroomFull as e:
+            # 409, not 422: the request is well-formed and would have been fine
+            # against a shelf with room. The message names the numbers so the
+            # page can say it without recomputing them.
+            raise HTTPException(409, str(e)) from e
+        return {"added": added, "books": db.classroom_books(conn, classroom_id)}
+
+
+@app.delete("/api/classrooms/{classroom_id}/books/{book_id}")
+def remove_classroom_book(classroom_id: int, book_id: int):
+    with db.get_conn() as conn:
+        _classroom_or_404(conn, classroom_id)
+        db.remove_classroom_book(conn, classroom_id, book_id)
+        return {"removed": book_id, "books": db.classroom_books(conn, classroom_id)}
+
+
+@app.post("/api/librarian")
+def librarian_stream(req: LibrarianRequest):
+    """The librarian, streamed. Ephemeral -- no run id, no resume.
+
+    Unlike a tutor run this is not a record of anything: its output is a
+    shortlist the reader either acts on within the minute or discards, and what
+    survives it is the classroom they built, which IS durable. If that changes
+    -- "the shortlist from yesterday" becoming a thing people want -- this
+    should adopt the two-phase pattern /api/research uses.
+    """
+    if not config.VOYAGE_API_KEY:
+        raise HTTPException(500, "VOYAGE_API_KEY is not set")
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(500, "ANTHROPIC_API_KEY is not set")
+
+    def stream():
+        try:
+            voyage = embed_mod.build_client()
+            with db.get_conn() as conn:
+                on_shelf = (
+                    db.classroom_book_ids(conn, req.classroom_id, ready_only=False)
+                    if req.classroom_id else []
+                )
+                for event in librarian_loop.run(req.brief, conn, voyage,
+                                                count=req.count,
+                                                classroom_ids=on_shelf):
+                    yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:  # noqa: BLE001 -- headers are already out; a 500
+            # is no longer available, so the failure has to travel in the stream.
+            log.exception("librarian run failed")
+            yield f"data: {json.dumps({'type': 'error', 'message': _failure_message(e)})}\n\n"
+
+    return StreamingResponse(
+        stream(), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
@@ -527,7 +993,15 @@ def browse_stream(req: BrowseRequest):
                 for event in browse_loop.run(req.interest, conn, count=req.count):
                     yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:  # noqa: BLE001 -- surface it in the stream, not a 500
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            # The headers went out with the first frame, so a 500 is no longer
+            # available: the only channel left to the reader is the stream
+            # itself. It ends without the terminal 'done' -- correct, the run did
+            # NOT finish -- and this frame is what stops that from being read as
+            # a dropped connection. See _failure_message, and readEventStream in
+            # app.js, which now prefers this reason over its own fallback.
+            log.exception("browse run failed")
+            message = _failure_message(e)
+            yield f"data: {json.dumps({'type': 'error', 'message': message})}\n\n"
 
     return StreamingResponse(
         stream(),
@@ -860,12 +1334,30 @@ def _auth_page(title: str, detail: str, *, ok: bool) -> HTMLResponse:
 # ------------------------------------------------------------------- bible --
 # The Bible reader. English only, one table, no embeddings -- see
 # migrations/0006_bible_verses.sql and library_rag/bible.py.
+#
+# All five entry points below are behind config.BIBLE_ENABLED, which is off by
+# default. The page and its three API routes are gated together on purpose: a
+# hidden nav link over live routes is not a disabled feature, it is an
+# undocumented one, still reachable by anyone who kept the URL.
+
+
+def _require_bible() -> None:
+    """404 rather than 403 when the reader is switched off.
+
+    403 would tell a stranger the feature exists and they are merely not
+    allowed it. There is nothing to protect here -- it is public Scripture --
+    but "this route does not exist on this deployment" is simply the true
+    statement, and it is the one that keeps the surface honest.
+    """
+    if not config.BIBLE_ENABLED:
+        raise HTTPException(404, "Not found.")
 
 
 @app.get("/bible")
 def bible_page():
     """The Bible reader. A fourth page because it is a fourth task -- reading
     Scripture, which shares no state with the PDF library."""
+    _require_bible()
     return _page("bible.html")
 
 
@@ -878,6 +1370,7 @@ def bible_books():
     call and the only one that has to be able to describe an empty install as
     data rather than as an error.
     """
+    _require_bible()
     with db.get_conn() as conn:
         if not bible.loaded(conn):
             return {"loaded": False, "books": []}
@@ -893,6 +1386,7 @@ def bible_books():
 
 @app.get("/api/bible/chapter")
 def bible_chapter(book: int, chapter: int):
+    _require_bible()
     with db.get_conn() as conn:
         verses = bible.chapter(conn, book, chapter)
     if not verses:
@@ -920,6 +1414,7 @@ def bible_search(q: str):
     l-o-v-e. `truncated` exists so the page can say a result was cut off; a
     silently capped list reads as a complete answer.
     """
+    _require_bible()
     q = q.strip()
     if not q:
         raise HTTPException(400, "Empty search.")

@@ -18,6 +18,7 @@
   --accent: #0b57d0;
   --accent-soft: #d3e3fd;    /* filled chips, selected states */
   --accent-ink: #041e49;     /* text on accent-soft */
+  --plum: #8a5cc4;           /* second series colour, from --grad */
   --good: #146c2e;
   --good-soft: #c4eed0;
   --warn: #99522a;
@@ -26,6 +27,28 @@
   --bad-soft: #f9dedc;
   --shadow: 0 1px 3px rgba(0,0,0,.08), 0 4px 20px rgba(0,0,0,.06);
   --grad: linear-gradient(74deg, #4285f4 0%, #9b72cb 44%, #d96570 90%);
+
+  /* ---- Scale ----------------------------------------------------------
+     Six type sizes and seven spacings, and nothing outside them. The page
+     this replaced had thirteen font sizes between 11px and 15.5px, most of
+     them a half-pixel apart and picked one control at a time; that is what
+     made it read as unfinished however carefully each piece was aligned.
+     A size that needs a seventh value is a sign the design is wrong, not
+     that the scale is short. */
+  --t-label: 11px;   /* uppercase section labels, badges */
+  --t-meta:  12px;   /* secondary metadata, timestamps, counts */
+  --t-ui:    13px;   /* buttons, inputs, list rows */
+  --t-body:  14px;   /* prose and primary titles in lists */
+  --t-title: 16px;   /* card, panel and rail headings */
+  --t-page:  20px;   /* the single page heading */
+
+  --s1: 4px;  --s2: 8px;  --s3: 12px; --s4: 16px;
+  --s5: 20px; --s6: 24px; --s8: 32px;
+
+  --r1: 8px;  --r2: 12px; --r3: 16px; --rp: 999px;
+
+  --rail: 300px;     /* the books panel */
+  --sidew: 268px;    /* the sidebar */
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -40,6 +63,7 @@
     --accent: #a8c7fa;
     --accent-soft: #263f66;
     --accent-ink: #d3e3fd;
+    --plum: #c9a7f0;
     --good: #6dd58c;
     --good-soft: #143d22;
     --warn: #ffb877;
@@ -79,6 +103,7 @@ h1 { font-size: 20px; font-weight: 500; margin: 0; }
 .brand {
   display: flex; align-items: center; gap: 10px; padding: 6px 12px 16px;
   font-size: 18px; font-weight: 500; letter-spacing: 0;
+  color: var(--ink); text-decoration: none;
 }
 .brand .logo {
   width: 26px; height: 26px; border-radius: 8px; background: var(--grad);
@@ -96,44 +121,10 @@ h1 { font-size: 20px; font-weight: 500; margin: 0; }
 .snav a.on { background: var(--accent-soft); color: var(--accent-ink); }
 .snav a.on svg { color: var(--accent-ink); }
 
-/* A button, not a heading: the index list is a dropdown, collapsed until
-   asked for, so the sidebar stays calm on every page. */
-.sidehead {
-  font-size: 12px; font-weight: 600; color: var(--muted);
-  text-transform: uppercase; letter-spacing: .07em;
-  padding: 14px 14px 6px; display: flex; align-items: baseline; gap: 8px;
-  background: none; border: 0; width: 100%; cursor: pointer;
-  text-align: left; font-family: inherit;
-}
-.sidehead:hover { color: var(--ink); }
-.sidehead .chev {
-  display: inline-block; font-size: 9px; transition: transform .15s ease;
-}
-.sidehead.open .chev { transform: rotate(90deg); }
-.sidehead .count { font-weight: 400; margin-left: auto; }
-
-.sidebooks { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-#navbooks {
-  list-style: none; margin: 0; padding: 0 2px; overflow-y: auto; flex: 1;
-}
-#navbooks li {
-  display: flex; align-items: center; gap: 8px; padding: 6px 12px;
-  border-radius: 10px; font-size: 13px; color: var(--muted);
-}
-#navbooks li:hover { background: var(--surface-2); color: var(--ink); }
-#navbooks .t {
-  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap;
-}
-#navbooks .m { font-size: 11px; color: var(--dim); flex: none; }
-#navbooks .del {
-  border: 0; background: none; color: var(--dim); cursor: pointer;
-  font-size: 14px; line-height: 1; padding: 0 2px; opacity: 0; flex: none;
-}
-#navbooks li:hover .del { opacity: 1; }
-#navbooks .del:hover { color: var(--bad); }
-#navbooks li.working { color: var(--dim); }
-#navbooks li.working .t { animation: pulse 1.6s ease-in-out infinite; }
+/* Holds the Drive status and the footer at the bottom of the sidebar. The
+   book list used to do this as a side effect of being flex:1; with it gone,
+   both floated up under the nav. */
+.sidespace { flex: 1; min-height: 0; }
 
 /* Drive connection state, bottom-left on every page. */
 .sideauth {
@@ -174,6 +165,14 @@ button { font: inherit; }
    .chip has one -- without it the librarian button looks identical whether its
    panel is showing or not. */
 .btn.on { background: var(--accent-soft); color: var(--accent-ink); }
+/* .btn is used on <a> as well as <button> (the classroom dialog's "Jump to
+   Drive"), and an anchor brings its own colour and underline. */
+a.btn { text-decoration: none; color: var(--ink); }
+a.btn:hover { text-decoration: none; }
+.btn.ghost { background: none; color: var(--muted); }
+.btn.ghost:hover:not(:disabled) { background: var(--surface); color: var(--ink); }
+.btn.danger { background: var(--bad); color: #fff; }
+.btn.danger:hover:not(:disabled) { filter: brightness(1.08); }
 .btn:disabled { opacity: .5; cursor: default; }
 .btn svg { width: 16px; height: 16px; }
 
@@ -303,15 +302,18 @@ details.trace[open] summary { color: var(--ink); }
 .answer cite:hover, .answer cite.on { background: var(--accent); color: var(--bg); }
 
 /* The composer: Gemini's pill. Sits at the bottom of the chat column. */
-.composer { flex: none; padding: 10px 0 18px; }
+.composer { flex: none; padding: var(--s3) 0 var(--s5); }
 .composer form {
   display: flex; align-items: center; gap: 6px;
   background: var(--surface); border-radius: 999px; padding: 6px 6px 6px 22px;
 }
 .composer form:focus-within { outline: 1px solid var(--line); }
-.composer input[type=text] {
+/* `.composer input`, not `input[type=text]`: type is optional on an input and
+   defaults to text, so the attribute selector silently missed every composer in
+   the app and left the field with its user-agent border inside the pill. */
+.composer input {
   flex: 1; border: 0; background: none; color: var(--ink); font: inherit;
-  outline: none; min-width: 0; padding: 8px 0;
+  font-size: var(--t-body); outline: none; min-width: 0; padding: 8px 0;
 }
 .composer input::placeholder { color: var(--dim); }
 .composer .send {
@@ -323,7 +325,9 @@ details.trace[open] summary { color: var(--ink); }
 .composer .send:disabled { opacity: .4; cursor: default; }
 .composer .send svg { width: 20px; height: 20px; }
 .composer .note {
-  text-align: center; font-size: 11.5px; color: var(--dim); margin-top: 8px;
+  background: none; padding: 0; border-radius: 0;
+  text-align: center; font-size: var(--t-meta); color: var(--dim);
+  margin: var(--s2) 0 0;
 }
 
 /* The citation panel: the ONLY place raw markdown and full metadata appear.
@@ -393,6 +397,12 @@ details.trace[open] summary { color: var(--ink); }
 
 .split { display: grid; grid-template-columns: 250px 1fr; gap: 20px; align-items: start; }
 @media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
+
+/* The Drive browser, one column. It used to be a tree beside a list, and both
+   rendered the same folders -- Articles, Books, Dissertations appeared twice on
+   one screen. Of the two only the list carries the per-folder Index button, so
+   the list is the one that stayed, navigated by breadcrumb. */
+.browse { display: block; }
 
 .tree { font-size: 13px; max-height: calc(100vh - 210px); overflow: auto; padding-right: 4px; }
 .tree ul { list-style: none; margin: 0; padding-left: 14px; }
@@ -467,9 +477,18 @@ details.trace[open] summary { color: var(--ink); }
 .frow.showpath .fwhere { flex-wrap: wrap; }
 .frow.showpath .fwhere .p { white-space: normal; overflow: visible; }
 .fact { display: flex; justify-content: flex-end; }
-.fact .btn { padding: 6px 14px; font-size: 12.5px; opacity: 0; }
-.frow:hover .fact .btn { opacity: 1; }
-.frow:hover .fact .btn:disabled { opacity: .5; }
+.fact .btn { padding: 6px 14px; font-size: var(--t-meta); }
+.fact .btn:disabled { opacity: .5; }
+/* Outlined, not filled. There is one of these on most rows of a 57,000-file
+   list, and 50 solid buttons down a page would read as the point of the page
+   rather than as something available on each row. */
+.fact .btn.ix, .fact .btn.ixdir {
+  background: none; color: var(--muted); box-shadow: inset 0 0 0 1px var(--line);
+}
+.fact .btn.ix:hover:not(:disabled), .fact .btn.ixdir:hover:not(:disabled) {
+  background: var(--accent-soft); color: var(--accent-ink); box-shadow: none;
+}
+
 .frow.isfolder { cursor: pointer; }
 .empty { color: var(--dim); font-size: 13.5px; padding: 26px 14px; }
 
@@ -581,13 +600,27 @@ details.trace[open] summary { color: var(--ink); }
 .steps .conn { width: 26px; height: 2px; background: var(--surface-2); margin: 0 8px; flex: none; }
 .steps .conn.done { background: var(--good-soft); }
 
+.morerow {
+  display: flex; align-items: center; gap: var(--s3);
+  padding: var(--s4) 0 var(--s2);
+}
+
 .uploadnote { font-size: 12.5px; color: var(--dim); }
 .uploadnote.err { color: var(--bad); }
 
 .sectionhead {
   font-size: 12px; font-weight: 600; color: var(--muted);
   text-transform: uppercase; letter-spacing: .07em; margin: 26px 0 10px;
+  display: flex; align-items: center; gap: var(--s3);
 }
+/* Sits on the heading of the list it empties. Quiet until hovered: it is a
+   destructive control on a page you visit to watch things work. */
+.btn.clearstuck {
+  font-size: var(--t-meta); padding: 5px var(--s3); text-transform: none;
+  letter-spacing: 0; font-weight: 500; background: none; color: var(--muted);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.btn.clearstuck:hover { background: var(--bad-soft); color: var(--bad); box-shadow: none; }
 
 /* --------------------------------------------------------------- shared --- */
 @keyframes pulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
@@ -675,6 +708,58 @@ main .card h1 { margin-bottom: 8px; }
 .hit .ref { display: block; font-size: 12.5px; font-weight: 600; color: var(--accent-ink); margin-bottom: 3px; }
 .hit mark { background: var(--accent-soft); color: var(--accent-ink); border-radius: 3px; padding: 0 2px; }
 
+/* ---- drive coverage ---- */
+/* How much of the drive is searchable. Two measurements that diverge hard on
+   this collection -- 15% of the BOOKS are ready while 45% of the BYTES are,
+   because the books folder holds the large files and the article folders hold
+   most of the count -- so they get two rows and two colours rather than one
+   averaged figure that would flatter whichever is further along. */
+
+.cover {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--s3); max-width: 860px; margin: 0 0 var(--s4);
+}
+.crow {
+  display: grid; grid-template-columns: 1fr auto; gap: var(--s2) var(--s3);
+  align-items: center;
+  background: var(--surface); border-radius: var(--r2);
+  padding: var(--s3) var(--s4);
+}
+.clab {
+  font-size: var(--t-label); font-weight: 600; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--muted);
+}
+/* The number anyone actually reads. It used to be the tail of a sentence after
+   a slash; here it is the loudest thing on the row. */
+.cpct {
+  font-size: var(--t-title); font-weight: 600; line-height: 1;
+  font-variant-numeric: tabular-nums; justify-self: end;
+}
+.cbar {
+  grid-column: 1 / -1;
+  height: 8px; border-radius: var(--rp); overflow: hidden;
+  display: flex; background: var(--surface-2);
+}
+.cbar i { display: block; height: 100%; }
+/* In flight reads as a lighter continuation of done, not a second achievement:
+   the same bar filling, just not there yet. */
+.cbar .work { opacity: .38; }
+.cnum {
+  grid-column: 1 / -1; font-size: var(--t-meta); color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Two hues, so the rows are told apart without reading their labels. Blue is
+   the app's accent and carries the count; the size bar takes the second colour
+   from the brand gradient rather than a new one invented for the occasion. */
+.crow.books .cpct { color: var(--accent); }
+.crow.books .cbar .done, .crow.books .cbar .work { background: var(--accent); }
+.crow.size  .cpct { color: var(--plum); }
+.crow.size  .cbar .done, .crow.size  .cbar .work { background: var(--plum); }
+
+.cnote { font-size: var(--t-meta); color: var(--dim); max-width: 860px; line-height: 1.5; }
+@media (max-width: 720px) { .cover { display: none; } }
+
 @media (max-width: 720px) { .pagehead .searchpill { display: none; } }
 
 /* ------------------------------------------------------------------ login -- */
@@ -697,3 +782,551 @@ main .card h1 { margin-bottom: 8px; }
 .sideuser .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sideuser a { color: var(--muted); text-decoration: none; flex: none; }
 .sideuser a:hover { color: var(--ink); text-decoration: underline; }
+
+/* ═══════════════════════════════════════════════════════════ classrooms ══
+   A classroom is a conversation with a fixed shelf of books, so it is laid
+   out the way a conversation is: the list of them in the sidebar, the talking
+   in the middle, and the shelf itself on a rail to the right that you open
+   when you want to see what is answering you.
+
+   Everything below sizes with the --t/--s/--r scale at the top of this file.
+   Nothing here should introduce a new number. */
+
+/* ---- the sidebar list of classrooms ---------------------------------- */
+
+/* A quiet heading over the sidebar's classroom list, the way Claude labels
+   its Projects. Not a button: making a classroom happens on the classrooms
+   page, and offering it here while you are inside a different classroom is
+   what made two "New classroom" buttons look like two different actions. */
+.sidelabel {
+  font-size: var(--t-label); font-weight: 600; color: var(--dim);
+  text-transform: uppercase; letter-spacing: .07em;
+  padding: var(--s4) var(--s4) var(--s2);
+}
+
+.newroom {
+  display: flex; align-items: center; justify-content: center; gap: var(--s2);
+  margin: 0 var(--s3) var(--s4); padding: 10px var(--s4);
+  border: 0; border-radius: var(--rp); cursor: pointer;
+  background: var(--accent-soft); color: var(--accent-ink);
+  font: inherit; font-size: var(--t-ui); font-weight: 500;
+}
+.newroom:hover { filter: brightness(1.04); }
+.newroom svg { width: 16px; height: 16px; flex: none; }
+
+/* Scrolls on its own so a long list never pushes the nav or the Drive status
+   off the bottom of the sidebar. */
+.roomlist {
+  flex: 1; min-height: 0; overflow-y: auto;
+  list-style: none; margin: 0 0 var(--s2); padding: 0 var(--s2);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.roomlist a {
+  display: grid; grid-template-columns: 1fr auto; align-items: center;
+  gap: 0 var(--s2); padding: 9px var(--s3);
+  border-radius: var(--rp); text-decoration: none; color: var(--ink);
+  font-size: var(--t-ui);
+}
+.roomlist a:hover { background: var(--surface-2); }
+.roomlist a.on { background: var(--accent-soft); color: var(--accent-ink); }
+.roomlist .nm {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The count is the one piece of metadata that earns a place at this size: it
+   is the difference between a shelf that can answer and one that cannot. */
+.roomlist .ct {
+  font-size: var(--t-meta); color: var(--dim); font-variant-numeric: tabular-nums;
+}
+.roomlist a.on .ct { color: var(--accent-ink); opacity: .75; }
+.roomlist .none {
+  padding: var(--s3) var(--s3) var(--s4);
+  font-size: var(--t-meta); color: var(--dim); line-height: 1.5;
+}
+
+/* ---- the classrooms landing page ------------------------------------- */
+/* A card is a link with two buttons inside it, so the buttons stop the click
+   from reaching the anchor. Laid out on a grid rather than flex so the actions
+   hold a fixed column and a long name wraps instead of shoving them off. */
+
+#rooms { max-width: 880px; }
+
+.room {
+  display: grid; grid-template-columns: 1fr auto; gap: var(--s1) var(--s4);
+  align-items: center; text-decoration: none; color: inherit;
+  background: var(--surface); border-radius: var(--r3);
+  padding: var(--s4) var(--s5); margin-bottom: var(--s2);
+}
+.room:hover { background: var(--surface-2); }
+.roomname { font-size: var(--t-title); font-weight: 500; color: var(--ink); }
+.roommeta {
+  grid-column: 1; font-size: var(--t-meta); color: var(--muted);
+  display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap;
+  margin-top: var(--s1);
+}
+
+/* A measurement, not a sentence. The number carries the weight and the unit
+   sits under it in the quiet colour, so a row of them scans as data. */
+.stat {
+  display: inline-flex; align-items: baseline; gap: 5px;
+  padding: 3px var(--s2) 3px 7px; border-radius: var(--r1);
+  background: var(--bg);
+}
+.stat .n {
+  font-size: var(--t-ui); font-weight: 600; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.stat .u { font-size: var(--t-meta); color: var(--dim); }
+/* Colour means "this shelf can answer something". An empty one stays grey --
+   the difference between 0 books and 4 is the whole point of the row. */
+.stat.on { background: var(--accent-soft); }
+.stat.on .n { color: var(--accent-ink); }
+.stat.on .u { color: var(--accent-ink); opacity: .75; }
+.roomact { grid-row: 1 / span 2; grid-column: 2; display: flex; gap: var(--s2); }
+.roomact .btn {
+  opacity: 0; font-size: var(--t-meta); padding: 6px var(--s3);
+  background: var(--bg);
+}
+.room:hover .roomact .btn, .roomact .btn:focus-visible { opacity: 1; }
+.roomact .roomdel:hover { background: var(--bad-soft); color: var(--bad); }
+
+/* The page's empty state gets air above it rather than centring in a body
+   whose height it does not control. */
+.pagebody .blank { height: auto; padding-top: 12vh; }
+
+/* ---- the classroom page ---------------------------------------------- */
+
+.roomhead {
+  flex: none; display: flex; align-items: center; gap: var(--s3);
+  padding: var(--s4) var(--s6); min-height: 60px;
+}
+.roomhead h1 {
+  font-size: var(--t-page); font-weight: 500; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.roomhead .meta {
+  font-size: var(--t-meta); color: var(--dim); flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.roomhead .grow { flex: 1; }
+.roomhead .btn { font-size: var(--t-ui); padding: 8px var(--s4); }
+
+/* The chat column and the rail. The rail is a real column rather than an
+   overlay: it holds the books the answer is made of, and reading an answer
+   while checking what produced it is the normal case, not an interruption. */
+.roomsplit { flex: 1; min-height: 0; display: flex; }
+.chatcol {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  padding: 0 var(--s6);
+}
+.chatinner {
+  width: 100%; max-width: 760px; margin: 0 auto;
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+}
+
+/* The conversation scrolls under the librarian bar, and a hard edge slices the
+   line of prose that happens to be crossing it mid-glyph. Fading the first few
+   pixels is what makes a scroll region read as "there is more above" rather
+   than as text that has been cut off. */
+.chatinner .msgs {
+  padding-top: var(--s2);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
+}
+
+/* ---- the librarian --------------------------------------------------- */
+/* Reached from the Bookshelf, because that is what it fills. It used to sit
+   above the conversation, which put the thing that FINDS books and the thing
+   that ANSWERS from them in one column and made them look like two halves of
+   the same feature. They are not: the tutor may only read this shelf, the
+   librarian reads all 8,676 books. */
+
+.railadd { display: grid; gap: var(--s2); }
+.railadd .btn { width: 100%; justify-content: center; font-size: var(--t-ui); }
+/* A plain .btn is --surface, which is also the rail's background: the second
+   button rendered as floating text with no edge to it. */
+.railadd .btn:not(.asklib) { background: var(--bg); }
+.railadd .btn:not(.asklib):hover { background: var(--surface-2); }
+
+/* The mark. A sparkle in the Gemini gradient -- the one place that gradient
+   appears in the working UI, so "this is the agent" needs no caption. */
+.libmark {
+  width: 22px; height: 22px; border-radius: var(--rp); flex: none;
+  background: var(--grad); display: grid; place-items: center;
+}
+.libmark svg { width: 13px; height: 13px; color: #fff; display: block; }
+
+.btn.asklib { background: var(--accent-soft); color: var(--accent-ink); }
+.btn.asklib:hover { filter: brightness(1.04); }
+.modalhead .libmark { width: 26px; height: 26px; }
+.modalhead .libmark svg { width: 15px; height: 15px; }
+
+/* Shorter than the Drive picker: this dialog holds a question and its answers,
+   and it grows with the answers rather than reserving room for them. */
+.modalbox.lib { height: auto; max-height: min(680px, 100%); width: min(720px, 100%); }
+.modalbox.lib .modalbody { display: flex; flex-direction: column; }
+
+.modalbody .say {
+  font-size: var(--t-ui); color: var(--muted); margin: 0 0 var(--s4);
+  line-height: 1.55;
+}
+.libform { display: flex; gap: var(--s2); }
+.libform input {
+  flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--bg);
+  color: var(--ink); border-radius: var(--rp); padding: 11px var(--s4);
+  font: inherit; font-size: var(--t-ui); outline: none;
+}
+.libform input:focus {
+  border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.libform input::placeholder { color: var(--dim); }
+/* "up to [12] books" sits between the topic and the button. flex:none so it
+   never competes with the text field for width, and worded so the number reads
+   as a ceiling rather than a promise of twelve. */
+.bcount {
+  flex: none; display: flex; align-items: center; gap: 6px;
+  font-size: var(--t-meta); color: var(--muted); white-space: nowrap;
+}
+.bcount input {
+  width: 58px; text-align: center;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+  font: inherit; font-size: var(--t-ui); border-radius: var(--rp);
+  padding: 9px var(--s2); outline: none;
+  font-variant-numeric: tabular-nums;
+}
+.bcount input:focus {
+  border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.bcount input.bad {
+  border-color: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft);
+}
+
+/* What is wrong with the number, under the row that holds it. */
+.liberr {
+  margin-top: var(--s2); font-size: var(--t-meta); color: var(--bad);
+  line-height: 1.5;
+}
+@media (max-width: 560px) { .bcount { display: none; } }
+
+#ltrail { margin-top: var(--s4); }
+#ltrail:empty { display: none; }
+#lout:not(:empty) { margin-top: var(--s4); }
+
+/* ---- what the librarian is doing ------------------------------------- */
+/* Three phases with numbers that move, instead of one line per tool call. A
+   run makes 20-40 calls; nobody reads that, and the counts in it were the same
+   number every time. */
+
+.phases { display: flex; flex-direction: column; gap: var(--s2); }
+.ph {
+  display: grid; grid-template-columns: 14px 1fr auto; gap: var(--s3);
+  align-items: center; font-size: var(--t-ui);
+}
+.ph .dot {
+  width: 8px; height: 8px; border-radius: 50%; justify-self: center;
+  background: var(--surface-2);
+}
+.ph .lab { color: var(--dim); }
+.ph .det {
+  color: var(--dim); font-size: var(--t-meta); text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ph.done .dot { background: var(--good); }
+.ph.done .lab, .ph.done .det { color: var(--muted); }
+.ph.now .dot { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+.ph.now .lab { color: var(--ink); font-weight: 500; }
+.ph.now .det { color: var(--muted); }
+
+/* Said once, while it is still searching -- not per angle. One thin sweep out
+   of five is ordinary and saying so five times reads as a failure. */
+.thinnote {
+  margin-top: var(--s3); font-size: var(--t-meta); color: var(--warn);
+  line-height: 1.5;
+}
+
+/* The log. Everything the run actually did, one click away. */
+.rawtrail { margin-top: var(--s3); }
+.rawtrail summary {
+  cursor: pointer; list-style: none; width: fit-content;
+  font-size: var(--t-meta); color: var(--dim);
+  padding: var(--s1) var(--s2); border-radius: var(--r1);
+}
+.rawtrail summary::-webkit-details-marker { display: none; }
+.rawtrail summary::before { content: "\25B8 "; }
+.rawtrail[open] summary::before { content: "\25BE "; }
+.rawtrail summary:hover { background: var(--surface); color: var(--ink); }
+.rawbody {
+  margin-top: var(--s2); max-height: 200px; overflow-y: auto;
+  border-left: 2px solid var(--line); padding-left: var(--s3);
+}
+
+/* The librarian's closing remark, when it has one. */
+.libsay {
+  font-size: var(--t-meta); color: var(--muted); line-height: 1.55;
+  margin-top: var(--s3);
+}
+
+/* The shortlist header: how many came back, and the one action that takes the
+   lot. Sticky, because a run of twelve picks is longer than the dialog and the
+   offer should not scroll away from the books it applies to. */
+.pickbar {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; gap: var(--s3);
+  padding: var(--s2) 0 var(--s3);
+  background: var(--bg);
+}
+.pickbar .n {
+  flex: 1; font-size: var(--t-label); font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.pickbar .btn { font-size: var(--t-ui); }
+
+/* ---- a book the librarian is offering -------------------------------- */
+/* Its own class, not `.rec`: app.js renders a differently-shaped .rec for the
+   Drive and Bible pages, and the two sets of rules were overriding each other
+   depending on file order. */
+
+.pick {
+  background: var(--surface); border-radius: var(--r2);
+  padding: var(--s3) var(--s4); margin-bottom: var(--s2);
+}
+.pick .t { font-size: var(--t-body); font-weight: 500; color: var(--ink); }
+.pick .why {
+  font-size: var(--t-meta); color: var(--muted); margin-top: 3px; line-height: 1.5;
+}
+/* The evidence. Quoted, indented and set apart, because the whole claim of the
+   librarian is that it opened the book -- this is the proof, and it should not
+   read as more prose from the model. */
+.pick .q {
+  margin-top: var(--s2); padding: var(--s2) var(--s3);
+  background: var(--bg); border-radius: var(--r1);
+  font-size: var(--t-meta); line-height: 1.55; color: var(--ink);
+}
+.pick .foot {
+  margin-top: var(--s3); display: flex; align-items: center; gap: var(--s2);
+  font-size: var(--t-meta); color: var(--dim);
+}
+.pick .foot .btn { font-size: var(--t-meta); padding: 6px var(--s3); }
+/* Sits between the page count and the Add button, and pushes Add to the right.
+   A link rather than a button: it opens something to read, it does not change
+   anything, and two solid buttons would make the reversible one look like the
+   decision. */
+.pick .foot .openpdf {
+  margin-left: auto; font-size: var(--t-meta); color: var(--muted);
+  text-decoration: none; white-space: nowrap;
+  padding: 5px var(--s2); border-radius: var(--r1);
+}
+.pick .foot .openpdf:hover { background: var(--bg); color: var(--accent-ink); }
+/* When there is no link, Add still needs pushing right. */
+.pick .foot > .btn:first-child { margin-left: auto; }
+.pick.owned { opacity: .62; }
+.pick.bad { background: var(--bad-soft); }
+.pick.bad .t { color: var(--bad); }
+
+/* ---- the books rail -------------------------------------------------- */
+
+.rail {
+  width: var(--rail); flex: none; display: flex; flex-direction: column;
+  background: var(--surface); border-radius: var(--r3) 0 0 0;
+  margin: 0 0 0 var(--s2);
+}
+.rail[hidden] { display: none; }
+.railhead {
+  flex: none; display: flex; align-items: center; gap: var(--s2);
+  padding: var(--s4) var(--s4) var(--s3);
+}
+.railhead .t {
+  flex: 1; font-size: var(--t-label); font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .07em;
+}
+.railhead .x {
+  border: 0; background: none; color: var(--muted); cursor: pointer;
+  font-size: 18px; line-height: 1; padding: 2px 6px; border-radius: var(--rp);
+}
+.railhead .x:hover { background: var(--surface-2); color: var(--ink); }
+.railadd { flex: none; padding: 0 var(--s4) var(--s3); }
+.railadd .btn { width: 100%; justify-content: center; font-size: var(--t-ui); }
+.railbody { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--s3) var(--s4); }
+
+.shelfbook {
+  background: var(--bg); border-radius: var(--r2);
+  padding: var(--s3); margin-bottom: var(--s2);
+}
+.sbtop { display: flex; align-items: flex-start; gap: var(--s2); }
+.sbname {
+  flex: 1; min-width: 0; font-size: var(--t-ui); font-weight: 500;
+  color: var(--ink); line-height: 1.4; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.sbstate { flex: none; }
+.sbrm {
+  flex: none; border: 0; background: none; color: var(--dim); cursor: pointer;
+  font-size: 15px; line-height: 1; padding: 1px 4px; border-radius: var(--r1);
+  opacity: 0; transition: opacity .12s;
+}
+.shelfbook:hover .sbrm, .sbrm:focus-visible { opacity: 1; }
+.sbrm:hover { background: var(--surface-2); color: var(--bad); }
+/* Why this book is here. Clamped: the rail is a glance, and the full passage
+   is one click away in the citation panel. */
+.sbwhy {
+  margin-top: var(--s2); padding-left: var(--s2);
+  border-left: 2px solid var(--line);
+  font-size: var(--t-meta); line-height: 1.5; color: var(--muted);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ---- empty states ---------------------------------------------------- */
+/* Calm, centred and specific about the next action. An empty state that only
+   says "nothing here" makes a working app look broken. */
+.blank {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: var(--s8) var(--s5); color: var(--muted);
+  height: 100%;
+}
+.blank .mark {
+  width: 42px; height: 42px; border-radius: var(--r3); margin-bottom: var(--s4);
+  background: var(--surface); display: grid; place-items: center; flex: none;
+}
+.blank .mark svg { width: 20px; height: 20px; color: var(--dim); }
+.blank .t { font-size: var(--t-title); font-weight: 500; color: var(--ink); }
+.blank .d {
+  font-size: var(--t-ui); margin-top: var(--s2); max-width: 34ch; line-height: 1.55;
+}
+.blank .btn { margin-top: var(--s5); }
+/* In the rail there is far less width, so the same component sheds its icon
+   and its generous padding rather than wrapping into a column of two words. */
+.railbody .blank { padding: var(--s5) var(--s2); height: auto; }
+.railbody .blank .mark { display: none; }
+.railbody .blank .t { font-size: var(--t-ui); }
+.railbody .blank .d { font-size: var(--t-meta); }
+
+/* ---- add books: a dialog, not a mode --------------------------------- */
+/* Swapping the whole page out to add a book threw away the conversation you
+   were having and the shelf you were looking at. This sits over them. */
+
+.modal {
+  position: fixed; inset: 0; z-index: 70; display: grid; place-items: center;
+  background: rgba(0,0,0,.32); padding: var(--s5);
+}
+.modal[hidden] { display: none; }
+.modalbox {
+  background: var(--bg); border-radius: var(--r3); box-shadow: var(--shadow);
+  width: min(900px, 100%); height: min(680px, 100%);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.modalhead {
+  flex: none; display: flex; align-items: center; gap: var(--s3);
+  padding: var(--s5) var(--s5) var(--s4);
+}
+.modalhead .t { flex: 1; font-size: var(--t-title); font-weight: 500; }
+.modalhead .x {
+  border: 0; background: none; color: var(--muted); cursor: pointer;
+  font-size: 20px; line-height: 1; padding: var(--s1) var(--s2);
+  border-radius: var(--rp);
+}
+.modalhead .x:hover { background: var(--surface); color: var(--ink); }
+.modalbody { flex: 1; min-height: 0; overflow-y: auto; padding: 0 var(--s5) var(--s5); }
+.modalbody .searchpill { max-width: none; margin-bottom: var(--s4); }
+/* The dialog's file rows carry only a name, a size and one action, so they get
+   their own three-column grid rather than inheriting the Drive page's four. */
+.modalbody .frow {
+  grid-template-columns: minmax(0,1fr) 76px 132px; gap: var(--s3);
+}
+.modalbody .fhead { display: none; }
+
+/* Actions are always visible here. The Drive page hides them until hover so a
+   list of 500 rows stays calm, but this dialog exists to act on a row -- an
+   invisible control in a picker reads as a list that does nothing. */
+.modalbody .fact .btn { opacity: 1; font-size: var(--t-meta); }
+.modalbody .fact .btn:disabled { opacity: .5; }
+
+/* Quiet, because most rows in a 57,000-file mirror are not indexed and forty
+   solid buttons down a list would out-shout the handful that say "Add". */
+.btn.jump {
+  background: none; color: var(--muted);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.btn.jump:hover { background: var(--surface); color: var(--accent-ink); }
+
+/* ---- dialogs ---------------------------------------------------------- */
+/* Naming a classroom used to be window.prompt: an OS-chrome box in the wrong
+   typeface, with one unlabelled field and no room to say what the shelf is
+   for -- which is why the `brief` column existed and was never once filled in
+   from the UI. This is the same surface as the add-books dialog, sized down. */
+
+.modalbox.sm { width: min(460px, 100%); height: auto; }
+
+.dlg { display: flex; flex-direction: column; padding: var(--s6); }
+.dlgtitle { font-size: var(--t-title); font-weight: 500; color: var(--ink); }
+.dlgnote {
+  font-size: var(--t-ui); color: var(--muted); line-height: 1.55;
+  margin-top: var(--s2); white-space: pre-line;
+}
+
+.field { display: block; margin-top: var(--s5); }
+.field .lab {
+  display: block; font-size: var(--t-meta); font-weight: 500;
+  color: var(--muted); margin-bottom: var(--s2);
+}
+/* Bordered, not filled. A filled pill is how this app draws a control you may
+   ignore -- a search box, a composer. A dialog field is the one thing on screen
+   being asked for, so it gets an edge and a focus ring. */
+.field select {
+  width: 100%; font: inherit; font-size: var(--t-body); color: var(--ink);
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: var(--r2); padding: 10px var(--s3); outline: none;
+  display: block; cursor: pointer;
+}
+.field select:focus {
+  border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.field input, .field textarea {
+  width: 100%; font: inherit; font-size: var(--t-body); color: var(--ink);
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: var(--r2); padding: 10px var(--s3); outline: none;
+  display: block;
+}
+.field textarea { resize: vertical; min-height: 76px; line-height: 1.55; }
+.field input:focus, .field textarea:focus {
+  border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.field input::placeholder, .field textarea::placeholder { color: var(--dim); }
+.field .hint {
+  display: block; font-size: var(--t-meta); color: var(--dim);
+  margin-top: var(--s2); line-height: 1.5;
+}
+.field .hint.err { color: var(--bad); }
+
+.dlgfoot {
+  display: flex; justify-content: flex-end; gap: var(--s2);
+  margin-top: var(--s6);
+}
+
+/* ---- suggestions from the tutor -------------------------------------- */
+/* Books the tutor named but has NOT read. They carry no chunk id and there is
+   nothing to open, so they must never be mistakable for a source. */
+.suggests { margin-top: var(--s4); }
+.sughead {
+  font-size: var(--t-label); color: var(--dim); text-transform: uppercase;
+  letter-spacing: .06em; margin-bottom: var(--s2); font-weight: 600;
+}
+.suggests .pick { background: var(--surface); }
+.suggests .pick .q { background: var(--bg); }
+
+/* ---- narrow ---------------------------------------------------------- */
+/* The rail is the first thing to go: it is a reference, and the conversation
+   is the task. Below the sidebar's own breakpoint it can be reopened as an
+   overlay from the header button. */
+@media (max-width: 1100px) {
+  .rail {
+    position: fixed; top: 0; right: 0; bottom: 0; z-index: 60;
+    margin: 0; border-radius: 0; box-shadow: var(--shadow);
+    border-left: 1px solid var(--line);
+  }
+}
+@media (max-width: 700px) {
+  .chatcol { padding: 0 var(--s4); }
+  .roomhead { padding: var(--s3) var(--s4); }
+  .roomhead .meta { display: none; }
+}

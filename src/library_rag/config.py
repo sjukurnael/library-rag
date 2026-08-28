@@ -99,8 +99,41 @@ DATABASE_URL = os.environ.get(
 # a long OCR job -- or a live worker's book would be stolen mid-flight. With
 # one, the only thing that must fit inside the window is the longest single
 # stage, so a dead worker's book is recovered in minutes instead of half an hour.
-CLAIM_STALE_MINUTES = 5
+# Raised from 5 back to 30 after a parallel run over the Books folder.
+#
+# The 5-minute window assumed the longest single STAGE fits inside it, which
+# holds for the pilot corpus (2.2 MB average) and does not hold here: that
+# folder has 486 PDFs over 30 MB and one at 433 MB. Two books failed with
+#     [Errno 2] No such file or directory: data/pdfs/<id>.pdf
+# and they were the two LARGEST failures (43.6 MB and 10.7 MB) while every
+# small failure had an unrelated cause -- a live worker was still downloading
+# when the reaper declared it dead, a second worker claimed the same book, and
+# they collided on the shared per-book path.
+#
+# The cost of 30 is that a genuinely dead worker's book waits half an hour to be
+# recovered instead of five minutes. That is the cheaper mistake: a slow retry
+# is invisible, whereas stealing a live worker's book destroys the file it is
+# reading and marks a good book failed.
+# Left at 30, not the 90 the large-file phase ran at. 90 was a deliberate,
+# temporary widening while the 83 books over 30 MB were ingested three at a time
+# -- a 412 MB download can outlast half an hour in a single stage. Steady state
+# is a handful of new books a day, where waiting 90 minutes to recover a dead
+# worker's book is pure latency for no protection. Raise it again, temporarily,
+# for any future bulk run over large files.
+CLAIM_STALE_MINUTES = 30
 MAX_ATTEMPTS = 3
+
+# The same reaper idea for research runs, in seconds because they are shorter.
+# A run whose row still says 'running' but whose heartbeat is older than this is
+# treated as dead, and a reader streaming it is told so rather than waiting
+# forever -- the failure a Postgres-backed stream has that an in-memory one did
+# not, because the reader can now outlive the writer.
+#
+# Generous on purpose. The heartbeat only ticks when the loop yields an event,
+# and it yields nothing while waiting on a model call, so the window has to
+# exceed the slowest single turn. Declaring a live run dead is a visible
+# regression; taking two minutes to notice a dead one is not.
+RESEARCH_STALE_SECONDS = 120
 
 # Where the worker actually runs, when it is not this process. Set
 # INGEST_JOB_NAME to the Cloud Run Job's name and the API stops draining the
@@ -355,6 +388,122 @@ SESSION_MAX_AGE_SECONDS = int(os.environ.get("SESSION_MAX_AGE_HOURS", "168")) * 
 # deploy docs turn it on, and Cookie: Secure is what stops the session being
 # readable over a plain-HTTP connection.
 SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "").lower() in {"1", "true", "yes"}
+
+
+# ---- Feature flags ----
+# The Bible reader: its own page, its own three API routes, and a nav entry.
+#
+# Off by default. It is a genuinely separate product from the librarian ->
+# classroom -> tutor path the rest of the app is about, and it was crowding a
+# sidebar with four items in it. Gated rather than deleted because the code
+# works and the data is loaded; this is a decision about what the app is for,
+# and those get reversed more often than they get regretted.
+#
+# BIBLE_ENABLED=1 brings back the page, the routes and the nav link together --
+# hiding the link while leaving /bible reachable would be a menu that lies.
+BIBLE_ENABLED = os.environ.get("BIBLE_ENABLED", "").lower() in {"1", "true", "yes"}
+
+
+# ---- Classrooms ----
+# The most books one classroom may hold.
+#
+# A cap is not tidiness. Migration 0010 dropped the global chunk index BECAUSE
+# retrieval was going to be scoped; an uncapped classroom quietly rebuilds the
+# unindexed full-corpus scan that decision was predicated on avoiding.
+#
+# Measured on this corpus (8,679 books, 1.76M chunks, ~203 chunks per book),
+# scoped search through chunks_book_id_idx:
+#
+#     books   chunks   dense   hybrid      (warm)
+#         5      951    28ms     29ms
+#        15    2,674    41ms     51ms
+#        30    5,343    60ms     85ms
+#        50   13,577   123ms    191ms
+#       100   21,326   187ms    285ms
+#
+# The plan never changes -- it is an index scan at every size -- so the number
+# that matters is how much TOAST the scan must read. A chunk's embedding is
+# ~2 KB, so 30 books is ~11 MB and stays resident across a conversation, while
+# 100 books is ~43 MB that evicts itself between questions: the same 100-book
+# scope measured 187ms warm and 2,745ms cold. The cap is really a promise that
+# a classroom fits in cache.
+#
+# 30 is also the right product number. The librarian returns ~20, so this is
+# room to grow a shelf without it becoming a library again -- and scope is the
+# signal the whole design runs on. A classroom holding a quarter of the corpus
+# has told the tutor nothing.
+CLASSROOM_MAX_BOOKS = 30
+
+# ---- Book profiles (the librarian's tier) ----
+# How many topic centroids a book gets. round(sqrt(chunks)), clamped -- so a
+# 5-chunk fragment gets 2 and a 500-chunk systematic theology gets 20.
+#
+# Scaling to length rather than fixing k matters in both directions. Too few and
+# a big book's chapters merge into a blur that matches every query weakly (the
+# measured failure of a single whole-book vector: median rank 6 vs 1). Too many
+# and a short document is split into clusters that are noise, plus the index
+# grows for nothing -- across the first 203 books this rule averages 5.9 vectors
+# each, which projects to ~254k vectors and a ~94 MB binary index over the whole
+# drive.
+PROFILE_MIN_CLUSTERS = 1
+PROFILE_MAX_CLUSTERS = 20
+# Lloyd's algorithm converges on this data long before 25; the cap only exists
+# so a pathological book cannot spin. Init is farthest-first, not random, so a
+# rebuild produces byte-identical centroids -- an eval harness comparing two
+# runs must be comparing the corpus, not the seed.
+PROFILE_KMEANS_ITERS = 25
+# Words of chunk text to fall back on when a cluster has no usable heading.
+# Short enough to read in a result list, long enough to be recognisable.
+PROFILE_LABEL_WORDS = 12
+
+
+# ---- Librarian search ----
+# How many centroids the binary leg shortlists before the exact rerank.
+#
+# MUST be <= PROFILE_EF_SEARCH. An HNSW scan cannot return more rows than
+# ef_search permits, and it does not error when you ask for more -- it silently
+# returns fewer. That cost a full evaluation: a LIMIT 800 against the default
+# ef_search of 40 shortlisted 40 of 101,385 vectors, raising the LIMIT changed
+# nothing, and the flat result read as proof the pool was irrelevant when it was
+# proof the pool was never applied.
+PROFILE_SHORTLIST = 800
+# pgvector's hard ceiling is 1000; the shortlist above is sized under it.
+# Measured over 44 questions against 8,680 books: at 40 the binary leg lost 19
+# books outright, at 200 it lost 11, and at 1000 it matched an exact scan to the
+# decimal -- so this is not a recall/latency tradeoff so much as the price of
+# the two-stage design working at all. ~25 ms against ~13 ms at the default.
+PROFILE_EF_SEARCH = 1000
+# Trust in the filename/path leg when fusing it with content centroids.
+# Lower than the 0.5 that config.DRIVE_RRF_LEXICAL_WEIGHT uses over titles
+# alone, because here it is competing with a leg that reads what the book
+# actually SAYS: measured on the eval questions, the title leg by itself missed
+# 15-19 of 22, so it belongs in the fusion as a tiebreaker and a way to catch
+# author and series names, not as an equal vote.
+PROFILE_TITLE_WEIGHT = 0.3
+# How close a centroid must be to a book's OWN best match to count towards
+# matched_topics, in cosine-distance units.
+#
+# Measured relative to the book rather than against a fixed cutoff, because an
+# absolute threshold means something different for a narrow query than a broad
+# one. The first version simply counted centroids that reached the shortlist,
+# which is only meaningful while the shortlist is a small fraction of the index:
+# a unit test with six centroids total scored a book covering one topic and a
+# book covering three identically, because everything reached the shortlist.
+PROFILE_TOPIC_MARGIN = 0.06
+# Past this cosine distance, treat the library as not really holding the topic.
+#
+# A nearest-neighbour ranker always fills its page, so "12 books returned" is
+# never evidence that a subject is covered. Absolute distance is: measured by
+# cli/eval_librarian.py over this corpus, twelve real briefs reach a best
+# passage at 0.26-0.36, while five briefs on subjects the library genuinely
+# lacks -- quantum chromodynamics, Japanese woodblock printing, Formula One
+# aerodynamics -- bottom out at 0.51-0.58 with no overlap between the two
+# populations. 0.50 sits in that gap.
+#
+# It is a signal to the librarian, not a filter. Books past the floor are still
+# returned; the model is simply told the shelf may be thin so it can say so
+# rather than recommending five plausible-looking titles about nothing.
+PROFILE_RELEVANCE_FLOOR = 0.50
 
 
 def auth_enabled() -> bool:

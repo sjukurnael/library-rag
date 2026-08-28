@@ -48,29 +48,43 @@ function makeDom() {
 }
 
 const results = [];
-for (const page of ['index.html', 'library.html', 'queue.html', 'bible.html']) {
+for (const page of ['classrooms.html', 'classroom.html', 'library.html',
+                    'queue.html', 'bible.html']) {
   const html = fs.readFileSync(path.join(STATIC, page), 'utf8');
 
   // 1. The page must actually link the shared bundle.
   const linksJs = /<script[^>]+src=["']\/static\/app\.js["']/.test(html);
   const linksCss = /<link[^>]+href=["']\/static\/app\.css["']/.test(html);
 
-  // 2. And its inline script must run with app.js loaded first.
+  // 2. And its inline script must run with app.js loaded first -- plus any
+  //    further module it pulls in, in tag order. classroom.html loads tutor.js
+  //    AFTER its inline script and depends on names that script defines (CID,
+  //    SHELF, addBooks), so evaluating them out of order would pass while the
+  //    real page threw.
   const inline = [...html.matchAll(/<script>\n([\s\S]*?)<\/script>/g)]
     .map(m => m[1]).join('\n');
+  const extra = [...html.matchAll(/<script[^>]+src=["']\/static\/([\w.]+\.js)["']/g)]
+    .map(m => m[1]).filter(n => n !== 'app.js')
+    .map(n => fs.readFileSync(path.join(STATIC, n), 'utf8')).join('\n');
   const shared = fs.readFileSync(path.join(STATIC, 'app.js'), 'utf8');
 
   let bootError = null;
   try {
     const fn = new Function(
-      'document', 'window', 'fetch', 'location', 'confirm', 'console', 'sessionStorage',
-      `${shared}\n;{\n${inline}\n}`);
+      'document', 'window', 'fetch', 'location', 'confirm', 'console',
+      'sessionStorage', 'localStorage', 'alert', 'prompt',
+      `${shared}\n;{\n${inline}\n${extra}\n}`);
     fn(makeDom(), { open: () => null, location: {}, addEventListener: () => {} },
        async () => ({ ok: true, json: async () => ({ books: [], pending: [], total_chunks: 0 }) }),
-       { href: '', hash: '' }, () => true, console,
-       // Empty-session semantics: the chat page reads its saved conversation at
+       // A classroom page reads its id off the path, so the stub has to look
+       // like one -- an empty pathname yields NaN and boots down a branch the
+       // real page never takes.
+       { href: '', hash: '', pathname: '/classroom/1' }, () => true, console,
+       // Empty-session semantics: the tutor reads its saved conversation at
        // boot, and "nothing saved" must boot cleanly.
-       { getItem: () => null, setItem: () => {}, removeItem: () => {} });
+       { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+       { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+       () => {}, () => null);
   } catch (e) {
     bootError = `${e.name}: ${e.message}`;
   }

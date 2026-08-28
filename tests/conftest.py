@@ -172,8 +172,12 @@ def conn(test_database_url, monkeypatch):
     monkeypatch.setattr(config, "DATABASE_URL", test_database_url)
     with db_mod.get_conn(test_database_url) as c:
         c.execute(
+            # classrooms is here for the same reason drive_files is: a leaked
+            # row is invisible in the test that created it and wrong in the
+            # next one, where "list every classroom" quietly returns someone
+            # else's. CASCADE carries classroom_books and the runs with it.
             "TRUNCATE books, drive_files, bible_verses, allowed_users, "
-            "drive_credentials "
+            "drive_credentials, research_runs, classrooms "
             "RESTART IDENTITY CASCADE"
         )
         c.commit()
@@ -192,6 +196,47 @@ def fresh_database():
     finally:
         with _admin_connect() as admin:
             _drop_db(admin, name)
+
+
+# ------------------------------------------------------- corpus builders --
+# Shared because three modules now need the same little world -- books, chunks
+# with meaningful vectors, and topic centroids -- and the first two copies of
+# make_book both carried the same bug: a status= argument that silently did
+# nothing, so a book was only ever 'done' as a side effect of adding chunks.
+
+def make_book(conn, source_id: str, title: str, status: str = "done") -> int:
+    """A book row, actually in the status you asked for.
+
+    upsert_book leaves a new row at 'discovered', so the status is written
+    explicitly on every path rather than only when it differs from the default.
+    """
+    db_mod.upsert_book(conn, source_id, title, f"md5-{source_id}", 100)
+    row = conn.execute(
+        "SELECT id FROM books WHERE source_id = %s", (source_id,)
+    ).fetchone()
+    conn.execute("UPDATE books SET status = %s WHERE id = %s", (status, row[0]))
+    conn.commit()
+    return row[0]
+
+
+def make_chunks(conn, book_id: int, texts: list) -> None:
+    """Chunks embedded with lexical_vector, so tests can assert on which passage
+    came back rather than only on whether one did. Flips the book to 'done'."""
+    db_mod.insert_chunks_and_finish(conn, book_id, [
+        {"ordinal": i, "heading_trail": f"Chapter {i}", "page_start": i * 2,
+         "page_end": i * 2 + 1, "content": t, "token_count": len(t.split()),
+         "embedding": lexical_vector(t)}
+        for i, t in enumerate(texts)
+    ])
+
+
+def make_profile(conn, book_id: int, topics: list) -> None:
+    """One topic centroid per (label, text) pair, embedded from its text."""
+    db_mod.store_book_profile(
+        conn, book_id, " / ".join(t[0] for t in topics), "headings",
+        [(i + 1, label, 3, lexical_vector(text))
+         for i, (label, text) in enumerate(topics)],
+    )
 
 
 # ------------------------------------------------------------- fakes --

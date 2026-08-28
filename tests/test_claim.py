@@ -2,7 +2,7 @@
 stale books; attempts past the cap fail instead of looping forever."""
 from concurrent.futures import ThreadPoolExecutor
 
-from library_rag import db
+from library_rag import config, db
 
 
 def _seed(conn, n, status="discovered", source="drive", prefix="file"):
@@ -45,8 +45,8 @@ def test_fresh_and_stale_claims(conn):
 
     # Backdate the claim past the stale window -> reclaimable, attempts bumps.
     conn.execute(
-        "UPDATE books SET claimed_at = now() - interval '31 minutes' WHERE id = %s",
-        (row["id"],),
+        "UPDATE books SET claimed_at = now() - make_interval(mins => %s) WHERE id = %s",
+        (config.CLAIM_STALE_MINUTES + 1, row["id"]),
     )
     conn.commit()
     reclaimed = db.claim_next_book(conn)
@@ -62,19 +62,23 @@ def test_heartbeat_keeps_a_slow_book_from_being_stolen(conn):
     _seed(conn, 1)
     mine = db.claim_next_book(conn)
 
-    # Simulate a long stage: the claim ages past the stale window.
+    # Simulate a long stage: the claim ages past the stale window. Derived from
+    # the config value rather than a literal -- CLAIM_STALE_MINUTES is a tunable,
+    # and a test that hardcodes "6 minutes" silently stops testing anything the
+    # day someone raises the window (which is exactly what happened when the
+    # Books folder turned out to hold 433 MB PDFs).
     conn.execute(
-        "UPDATE books SET claimed_at = now() - interval '6 minutes' WHERE id = %s",
-        (mine["id"],),
+        "UPDATE books SET claimed_at = now() - make_interval(mins => %s) WHERE id = %s",
+        (config.CLAIM_STALE_MINUTES + 1, mine["id"]),
     )
     conn.commit()
     assert db.claim_next_book(conn) is not None, "stale claim should be reclaimable"
 
     # Now do it again, but heartbeat before the window elapses.
     conn.execute(
-        "UPDATE books SET claimed_at = now() - interval '4 minutes', attempts = 1 "
+        "UPDATE books SET claimed_at = now() - make_interval(mins => %s), attempts = 1 "
         "WHERE id = %s",
-        (mine["id"],),
+        (config.CLAIM_STALE_MINUTES - 1, mine["id"]),
     )
     conn.commit()
     db.touch_claim(conn, mine["id"])
@@ -86,8 +90,8 @@ def test_attempts_over_cap_are_failed(conn):
     # Already at the cap, and stale so it would otherwise be claimed.
     conn.execute(
         "UPDATE books SET attempts = %s, "
-        "claimed_at = now() - interval '31 minutes'",
-        (db.config.MAX_ATTEMPTS,),
+        "claimed_at = now() - make_interval(mins => %s)",
+        (config.MAX_ATTEMPTS, config.CLAIM_STALE_MINUTES + 1),
     )
     conn.commit()
 

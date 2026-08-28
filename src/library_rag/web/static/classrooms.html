@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library — classrooms</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <a class="brand" href="/"><span class="logo"></span>Library</a>
+
+    <nav class="snav">
+      <a href="/" class="on">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M12 7v10"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Classrooms</a>
+      <a href="/library">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        Drive</a>
+      <a href="/queue">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Processing</a>
+      <!--bible--><a href="/bible">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Bible</a><!--/bible-->
+    </nav>
+
+    <div class="sidelabel">Classrooms</div>
+    <ul class="roomlist" id="roomlist"></ul>
+
+    <div class="sideauth" id="sideauth" hidden></div>
+    <div class="sidefoot" id="sidefoot">loading…</div>
+  </aside>
+  <div class="page">
+    <div class="roomhead">
+      <h1>Classrooms</h1>
+      <span class="grow"></span>
+      <button class="btn primary" id="new">New classroom</button>
+    </div>
+    <div class="pagebody">
+      <div id="rooms"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+// The switchboard. Everything you DO with a classroom happens inside it, so
+// this page stays a list -- the same list the sidebar carries on every page,
+// with room here for what a shelf is about and what it is doing.
+
+const roomsEl = $('#rooms');
+
+function roomCard(c) {
+  // Two measurements rather than a word. "Empty" was a state the card asserted
+  // about the shelf; a count of 0 next to a size of 0 says the same thing and
+  // keeps reading the same way once there are books on it -- one row that
+  // always means the same, instead of a special case for nothing.
+  const on = c.book_count > 0;
+  const stats =
+    `<span class="stat${on ? ' on' : ''}">` +
+      `<span class="n">${c.book_count}</span>` +
+      `<span class="u">${c.book_count === 1 ? 'book' : 'books'}</span></span>` +
+    `<span class="stat"><span class="n">${on ? bytes(c.size_bytes) : '0'}</span>` +
+      `<span class="u">on the shelf</span></span>` +
+    (c.arriving ? `<span class="badge work">${c.arriving} arriving</span>` : '');
+  return `<a class="room" href="/classroom/${c.id}">
+      <span class="roomname">${esc(c.name)}</span>
+      <span class="roommeta">${stats}</span>
+      <span class="roomact">
+        <button class="btn rn" data-id="${c.id}" data-name="${esc(c.name)}">Rename</button>
+        <button class="btn roomdel" data-id="${c.id}" data-name="${esc(c.name)}">Delete</button>
+      </span>
+    </a>`;
+}
+
+async function load() {
+  const p = progress(roomsEl, { label: 'Loading your classrooms', normal: 3 });
+  try {
+    const d = await fetchJSON('/api/classrooms', {}, 15000);
+    p.stop();
+    roomsEl.innerHTML = d.classrooms.length
+      ? d.classrooms.map(roomCard).join('')
+      : `<div class="blank">
+           <div class="mark">
+             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                  stroke-linecap="round" stroke-linejoin="round">
+               <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+               <path d="M12 7v10"/>
+               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+             </svg>
+           </div>
+           <div class="t">No classrooms yet</div>
+           <div class="d">A classroom is a small shelf of books. You pick them once,
+             then every answer comes from those books and nothing else.</div>
+           <button class="btn primary" id="first">Make your first one</button>
+         </div>`;
+    if (!d.classrooms.length) $('#first').onclick = newClassroom;
+    paintRoomList(null);
+  } catch (e) {
+    p.stop();
+    roomsEl.innerHTML = failed('Could not load your classrooms', e, load);
+  }
+}
+
+// One delegated handler: the cards are re-rendered on every change, so binding
+// per button would leak listeners on a page people leave open.
+//
+// .roomdel, not .del -- app.js delegates BOOK deletion off .del at the document,
+// so a classroom Delete button used to fire both handlers and offer to remove
+// whichever book happened to share the classroom's id.
+roomsEl.addEventListener('click', async e => {
+  const rn = e.target.closest('.rn'), del = e.target.closest('.roomdel');
+  if (!rn && !del) return;
+  e.preventDefault();                       // the card itself is a link
+  const btn = rn || del, id = btn.dataset.id, was = btn.dataset.name;
+  try {
+    if (rn) {
+      const r = await openDialog({
+        title: 'Rename classroom',
+        confirm: 'Save',
+        fields: [{ name: 'name', label: 'Name', value: was, required: true,
+                   needed: 'A classroom needs a name.' }],
+      });
+      if (!r || r.name === was) return;
+      await fetchJSON(`/api/classrooms/${id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: r.name }),
+      }, 15000);
+    } else {
+      // Says what survives, because the honest answer is reassuring: the books
+      // are shared with the library and with every other classroom.
+      const ok = await confirmDialog({
+        title: `Delete "${was}"?`,
+        note: 'This removes the shelf and its conversation. The books themselves '
+            + 'stay in your library and on any other classroom that uses them.',
+        confirm: 'Delete classroom',
+      });
+      if (!ok) return;
+      await fetchJSON(`/api/classrooms/${id}`, { method: 'DELETE' }, 15000);
+    }
+  } catch (err) {
+    await openDialog({ title: 'That did not work', note: String(err.message || err),
+                       fields: [], confirm: 'OK', cancel: 'Close' });
+    return;
+  }
+  load();
+});
+
+$('#new').onclick = newClassroom;
+load();
+paintLibraryFoot();
+</script>
+</body>
+</html>

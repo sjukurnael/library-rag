@@ -42,6 +42,35 @@ try {
 } catch (e) { threw = e.message; }
 t('truncated stream throws', !!threw && /ended before the run finished/.test(threw));
 
+// 2b. a stream that says WHY before it stops reports that, not the guess. The
+// bug this covers: a flat Anthropic balance produced exactly this shape, and
+// the generic sentence overwrote the one frame that named the cause.
+threw = null;
+try {
+  await mod.readEventStream(
+    fakeResponse([{type:'tool'}, {type:'error', message:'The Anthropic account is out of credit.'}]),
+    () => {}, { terminal: 'done' });
+} catch (e) { threw = e.message; }
+t('an error frame wins over the generic message', threw === 'The Anthropic account is out of credit.');
+
+// 2c. ...and the generic sentence still covers a connection that said nothing,
+// which is the only case it was ever true for.
+threw = null;
+try {
+  await mod.readEventStream(fakeResponse([{type:'tool'}]), () => {}, { terminal: 'done' });
+} catch (e) { threw = e.message; }
+t('a silent cut still falls back', /ended before the run finished/.test(threw));
+
+// 2d. an error frame is not a failure when the run went on to finish -- only
+// the missing terminal event makes it one.
+threw = null;
+try {
+  await mod.readEventStream(
+    fakeResponse([{type:'error', message:'one tool failed'}, {type:'done'}]),
+    () => {}, { terminal: 'done' });
+} catch (e) { threw = e.message; }
+t('an error frame before a clean finish does not throw', threw === null);
+
 // 3. no terminal configured -> old permissive behaviour, no throw
 threw = null;
 try { await mod.readEventStream(fakeResponse([{type:'tool'}]), () => {}); }

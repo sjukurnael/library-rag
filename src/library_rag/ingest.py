@@ -27,6 +27,7 @@ from library_rag.drive import client as drive_client
 from library_rag.pipeline import chunking as chunk_mod
 from library_rag.pipeline import embed as embed_mod
 from library_rag.pipeline import extract as extract_mod
+from library_rag.pipeline import profile as profile_mod
 
 # --------------------------------------------------------------- sources --
 
@@ -63,6 +64,54 @@ def register_upload(conn, src: Path, title: str | None = None) -> dict:
         conn, source_id, title or src.name, md5, dest.stat().st_size, source="upload"
     )
     return db.fetch_book_by_source_id(conn, source_id)
+
+
+def purge_books(conn, book_ids: list) -> dict:
+    """Purge many books at once. Same guarantees as purge_book, batched.
+
+    purge_book is the right shape for one book and the wrong shape for
+    hundreds: it commits per row and makes up to two storage calls each, so
+    353 books meant ~700 network round trips and over two minutes. Here the
+    rows go in one statement and the object store is asked once.
+
+    Rows go FIRST, exactly as in purge_book: leftover files are harmless and
+    get overwritten, while a row pointing at files that are gone is a book the
+    pipeline only discovers is broken mid-run.
+    """
+    rows = db.delete_books(conn, book_ids)
+    if not rows:
+        return {"deleted": 0, "removed": []}
+
+    removed = []
+    md_keys = []
+    for book in rows:
+        bid = book["id"]
+        paths = [
+            config.PDF_DIR / f"{bid}.pdf",
+            config.MARKDOWN_DIR / f"{bid}.md",
+            config.MARKDOWN_DIR / f"{bid}.manifest.json",
+        ]
+        if book["source"] == "upload":
+            paths.append(upload_path(book["source_id"]))
+        for path in paths:
+            if path.exists():
+                path.unlink()
+                removed.append(path.name)
+        md_keys += [storage.markdown_key(bid), storage.manifest_key(bid)]
+
+    # One question for the whole batch instead of one per book.
+    md5s = [b["md5"] for b in rows if b.get("md5")]
+    still_used = db.md5s_still_used(conn, md5s)
+    orphan_keys = [storage.original_key(m) for m in set(md5s) if m not in still_used]
+
+    # Chunked because a delete call carries every key in its request body, and
+    # one list of a thousand is a request some object stores refuse outright.
+    keys = md_keys + orphan_keys
+    for i in range(0, len(keys), 100):
+        batch = keys[i:i + 100]
+        if storage.delete_keys(batch):
+            removed.extend(batch)
+    return {"deleted": len(rows), "removed": removed}
 
 
 def purge_book(conn, book_id: int):
@@ -213,6 +262,28 @@ def chunk_embed_and_finish(conn, book_id: int, markdown: str, voyage_client) -> 
         c["embedding"] = emb
 
     db.insert_chunks_and_finish(conn, book_id, chunks)
+
+    # The topic profile, built here rather than by a separate backfill.
+    #
+    # find_books -- the librarian's only way of discovering an indexed book --
+    # reads book_topic_vectors, not chunks. A book that finished ingestion
+    # without one is fully searchable by the tutor and completely invisible to
+    # the librarian, which is the worst kind of gap: nothing reports an error
+    # and the book simply never comes up. Three books sat like that for a day
+    # before a coverage count caught it.
+    #
+    # AFTER the commit above, deliberately. The chunks are what make the book
+    # searchable and they are already safe; a profile that fails to build must
+    # leave a working book behind, not roll one back. cli/profile.py still
+    # exists for rebuilds and for anything indexed before this ran.
+    try:
+        summary = profile_mod.build(conn, book_id)
+        conn.commit()
+        print(f"  profiled: {summary['vectors']} topic vector(s)")
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        print(f"  WARNING: could not build topic profile for book {book_id}: {e}")
+        print("           the book is searchable; run `python -m library_rag.cli.profile`")
     return len(chunks), total_tokens
 
 
