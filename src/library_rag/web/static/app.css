@@ -376,6 +376,9 @@ details.trace[open] summary { color: var(--ink); }
   font-size: 13px;
 }
 #panel #ppdf a { color: var(--accent); text-decoration: none; font-weight: 500; }
+/* The page-anchored fallback is secondary: same link, quieter, so the Drive
+   original reads as the thing to click. */
+#panel #ppdf a.alt { color: var(--dim); font-weight: 400; }
 #panel #ppdf a:hover { text-decoration: underline; }
 
 /* --------------------------------------------------------- drive browser -- */

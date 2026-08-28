@@ -91,15 +91,16 @@ function showSource(ti, n) {
   const pdf = $('#ppdf');
   if (s.book_id != null) {
     const atPage = s.page_start != null
-      ? `<a href="/api/books/${s.book_id}/pdf#page=${s.page_start}" ` +
+      ? `<a class="alt" href="/api/books/${s.book_id}/pdf#page=${s.page_start}" ` +
         `target="_blank" rel="noopener" ` +
-        `title="Our mirrored copy, opened at the cited page">` +
-        `Open at p.${s.page_start} ↗</a>`
+        `title="Our mirrored copy, which is the only one that can open at a ` +
+        `given page -- Drive's viewer ignores page anchors">` +
+        `or jump to p.${s.page_start} in our copy ↗</a>`
       : '';
-    pdf.innerHTML = atPage +
+    pdf.innerHTML =
       `<a href="/api/books/${s.book_id}/source" target="_blank" rel="noopener" ` +
-      `title="The original in Google Drive, in the folder it lives in">` +
-      `Open the original in Drive ↗</a>`;
+      `title="The whole original in Google Drive, in the folder it lives in">` +
+      `Open the PDF in Drive ↗</a>` + atPage;
     pdf.hidden = false;
   } else {
     pdf.hidden = true;
