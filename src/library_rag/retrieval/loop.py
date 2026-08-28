@@ -31,7 +31,14 @@ from anthropic import Anthropic
 from library_rag.retrieval import tools
 from library_rag import prompt_cache
 
-MODEL = "claude-opus-5"
+# Sonnet, like the librarian. The tutor is the cheaper of the two loops -- three
+# turns against the librarian's thirty -- but it is also the more constrained:
+# it answers only from passages search handed it, and every citation has to
+# come from one of them. That is a job with the reasoning bounded by the
+# evidence in front of it, which is where Sonnet holds up. Overridable so the
+# model can be changed on a running deployment without a rebuild; a separate
+# name from the librarian's, so raising one does not silently raise the other.
+MODEL = os.environ.get("TUTOR_MODEL", "claude-sonnet-5")
 MAX_ITERATIONS = 8
 
 SYSTEM_PROMPT = """You are a tutor. A reader has assembled a classroom -- a small \
