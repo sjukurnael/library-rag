@@ -455,3 +455,59 @@ def test_a_drive_pick_has_no_page_and_does_not_crash(conn):
     )
     pick = out["recommendations"][0]
     assert pick.get("passage_page") is None
+
+
+def test_a_quote_stitched_with_an_ellipsis_still_finds_its_page(conn):
+    """The failure that measuring a real run exposed. The librarian joins two
+    fragments with "..." -- taking a needle off the front runs it straight into
+    the ellipsis and matches nothing. Five of twelve recommendations lost their
+    page to exactly this."""
+    book = make_book(conn, "b1", "A Book")
+    make_chunks(conn, book, ["the serpent is characterized in various ways by the "
+                             "commentators and later Grigor says that the serpent was subtle"])
+    conn.execute("UPDATE chunks SET page_start = 160, page_end = 161 WHERE book_id = %s",
+                 (book,))
+    conn.commit()
+
+    span = db.page_of_passage(
+        conn, book,
+        "The serpent is characterized in various ways... Grigor says that the serpent was subtle")
+    assert span == (160, 161)
+
+
+def test_a_quoted_heading_is_found_in_the_heading_trail(conn):
+    """Sometimes it quotes a section title rather than prose. Those live in
+    their own column, so a chunk-body-only search returns nothing for a quote
+    that is genuinely in the book."""
+    book = make_book(conn, "b1", "A Book")
+    make_chunks(conn, book, ["body text that does not contain the title at all"])
+    conn.execute("""UPDATE chunks SET page_start = 43, page_end = 44,
+                    heading_trail = 'Genesis 3 and the Alleged Satan Figure'
+                    WHERE book_id = %s""", (book,))
+    conn.commit()
+
+    span = db.page_of_passage(conn, book, "Genesis 3 and the Alleged Satan Figure")
+    assert span == (43, 44)
+
+
+def test_a_quote_trimmed_short_of_ten_words_still_resolves(conn):
+    """A ten-word needle fails when the model dropped the eleventh word. The
+    fragment is retried shorter -- down to five, which is still specific inside
+    one book."""
+    book = make_book(conn, "b1", "A Book")
+    make_chunks(conn, book, ["was the snake good the Naassenes regarded it as wisdom itself"])
+    conn.execute("UPDATE chunks SET page_start = 53, page_end = 53 WHERE book_id = %s",
+                 (book,))
+    conn.commit()
+
+    assert db.page_of_passage(conn, book, "was the snake good the Naassenes") == (53, 53)
+
+
+def test_a_paraphrase_still_gets_no_page(conn):
+    """The looser matching must not become guessing. Words that are not in the
+    book resolve to nothing, however many attempts are made."""
+    book = make_book(conn, "b1", "A Book")
+    make_chunks(conn, book, ["the serpent is characterized in various ways by the commentators"])
+
+    assert db.page_of_passage(
+        conn, book, "the author argues at length that the snake represents wisdom") is None

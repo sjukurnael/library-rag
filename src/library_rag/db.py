@@ -1669,41 +1669,82 @@ def classrooms_holding(conn, book_id: int) -> list:
         return cur.fetchall()
 
 
+def _passage_needles(passage: str):
+    """Search strings to try for a quoted passage, most specific first.
+
+    The model does not quote cleanly, and measuring a real run is how that
+    became visible: of twelve recommendations, five could not be located by
+    matching the opening words. The quotes showed why.
+
+    It stitches fragments with an ellipsis -- "characterized in various ways...
+    Grigor Tat'ewac'i says" -- so a needle taken off the front runs straight
+    into the "..." and matches nothing. Each fragment is therefore tried on its
+    own, longest first, since the longest is the most specific.
+
+    And it trims. A quote whose first ten words are right but whose eleventh was
+    dropped still fails a ten-word needle, so each fragment is retried shorter.
+    Five words is the floor: scoped to one book that is still specific, and
+    below it a needle starts matching common phrasing.
+    """
+    import re as _re
+    fragments = _re.split(r"\.\.\.|\u2026|\[\s*\.\.\.\s*\]", passage)
+    cleaned = []
+    for fragment in fragments:
+        fragment = " ".join(fragment.split()).strip(" \"'\u201c\u201d\u2018\u2019")
+        if len(fragment.split()) >= 5:
+            cleaned.append(fragment)
+    cleaned.sort(key=lambda f: -len(f.split()))
+
+    for fragment in cleaned:
+        words = fragment.split()
+        for n in (10, 7, 5):
+            if len(words) >= n:
+                yield " ".join(words[:n])
+
+
 def page_of_passage(conn, book_id: int, passage: str) -> tuple | None:
     """(page_start, page_end) for a quoted passage, or None if it is not found.
 
     Matched against the text rather than reported by the model. The librarian
     quotes a passage look_inside handed it, but the page that passage sat on is
     not part of what `recommend` asks for -- and a page number retyped by a
-    model is a page number that can be wrong, silently, in a citation whose
-    entire job is to be checkable. So the words are located instead.
+    model is one that can be wrong, silently, in a citation whose entire job is
+    to be checkable. So the words are located instead.
 
-    Whitespace is normalised on both sides because look_inside collapses runs
-    of it before the model ever sees the text, so the quote will not match the
-    stored chunk byte for byte. LIKE wildcards in the quote are escaped for the
-    same reason a search box escapes them: an underscore in the passage is an
-    underscore, not "any character".
+    Whitespace is normalised on both sides because look_inside collapses runs of
+    it before the model ever sees the text, so a quote will not match the stored
+    chunk byte for byte. LIKE wildcards are escaped for the same reason a search
+    box escapes them: an underscore in the passage is an underscore.
 
-    Returns None rather than guessing. A passage the model paraphrased, or
-    truncated mid-word, will not be found -- and no page number is a better
-    answer than a plausible one nobody can check.
+    The heading trail is searched as well as the body. The librarian sometimes
+    quotes a section title rather than prose, and those live in their own column
+    -- a chunk-only search returns nothing for a quote that is genuinely there.
+
+    Returns None rather than guessing. A passage the model paraphrased outright
+    will not be found, and no page number is a better answer than a plausible
+    one nobody can check.
     """
-    words = passage.split()
-    if len(words) < 4:
+    if not passage:
         return None
-    needle = " ".join(words[:10])
-    for ch in ("\\", "%", "_"):
-        needle = needle.replace(ch, "\\" + ch)
 
-    row = conn.execute(
-        """
-        SELECT page_start, page_end
-        FROM chunks
-        WHERE book_id = %s
-          AND regexp_replace(content, '\\s+', ' ', 'g') ILIKE '%%' || %s || '%%'
-        ORDER BY page_start
-        LIMIT 1
-        """,
-        (book_id, needle),
-    ).fetchone()
-    return (row[0], row[1]) if row else None
+    for needle in _passage_needles(passage):
+        escaped = needle
+        for ch in ("\\", "%", "_"):
+            escaped = escaped.replace(ch, "\\" + ch)
+
+        row = conn.execute(
+            """
+            SELECT page_start, page_end
+            FROM chunks
+            WHERE book_id = %s
+              AND (regexp_replace(content, '\\s+', ' ', 'g') ILIKE '%%' || %s || '%%'
+                   OR regexp_replace(coalesce(heading_trail, ''), '\\s+', ' ', 'g')
+                      ILIKE '%%' || %s || '%%')
+            ORDER BY page_start
+            LIMIT 1
+            """,
+            (book_id, escaped, escaped),
+        ).fetchone()
+        if row:
+            return (row[0], row[1])
+    return None
