@@ -30,8 +30,10 @@ from html import escape
 from pathlib import Path
 
 import anthropic
-from fastapi import (BackgroundTasks, FastAPI, File, HTTPException, Query, Request,
-                     UploadFile)
+from typing import Literal
+
+from fastapi import (BackgroundTasks, FastAPI, File, HTTPException, Query,
+                     Request, UploadFile)
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -47,9 +49,11 @@ from library_rag import bible, config, db, ingest, jobs, storage
 from library_rag.drive import client as drive_client
 from library_rag.drive import mirror
 from library_rag.drive import store as drive_store
+from library_rag import models as model_choice
 from library_rag.drive import tools as drive_tools
 from library_rag.librarian import loop as librarian_loop
 from library_rag.pipeline import embed as embed_mod
+from library_rag.retrieval import loop as retrieval_loop
 from library_rag.retrieval import research
 from library_rag.web import auth
 
@@ -167,6 +171,11 @@ class AskRequest(BaseModel):
     # Required, not optional-with-a-default. The tutor answers from a shelf or
     # it does not answer; there is no global search to fall back to.
     classroom_id: int
+    # "sonnet" or "opus" -- a LABEL, never a model id. A field that carried an
+    # id would let a caller point this project's key at any model they liked;
+    # the closed set is the protection, and library_rag/models.py holds the ids.
+    # Absent means the deployment's own default.
+    model: Literal["sonnet", "opus"] | None = None
 
 
 class AddDriveRequest(BaseModel):
@@ -197,6 +206,11 @@ class ClassroomBooksRequest(BaseModel):
 
 class LibrarianRequest(BaseModel):
     brief: str = Field(min_length=1, max_length=2000)
+    # "sonnet" or "opus" -- a LABEL, never a model id. A field that carried an
+    # id would let a caller point this project's key at any model they liked;
+    # the closed set is the protection, and library_rag/models.py holds the ids.
+    # Absent means the deployment's own default.
+    model: Literal["sonnet", "opus"] | None = None
     count: int = Field(
         default=librarian_loop.DEFAULT_COUNT, ge=1, le=librarian_loop.MAX_COUNT
     )
@@ -661,7 +675,8 @@ def delete_book(book_id: int):
 # one from here, because the queue it would read from already exists.
 
 
-def _run_research(run_id: str, question: str, classroom_id: int) -> None:
+def _run_research(run_id: str, question: str, classroom_id: int,
+                  model: str | None = None) -> None:
     """The tutor loop, writing its trail to Postgres as it produces it.
 
     Every event is committed as it happens rather than batched at the end: a
@@ -678,7 +693,9 @@ def _run_research(run_id: str, question: str, classroom_id: int) -> None:
         voyage = embed_mod.build_client()
         with db.get_conn() as conn:
             book_ids = db.classroom_book_ids(conn, classroom_id)
-            for event in research.run(question, conn, voyage, book_ids):
+            for event in research.run(question, conn, voyage, book_ids,
+                                      model=model_choice.resolve(
+                                          model, retrieval_loop.MODEL)):
                 db.append_research_event(conn, run_id, event)
                 if event["type"] == "answer":
                     answer = event.get("text")
@@ -782,7 +799,8 @@ def research_start(req: AskRequest, background: BackgroundTasks):
             raise HTTPException(404, "No such classroom.")
         db.create_research_run(conn, run_id, req.question,
                                classroom_id=req.classroom_id)
-    background.add_task(_run_research, run_id, req.question, req.classroom_id)
+    background.add_task(_run_research, run_id, req.question, req.classroom_id,
+                        req.model)
     return {"run_id": run_id}
 
 
@@ -957,9 +975,11 @@ def librarian_stream(req: LibrarianRequest):
                     db.classroom_book_ids(conn, req.classroom_id, ready_only=False)
                     if req.classroom_id else []
                 )
-                for event in librarian_loop.run(req.brief, conn, voyage,
-                                                count=req.count,
-                                                classroom_ids=on_shelf):
+                for event in librarian_loop.run(
+                        req.brief, conn, voyage, count=req.count,
+                        classroom_ids=on_shelf,
+                        model=model_choice.resolve(req.model,
+                                                   librarian_loop.MODEL)):
                     yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:  # noqa: BLE001 -- headers are already out; a 500
             # is no longer available, so the failure has to travel in the stream.

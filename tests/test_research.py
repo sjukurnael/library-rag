@@ -336,7 +336,7 @@ def chat(conn, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr(api.embed_mod, "build_client", lambda: object())
     monkeypatch.setattr(api.research, "run",
-                        lambda q, c, voyage, book_ids: iter(EVENTS))
+                        lambda q, c, voyage, book_ids, model=None: iter(EVENTS))
     return TestClient(api.app)
 
 
@@ -402,7 +402,7 @@ def test_a_finished_run_is_a_row_that_outlives_the_process(chat, conn):
 
 
 def test_a_crashing_run_ends_as_an_error_event_not_a_wedge(chat, conn, monkeypatch):
-    def boom(q, c, voyage, book_ids):
+    def boom(q, c, voyage, book_ids, model=None):
         raise RuntimeError("model fell over")
         yield  # unreachable -- its presence makes this a generator
 

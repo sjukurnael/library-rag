@@ -381,6 +381,36 @@ details.trace[open] summary { color: var(--ink); }
 #panel #ppdf a.alt { color: var(--dim); font-weight: 400; }
 #panel #ppdf a:hover { text-decoration: underline; }
 
+/* --------------------------------------------------------- model picker -- */
+/* Two models, shown as one control rather than a dropdown: there are exactly
+   two, and a select would hide the one you are not using behind a click. The
+   selected half is filled, matching every other chosen state in this app. */
+.modelpick {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 3px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--line);
+}
+.modelpick button {
+  appearance: none; border: 0; cursor: pointer;
+  padding: 5px 12px; border-radius: 999px;
+  font: inherit; font-size: 12.5px; font-weight: 500; line-height: 1.2;
+  color: var(--dim); background: transparent;
+  transition: background .12s ease, color .12s ease;
+}
+.modelpick button:hover { color: var(--ink); }
+.modelpick button.on {
+  background: var(--accent); color: #fff;
+}
+.modelpick button.on:hover { color: #fff; }
+
+/* The composer's row: the note keeps the left, the picker sits at the right so
+   it reads as a setting for the box above rather than another sentence. */
+.composer .crow {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-top: 8px;
+}
+.composer .crow .note { margin: 0; }
+
 /* --------------------------------------------------------- drive browser -- */
 .toolbar { display: flex; align-items: center; gap: 12px; margin: 4px 0 14px; }
 .toolbar .chip { white-space: nowrap; padding: 9px 16px; border-radius: 999px; }
@@ -982,7 +1012,12 @@ main .card h1 { margin-bottom: 8px; }
   font-size: var(--t-ui); color: var(--muted); margin: 0 0 var(--s4);
   line-height: 1.55;
 }
-.libform { display: flex; gap: var(--s2); }
+.libform { display: flex; gap: var(--s2); flex-wrap: wrap; align-items: center; }
+/* The model picker is a fourth control in this row. flex:none for the same
+   reason .bcount is -- the topic field is the one thing that should absorb
+   the spare width -- and the row wraps rather than crushing it when the modal
+   is narrow. */
+.libform .modelpick { flex: none; }
 .libform input {
   flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--bg);
   color: var(--ink); border-radius: var(--rp); padding: 11px var(--s4);

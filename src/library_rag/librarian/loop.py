@@ -220,7 +220,7 @@ def available_tools() -> list:
 
 
 def run(brief, conn, voyage=None, *, count=DEFAULT_COUNT, classroom_ids=(),
-        client=None, max_iterations=None):
+        client=None, max_iterations=None, model=None):
     """Validate eagerly, then return the generator.
 
     Split for the same reason the browse agent split it: a raise inside a
@@ -232,7 +232,8 @@ def run(brief, conn, voyage=None, *, count=DEFAULT_COUNT, classroom_ids=(),
     if not 1 <= count <= MAX_COUNT:
         raise ValueError(f"count must be between 1 and {MAX_COUNT}, got {count}")
     return _run(brief, conn, voyage, count=count, classroom_ids=list(classroom_ids),
-                client=client, max_iterations=max_iterations or MAX_ITERATIONS)
+                client=client, max_iterations=max_iterations or MAX_ITERATIONS,
+                model=model or MODEL)
 
 
 def _summarize(name, result):
@@ -268,7 +269,8 @@ def _summarize(name, result):
     return {}
 
 
-def _run(brief, conn, voyage, *, count, classroom_ids, client, max_iterations):
+def _run(brief, conn, voyage, *, count, classroom_ids, client, max_iterations,
+         model=MODEL):
     if client is None:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
@@ -305,7 +307,7 @@ def _run(brief, conn, voyage, *, count, classroom_ids, client, max_iterations):
     for iteration in range(1, max_iterations + 1):
         prompt_cache.move_breakpoint(messages)
         response = client.messages.create(
-            model=MODEL,
+            model=model,
             max_tokens=8192,
             system=system,
             tools=tool_schemas,
@@ -324,7 +326,7 @@ def _run(brief, conn, voyage, *, count, classroom_ids, client, max_iterations):
             answer = "".join(b.text for b in response.content if b.type == "text")
             yield {"type": "answer", "text": answer}
             yield {"type": "done", "recommendations": recommendations,
-                   "iterations": iteration, "usage": usage}
+                   "iterations": iteration, "usage": usage, "model": model}
             return
 
         note = "".join(b.text for b in response.content if b.type == "text").strip()
@@ -362,7 +364,8 @@ def _run(brief, conn, voyage, *, count, classroom_ids, client, max_iterations):
         f"shortlist. Anything I found is listed below."
     )}
     yield {"type": "done", "recommendations": recommendations,
-           "iterations": max_iterations, "exhausted": True, "usage": usage}
+           "iterations": max_iterations, "exhausted": True, "usage": usage,
+           "model": model}
 
 
 def _remember_files(seen_files, items):

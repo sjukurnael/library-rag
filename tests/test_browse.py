@@ -274,7 +274,7 @@ def browse_web(web, monkeypatch):
     monkeypatch.setattr(api.embed_mod, "build_client", lambda: object())
     calls = []
 
-    def fake_run(brief, conn, voyage, *, count, classroom_ids=()):
+    def fake_run(brief, conn, voyage, *, count, classroom_ids=(), model=None):
         calls.append(count)
         yield {"type": "done", "recommendations": [], "iterations": 1}
 
@@ -340,7 +340,7 @@ BALANCE = _anthropic_error(
 
 def _browse_frames(browse_web, monkeypatch, exc):
     """The SSE frames the route emits when the agent raises `exc`."""
-    def boom(brief, conn, voyage, *, count, classroom_ids=()):
+    def boom(brief, conn, voyage, *, count, classroom_ids=(), model=None):
         raise exc
         yield  # unreachable -- keeps this a generator function
 

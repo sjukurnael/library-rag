@@ -234,6 +234,7 @@ def run(
     *,
     client=None,
     max_iterations: int = MAX_ITERATIONS,
+    model: str | None = None,
 ):
     """Yield events: {"type": "search"|"results"|"thinking"|"answer"|"done", ...}.
 
@@ -264,12 +265,13 @@ def run(
         "cache_creation_input_tokens": 0,
     }
     stop_reason = None
+    model = model or MODEL
     system = prompt_cache.cacheable_system(SYSTEM_PROMPT)
 
     for iteration in range(1, max_iterations + 1):
         prompt_cache.move_breakpoint(messages)
         response = client.messages.create(
-            model=MODEL,
+            model=model,
             max_tokens=4096,
             system=system,
             tools=TOOL_SCHEMAS,
@@ -306,6 +308,7 @@ def run(
                 # is what makes that visible before it is changed.
                 "stop_reason": stop_reason,
                 "usage": usage,
+                "model": model,
             }
             return
 

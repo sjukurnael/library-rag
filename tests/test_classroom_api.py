@@ -253,10 +253,59 @@ def test_asking_an_unknown_classroom_is_404(client, conn):
 def test_a_tutor_run_is_recorded_against_its_classroom(client, conn, monkeypatch):
     monkeypatch.setattr(api.embed_mod, "build_client", lambda: object())
     monkeypatch.setattr(api.research, "run",
-                        lambda q, c, voyage, book_ids: iter([{"type": "done"}]))
+                        lambda q, c, voyage, book_ids, model=None: iter([{"type": "done"}]))
     cid = client.post("/api/classrooms", json={"name": "C"}).json()["classroom"]["id"]
 
     run_id = client.post("/api/research",
                          json={"question": "q", "classroom_id": cid}).json()["run_id"]
     row = db.fetch_research_run(conn, run_id)
     assert row["classroom_id"] == cid
+
+
+# ------------------------------------------------------- choosing a model --
+
+def test_a_model_label_reaches_the_tutor_as_an_id(client, conn, monkeypatch):
+    """The wire carries "opus"; the loop is given claude-opus-5. The mapping is
+    the protection -- see the next test for what it protects against."""
+    monkeypatch.setattr(api.embed_mod, "build_client", lambda: object())
+    seen = {}
+
+    def fake_run(q, c, voyage, book_ids, model=None):
+        seen["model"] = model
+        return iter([{"type": "done"}])
+
+    monkeypatch.setattr(api.research, "run", fake_run)
+    cid = client.post("/api/classrooms", json={"name": "C"}).json()["classroom"]["id"]
+
+    client.post("/api/research",
+                json={"question": "q", "classroom_id": cid, "model": "opus"})
+    assert seen["model"] == "claude-opus-5"
+
+
+def test_an_arbitrary_model_string_is_refused(client, conn):
+    """A field carrying a model ID would let a caller point this project's key
+    at any model they named. The closed set is why it cannot."""
+    cid = client.post("/api/classrooms", json={"name": "C"}).json()["classroom"]["id"]
+
+    for bad in ("claude-opus-4-1", "gpt-4", "", "OPUS"):
+        r = client.post("/api/research",
+                        json={"question": "q", "classroom_id": cid, "model": bad})
+        assert r.status_code == 422, f"{bad!r} was accepted"
+
+
+def test_omitting_the_model_leaves_the_deployment_default(client, conn, monkeypatch):
+    """No choice means the server's own default, not a hardcoded one here --
+    LIBRARIAN_MODEL / TUTOR_MODEL still decide what a plain request runs."""
+    monkeypatch.setattr(api.embed_mod, "build_client", lambda: object())
+    monkeypatch.setattr(api.retrieval_loop, "MODEL", "claude-from-the-environment")
+    seen = {}
+
+    def fake_run(q, c, voyage, book_ids, model=None):
+        seen["model"] = model
+        return iter([{"type": "done"}])
+
+    monkeypatch.setattr(api.research, "run", fake_run)
+    cid = client.post("/api/classrooms", json={"name": "C"}).json()["classroom"]["id"]
+
+    client.post("/api/research", json={"question": "q", "classroom_id": cid})
+    assert seen["model"] == "claude-from-the-environment"

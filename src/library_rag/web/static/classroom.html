@@ -55,7 +55,16 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
               </button>
             </form>
-            <div class="note">The tutor answers only from the books on this shelf.</div>
+            <div class="crow">
+              <div class="note">The tutor answers only from the books on this shelf.</div>
+              <!-- Which model answers. Sonnet is the default and what the
+                   deployment runs; Opus costs 2.5x and is here for a question
+                   worth thinking about harder. -->
+              <div class="modelpick" id="tmodel" role="group" aria-label="Model for the tutor">
+                <button type="button" data-model="sonnet" class="on">Sonnet</button>
+                <button type="button" data-model="opus">Opus</button>
+              </div>
+            </div>
           </div>
 
         </div>
@@ -111,7 +120,11 @@
         <label class="bcount" for="lc">up to
           <input id="lc" type="number" min="1" max="20" step="1" value="12"
                  inputmode="numeric"> books</label>
-        <button class="btn primary" id="lgo" type="submit">Find books</button>
+        <div class="modelpick" id="lmodel" role="group" aria-label="Model for the librarian">
+            <button type="button" data-model="sonnet" class="on">Sonnet</button>
+            <button type="button" data-model="opus">Opus</button>
+          </div>
+          <button class="btn primary" id="lgo" type="submit">Find books</button>
       </form>
       <div class="liberr" id="lcerr" hidden></div>
       <div id="ltrail"></div>
@@ -480,7 +493,8 @@ async function runLibrarian(brief, count) {
   try {
     const r = await fetch('/api/librarian', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ brief, count, classroom_id: CID }),
+      body: JSON.stringify({ brief, count, classroom_id: CID,
+                             model: modelOf('lmodel') }),
     });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
 
@@ -610,6 +624,36 @@ function setLibOpen(open) {
 }
 $('#asklib').onclick = () => setLibOpen(true);
 $('#libclose').onclick = () => setLibOpen(false);
+/* The picker. Two buttons, one selected, remembered across visits -- a reader
+   who chose Opus for a hard topic should not have to choose it again on the next
+   question, and a model choice that silently resets is a bill nobody expected. */
+function modelOf(id) {
+  const el = $('#' + id);
+  const on = el && el.querySelector('button.on');
+  return on ? on.dataset.model : 'sonnet';
+}
+
+function wireModelPick(id) {
+  const el = $('#' + id);
+  if (!el) return;
+  try {
+    const saved = localStorage.getItem('model:' + id);
+    if (saved) {
+      el.querySelectorAll('button').forEach(b =>
+        b.classList.toggle('on', b.dataset.model === saved));
+    }
+  } catch (_) { /* a private window throws on read; the default stands */ }
+
+  el.addEventListener('click', e => {
+    const b = e.target.closest('button[data-model]');
+    if (!b) return;
+    el.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    try { localStorage.setItem('model:' + id, b.dataset.model); } catch (_) {}
+  });
+}
+wireModelPick('lmodel');
+wireModelPick('tmodel');
+
 $('#libmodal').addEventListener('click', e => {
   if (e.target.id === 'libmodal') setLibOpen(false);   // the backdrop
 });

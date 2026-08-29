@@ -345,7 +345,10 @@ $('#f').addEventListener('submit', async e => {
   try {
     const d = await fetchJSON('/api/research', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, classroom_id: CID }),
+      // modelOf lives on the classroom page, the only page with a tutor.
+      // Guarded so this file stays loadable anywhere else.
+      body: JSON.stringify({ question, classroom_id: CID,
+        model: (typeof modelOf === 'function' ? modelOf('tmodel') : undefined) }),
     }, 20000);
     turn.run_id = d.run_id;
     save();
