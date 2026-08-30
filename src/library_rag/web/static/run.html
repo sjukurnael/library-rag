@@ -287,6 +287,8 @@ function funnel(d) {
 
 function header(run, classroom, d) {
   const bits = [];
+  if (run.owner_email) bits.push(`<span class="who" title="${esc(run.owner_email)}">${
+    esc(String(run.owner_email).split('@')[0])}</span>`);
   if (classroom) bits.push(`<a href="/classroom/${classroom.id}">${esc(classroom.name)}</a>`);
   if (run.model) bits.push(esc(MODEL_LABEL[run.model] || run.model));
   const dur = duration(run.seconds != null ? run.seconds

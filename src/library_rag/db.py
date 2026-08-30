@@ -1061,7 +1061,8 @@ RESEARCH_INTERRUPTED = (
 
 def create_research_run(conn, run_id: str, question: str,
                         classroom_id: int | None = None,
-                        agent: str = "tutor", model: str | None = None) -> None:
+                        agent: str = "tutor", model: str | None = None,
+                        owner_email: str | None = None) -> None:
     """The row, written before any work starts.
 
     Ordering matters: the request that mints a run_id must not return until the
@@ -1073,9 +1074,10 @@ def create_research_run(conn, run_id: str, question: str,
     research_runs when what runs against a classroom is the tutor.
     """
     conn.execute(
-        "INSERT INTO research_runs (run_id, question, classroom_id, agent, model) "
-        "VALUES (%s, %s, %s, %s, %s)",
-        (run_id, question, classroom_id, agent, model),
+        "INSERT INTO research_runs "
+        "(run_id, question, classroom_id, agent, model, owner_email) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (run_id, question, classroom_id, agent, model, owner_email),
     )
     conn.commit()
 
@@ -1779,6 +1781,7 @@ def list_runs(conn, *, agent: str | None = None, limit: int = RUNS_PAGE,
         cur.execute(
             f"""
         SELECT r.run_id, r.agent, r.question, r.status::text, r.model,
+               r.owner_email,
                r.iterations, r.searches, r.error,
                r.input_tokens, r.output_tokens,
                r.cache_read_tokens, r.cache_write_tokens,

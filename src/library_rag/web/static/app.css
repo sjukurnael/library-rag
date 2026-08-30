@@ -426,6 +426,10 @@ details.trace[open] summary { color: var(--ink); }
 .runrow .rout .rrun { color: var(--accent); }
 .runrow .rwhen { font-size: 12.5px; color: var(--dim); text-align: right; }
 
+/* Who ran it. Given weight the other metadata does not have, because on a
+   shared list it is the first thing anyone scans for. */
+.runrow .rmeta .who, .runhead .rbits .who { color: var(--ink); font-weight: 500; }
+
 .pager { display: flex; align-items: center; gap: 14px; padding: 16px; }
 .pager .pcount { font-size: 13px; color: var(--dim); }
 

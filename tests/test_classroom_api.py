@@ -365,3 +365,37 @@ def test_a_run_names_the_classroom_it_was_taken_off(client, conn):
     client.delete(f"/api/classrooms/{cid}")
     assert client.get("/api/runs").json()["runs"][0]["classroom_name"] is None
     assert client.get("/api/runs/r1").json()["classroom"] is None
+
+
+def test_a_run_records_who_started_it(client, conn, monkeypatch):
+    """Activity is shared history -- everyone signed in sees every run -- so
+    "who asked this" has to be stored at the moment the run is created. Read
+    from the session, never from the request body: a client-supplied author is
+    a claim, not a fact."""
+    monkeypatch.setattr(api.auth, "current_user", lambda request: "reader@example.com")
+    monkeypatch.setattr(api.embed_mod, "build_client", lambda: object())
+    monkeypatch.setattr(api.research, "run",
+                        lambda q, c, voyage, book_ids, model=None: iter([{"type": "done"}]))
+    cid = client.post("/api/classrooms", json={"name": "C"}).json()["classroom"]["id"]
+
+    run_id = client.post("/api/research",
+                         json={"question": "q", "classroom_id": cid}).json()["run_id"]
+
+    assert db.fetch_research_run(conn, run_id)["owner_email"] == "reader@example.com"
+    assert client.get("/api/runs").json()["runs"][0]["owner_email"] == "reader@example.com"
+
+
+def test_a_run_with_no_sign_in_has_no_author_rather_than_a_wrong_one(client, conn,
+                                                                     monkeypatch):
+    """current_user() returns None whenever GOOGLE_CLIENT_ID is unset, which is
+    how the app runs locally. A blank author is correct there; inventing one
+    would put a name on work nobody did."""
+    monkeypatch.setattr(api.auth, "current_user", lambda request: None)
+    monkeypatch.setattr(api.embed_mod, "build_client", lambda: object())
+    monkeypatch.setattr(api.research, "run",
+                        lambda q, c, voyage, book_ids, model=None: iter([{"type": "done"}]))
+    cid = client.post("/api/classrooms", json={"name": "C"}).json()["classroom"]["id"]
+
+    run_id = client.post("/api/research",
+                         json={"question": "q", "classroom_id": cid}).json()["run_id"]
+    assert db.fetch_research_run(conn, run_id)["owner_email"] is None

@@ -101,8 +101,18 @@ function when(iso) {
 
 const MODEL_LABEL = { 'claude-sonnet-5': 'Sonnet', 'claude-opus-5': 'Opus' };
 
+/* The local part of the address. A list of rows each ending in the same
+   @gmail.com is noise, and the domain is not what distinguishes people here. */
+function who(email) {
+  return String(email).split('@')[0];
+}
+
 function row(r) {
   const bits = [];
+  // Who ran it, first -- it is the thing a second reader looks for. Absent on
+  // runs made before this was recorded, and on any machine with sign-in off,
+  // where there is genuinely no one to name.
+  if (r.owner_email) bits.push(`<span class="who">${esc(who(r.owner_email))}</span>`);
   if (r.classroom_name) bits.push(esc(r.classroom_name));
   if (r.model) bits.push(MODEL_LABEL[r.model] || esc(r.model));
   const d = duration(r.seconds); if (d) bits.push(d);

@@ -788,7 +788,7 @@ def _research_event_frames(run_id: str, after: int):
 
 
 @app.post("/api/research")
-def research_start(req: AskRequest, background: BackgroundTasks):
+def research_start(req: AskRequest, background: BackgroundTasks, request: Request):
     """Start a tutor run against a classroom and return its id.
 
     Split from the stream so the run survives the client: the chat page can
@@ -814,7 +814,10 @@ def research_start(req: AskRequest, background: BackgroundTasks):
         if db.fetch_classroom(conn, req.classroom_id) is None:
             raise HTTPException(404, "No such classroom.")
         db.create_research_run(conn, run_id, req.question,
-                               classroom_id=req.classroom_id)
+                               classroom_id=req.classroom_id,
+                               agent="tutor", model=model_choice.resolve(
+                                   req.model, retrieval_loop.MODEL),
+                               owner_email=auth.current_user(request))
     background.add_task(_run_research, run_id, req.question, req.classroom_id,
                         req.model)
     return {"run_id": run_id}
@@ -969,7 +972,7 @@ def remove_classroom_book(classroom_id: int, book_id: int):
 
 
 @app.post("/api/librarian")
-def librarian_stream(req: LibrarianRequest):
+def librarian_stream(req: LibrarianRequest, request: Request):
     """The librarian, streamed -- and recorded as it streams.
 
     It used to be ephemeral: no run id, nothing left afterwards, on the argument
@@ -990,6 +993,9 @@ def librarian_stream(req: LibrarianRequest):
 
     run_id = secrets.token_hex(16)
     model = model_choice.resolve(req.model, librarian_loop.MODEL)
+    # Read here, not inside stream(): by the time the generator runs the request
+    # is on its way out and the session should not be reached for again.
+    owner = auth.current_user(request)
 
     def stream():
         recorded = False
@@ -1002,7 +1008,8 @@ def librarian_stream(req: LibrarianRequest):
                 )
                 db.create_research_run(conn, run_id, req.brief,
                                        classroom_id=req.classroom_id,
-                                       agent="librarian", model=model)
+                                       agent="librarian", model=model,
+                                       owner_email=owner)
                 recorded = True
                 # The run id reaches the page before any work does, so a reader
                 # can open the recorded run while it is still going.
