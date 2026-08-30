@@ -839,7 +839,7 @@ async function pickClassroom({ bookId, title, preferId = null,
     <button class="rprow" data-room="${r.id}">
       <span class="rpn">${esc(r.name)}</span>
       <span class="rpm">${r.book_count} book${r.book_count === 1 ? '' : 's'}${
-        r.id === preferId ? ' · <b>this run</b>' : ''}</span>
+        r.id === preferId ? ' · <b>Default Classroom</b>' : ''}</span>
       <span class="rpgo">Add</span>
     </button>`).join('');
 
