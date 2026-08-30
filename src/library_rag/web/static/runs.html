@@ -43,11 +43,13 @@
         <button class="chip" data-agent="tutor">Tutor</button>
       </div>
     </div>
-    <p class="pagesay">Every run an agent has made — what it searched for, which
-      books it considered, and what it did with them.</p>
+    <div class="pagebody">
+      <p class="pagesay">Every run an agent has made — what it searched for,
+        which books it considered, and what it did with them.</p>
 
-    <div id="list"><div class="prog">loading…</div></div>
-    <div class="pager" id="pager" hidden></div>
+      <div id="list"><div class="prog">loading…</div></div>
+      <div class="pager" id="pager" hidden></div>
+    </div>
   </div>
 </div>
 
@@ -166,6 +168,8 @@ $('#filter').addEventListener('click', e => {
   load();
 });
 
+paintAuth();
+paintLibraryFoot();
 load();
 </script>
 </body>

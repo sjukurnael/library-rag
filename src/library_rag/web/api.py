@@ -1072,9 +1072,18 @@ def get_run(run_id: str):
         events = db.fetch_research_events(conn, run_id, after=0)
         classroom = (db.fetch_classroom(conn, run["classroom_id"])
                      if run.get("classroom_id") else None)
+        # What is on that shelf NOW, not what the run recommended. The two are
+        # different questions and the page asks both: the librarian's own
+        # actions are history and cannot change, while whether a book was
+        # actually taken is a live fact the reader edits every time they press
+        # Add or Remove.
+        on_shelf = (db.classroom_book_ids(conn, run["classroom_id"],
+                                          ready_only=False)
+                    if run.get("classroom_id") else [])
     return {"run": run, "events": events,
             "classroom": {"id": classroom["id"], "name": classroom["name"]}
-                         if classroom else None}
+                         if classroom else None,
+            "on_shelf": list(on_shelf)}
 
 
 @app.post("/api/library/drive")

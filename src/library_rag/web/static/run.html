@@ -34,14 +34,23 @@
   </aside>
 
   <div class="page">
-    <a class="backlink" href="/runs">← Activity</a>
-    <div id="run"><div class="prog">loading…</div></div>
+    <div class="pagebody runbody">
+      <a class="backlink" href="/runs">← Activity</a>
+      <div id="run"><div class="prog">loading…</div></div>
+    </div>
   </div>
 </div>
 
 <script src="/static/app.js"></script>
 <script>
 const RUN_ID = decodeURIComponent(location.pathname.split('/').pop());
+
+/* The classroom's CURRENT membership. Set once per load from the API rather
+   than derived from the run, so "User action" reflects what the reader has
+   actually done since -- including books they added that the librarian never
+   recommended, and ones they have since taken off. */
+let SHELF = new Set();
+let HAS_SHELF = false;
 
 const MODEL_LABEL = { 'claude-sonnet-5': 'Sonnet', 'claude-opus-5': 'Opus' };
 const PRICE = { 'claude-sonnet-5': [2, 10], 'claude-opus-5': [5, 25] };
@@ -139,11 +148,12 @@ function digest(events) {
     }
   }
 
-  const shelvedIds = new Set(shelved.map(b => b.book_id).filter(x => x != null));
+  const recommendedIds = new Set(shelved.map(b => b.book_id).filter(x => x != null));
   const considered = [...books.values()].map(b => ({
     ...b,
     opened: opened.has(b.book_id),
-    shelved: shelvedIds.has(b.book_id),
+    recommended: recommendedIds.has(b.book_id),
+    onShelf: SHELF.has(b.book_id),
   })).sort((a, b) => (a.best ?? 9) - (b.best ?? 9));
 
   return { angles, considered, opened, shelved, answer, usage };
@@ -151,10 +161,23 @@ function digest(events) {
 
 /* --------------------------------------------------------------- render -- */
 
-function fate(b) {
-  if (b.shelved) return '<span class="fate shelved">Shelved</span>';
-  if (b.opened)  return '<span class="fate opened">Opened, not shelved</span>';
+/* What the LIBRARIAN did. History: this cannot change, whatever anyone does to
+   the shelf afterwards. "Recommended" means it put the book on its shortlist,
+   which is a proposal -- the reader is the one who shelves anything. */
+function didWhat(b) {
+  if (b.recommended) return '<span class="fate picked">Recommended</span>';
+  if (b.opened)      return '<span class="fate opened">Read, not recommended</span>';
   return '<span class="fate seen">Not opened</span>';
+}
+
+/* What the READER did, read live from the classroom rather than from the run.
+   Add a book and this says so on the next load; remove it and it stops saying
+   so. Blank when the run was not tied to a classroom at all, which is honest --
+   there was no shelf for anything to be added to. */
+function userDid(b, hasShelf) {
+  if (!hasShelf)  return '<span class="dim">—</span>';
+  if (b.onShelf)  return '<span class="fate shelved">Added to shelf</span>';
+  return '<span class="dim">—</span>';
 }
 
 function bookRow(b, rank) {
@@ -168,31 +191,37 @@ function bookRow(b, rank) {
       <td class="ag">${b.angles > 1
           ? `<span class="corro" title="Found by ${b.angles} independent searches">${b.angles}×</span>`
           : '<span class="dim">1×</span>'}</td>
-      <td class="ft">${fate(b)}</td>
+      <td class="ft">${didWhat(b)}</td>
+      <td class="ft">${userDid(b, HAS_SHELF)}</td>
     </tr>`;
 }
 
 function consideredTable(considered) {
-  return `<table class="runtable">
+  // Its own horizontal scroller: seven columns and 1000-page book titles will
+  // outgrow a narrow window, and the page body must never scroll sideways.
+  return `<div class="tablewrap"><table class="runtable">
       <thead><tr>
         <th class="rank">#</th><th>Book</th><th>Matched on</th>
         <th>Match</th><th title="How many of the searches found this book">Angles</th>
-        <th>What happened</th>
+        <th>Librarian</th><th>User action</th>
       </tr></thead>
       <tbody>${considered.map((b, i) => bookRow(b, i + 1)).join('')}</tbody>
-    </table>`;
+    </table></div>`;
 }
 
-function angleCard(a, i, openedIds, shelvedIds) {
+function angleCard(a, i, openedIds, shelvedIds) {  // shelvedIds = recommended
   const rows = a.candidates.map((c, j) => {
-    const b = { ...c, opened: openedIds.has(c.book_id), shelved: shelvedIds.has(c.book_id) };
+    const b = { ...c, opened: openedIds.has(c.book_id),
+                recommended: shelvedIds.has(c.book_id),
+                onShelf: SHELF.has(c.book_id) };
     return `<tr>
         <td class="rank">${j + 1}</td>
         <td class="bt">${esc(c.title || '(untitled)')}</td>
         <td class="cv" title="${esc(c.covers || '')}"><span class="cvt">${
           c.covers ? esc(c.covers) : '<span class="dim">—</span>'}</span></td>
         <td class="st">${bars(c.distance)}</td>
-        <td class="ft">${fate(b)}</td>
+        <td class="ft">${didWhat(b)}</td>
+        <td class="ft">${userDid(b, HAS_SHELF)}</td>
       </tr>`;
   }).join('');
 
@@ -203,11 +232,11 @@ function angleCard(a, i, openedIds, shelvedIds) {
         <span class="ameta">${a.candidates.length} books${
           a.thin ? ' · <span class="thin">library is thin here</span>' : ''}</span>
       </summary>
-      <table class="runtable inner">
+      <div class="tablewrap inner"><table class="runtable">
         <thead><tr><th class="rank">#</th><th>Book</th><th>Matched on</th>
-          <th>Match</th><th>What happened</th></tr></thead>
+          <th>Match</th><th>Librarian</th><th>User action</th></tr></thead>
         <tbody>${rows}</tbody>
-      </table>
+      </table></div>
     </details>`;
 }
 
@@ -216,7 +245,7 @@ function funnel(d) {
     [d.angles.length, 'angles searched'],
     [d.considered.length, 'books considered'],
     [d.opened.size, 'opened and read'],
-    [d.shelved.length, 'shelved'],
+    [d.shelved.length, 'recommended'],
   ];
   return `<div class="funnel">${steps.map(([n, label], i) =>
     `<div class="fstep"><span class="fn">${n}</span><span class="fl">${label}</span></div>` +
@@ -248,9 +277,11 @@ function header(run, classroom, d) {
 
 function render(data) {
   const { run, classroom } = data;
+  SHELF = new Set(data.on_shelf || []);
+  HAS_SHELF = !!classroom;
   const d = digest(data.events || []);
   const openedIds = new Set(d.opened.keys());
-  const shelvedIds = new Set(d.shelved.map(b => b.book_id).filter(x => x != null));
+  const recIds = new Set(d.shelved.map(b => b.book_id).filter(x => x != null));
 
   let html = header(run, classroom, d);
 
@@ -279,7 +310,7 @@ function render(data) {
       <h2>What it searched for <span class="count">${d.angles.length}</span></h2>
       <p class="say">Each angle is a separate search, in the librarian's own
         words. These are what it decided were the useful ways in.</p>
-      ${d.angles.map((a, i) => angleCard(a, i, openedIds, shelvedIds)).join('')}
+      ${d.angles.map((a, i) => angleCard(a, i, openedIds, recIds)).join('')}
     </div>`;
 
   if (d.shelved.length) {
@@ -313,6 +344,8 @@ async function load() {
   }
 }
 
+paintAuth();
+paintLibraryFoot();
 load();
 </script>
 </body>
