@@ -57,7 +57,15 @@
       <div class="sectionhead" id="queuehead">Queue</div>
       <div class="runs" id="runs"><div class="empty">loading…</div></div>
 
-      <div class="sectionhead">Indexed</div>
+      <div class="sectionhead withpick">Indexed
+        <!-- One picker for the whole list rather than one per row: this list is
+             fifty rows and climbing, and fifty selects would be both heavier and
+             harder to use than choosing a destination once. -->
+        <span class="addto" id="addto" hidden>
+          <label for="room">Add to</label>
+          <select id="room"></select>
+        </span>
+      </div>
       <div class="runs" id="doneruns"></div>
 
     </div>
@@ -164,11 +172,60 @@ function doneRow(b) {
     <div class="who">
       <div class="t">${esc(b.title)}</div>
       <div class="m"><span class="badge good">Indexed</span>
-        <span>${b.pages ?? '?'} pages · ${b.chunks} passages</span></div>
+        <span>${b.pages ?? '?'} pages · ${b.chunks} passages</span>
+        <span class="addmsg" data-msg="${b.id}"></span></div>
     </div>
-    <div class="side"><button class="del" data-id="${b.id}" data-title="${esc(b.title)}"
-      title="Remove this book">&times;</button></div></div>`;
+    <div class="side">
+      <button class="btn addbook" data-add="${b.id}"
+        title="Add this book to the chosen classroom">Add</button>
+      <button class="del" data-id="${b.id}" data-title="${esc(b.title)}"
+        title="Remove this book">&times;</button></div></div>`;
 }
+
+/* The classroom picker, filled once. Hidden entirely when there are no
+   classrooms -- an Add button with nowhere to add to is worse than no button. */
+let ROOMS = [];
+async function loadRooms() {
+  try {
+    const d = await fetchJSON('/api/classrooms', {}, 15000);
+    ROOMS = d.classrooms || [];
+  } catch { ROOMS = []; }
+  const wrap = $('#addto'), sel = $('#room');
+  if (!ROOMS.length) { wrap.hidden = true; return; }
+  sel.innerHTML = ROOMS.map(r =>
+    `<option value="${r.id}">${esc(r.name)}</option>`).join('');
+  wrap.hidden = false;
+}
+
+async function addBook(bookId, btn) {
+  const sel = $('#room');
+  if (!sel || !sel.value) return;
+  const msg = document.querySelector(`.addmsg[data-msg="${bookId}"]`);
+  btn.disabled = true; btn.textContent = 'Adding…';
+  try {
+    const r = await fetch(`/api/classrooms/${sel.value}/books`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ book_ids: [Number(bookId)], added_by: 'reader' }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.detail || r.statusText);
+    }
+    const room = ROOMS.find(x => String(x.id) === String(sel.value));
+    btn.textContent = 'Added';
+    if (msg) msg.innerHTML = `<span class="ok">on ${esc(room ? room.name : 'the shelf')}</span>`;
+  } catch (err) {
+    btn.disabled = false; btn.textContent = 'Add';
+    if (msg) msg.innerHTML = `<span class="bad">${esc(String(err.message || err))}</span>`;
+  }
+}
+
+// Delegated: the indexed list is replaced wholesale every refresh, so a
+// listener bound to a button would not survive the next poll.
+$('#doneruns').addEventListener('click', e => {
+  const b = e.target.closest('button[data-add]');
+  if (b) addBook(b.dataset.add, b);
+});
 
 // Clearing the stopped books. Only `failed` and `needs_ocr` -- a stuck book
 // has no passages, so nothing searchable is lost, and the PDFs stay in the
@@ -317,6 +374,7 @@ $('#file').addEventListener('change', async e => {
   }
 });
 
+loadRooms();
 refreshBooks();
 </script>
 </body>

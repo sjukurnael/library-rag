@@ -35,7 +35,12 @@ MODEL = os.environ.get("LIBRARIAN_MODEL", "claude-sonnet-5")
 # searching.
 MAX_ITERATIONS = 40
 DEFAULT_COUNT = 12
-MAX_COUNT = 30
+# 50, matching CLASSROOM_MAX_BOOKS. The two have to move together: a ceiling
+# above the shelf's own would let the librarian return books that cannot all be
+# added, which is a 409 after two minutes of work rather than a bound anyone
+# learns from. 12 stays the default -- most briefs do not want fifty books, and
+# the count drives how long a run takes.
+MAX_COUNT = 50
 
 
 def system_prompt(count: int = DEFAULT_COUNT, shelf: str = "") -> str:

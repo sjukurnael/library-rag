@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from library_rag import config
+from library_rag.librarian import loop as librarian_loop
 from library_rag.web import api
 
 STATIC = Path(api.__file__).resolve().parent / "static"
@@ -443,8 +445,16 @@ def test_the_book_count_is_typed_and_bounded(client):
     no way to notice."""
     html = (STATIC / "classroom.html").read_text()
     assert 'id="lc" type="number"' in html
-    assert 'min="1"' in html and 'max="20"' in html
-    assert "const MAX_BOOKS = 20" in html
+
+    # Derived, not hardcoded. The page's ceiling has to be the shelf's ceiling:
+    # offering more books than a classroom can hold turns a bound the reader
+    # could have learned from into a 409 after the librarian has already run.
+    cap = config.CLASSROOM_MAX_BOOKS
+    assert 'min="1"' in html and f'max="{cap}"' in html
+    assert f"const MAX_BOOKS = {cap}" in html
+    assert librarian_loop.MAX_COUNT == cap, (
+        "the API bound and the shelf cap must agree, or one of them is unreachable"
+    )
 
     fn = html[html.index("function readCount()"):]
     fn = fn[:fn.index("\n}")]

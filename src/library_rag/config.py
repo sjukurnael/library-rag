@@ -432,7 +432,7 @@ BIBLE_ENABLED = os.environ.get("BIBLE_ENABLED", "").lower() in {"1", "true", "ye
 # room to grow a shelf without it becoming a library again -- and scope is the
 # signal the whole design runs on. A classroom holding a quarter of the corpus
 # has told the tutor nothing.
-CLASSROOM_MAX_BOOKS = 30
+CLASSROOM_MAX_BOOKS = 50
 
 # ---- Book profiles (the librarian's tier) ----
 # How many topic centroids a book gets. round(sqrt(chunks)), clamped -- so a

@@ -121,7 +121,7 @@
              brief: 12 books took 203s, 5 took 116s. A ceiling, not a promise --
              it returns fewer when the library is thin. -->
         <label class="bcount" for="lc">up to
-          <input id="lc" type="number" min="1" max="20" step="1" value="12"
+          <input id="lc" type="number" min="1" max="50" step="1" value="12"
                  inputmode="numeric"> books</label>
         <div class="modelpick" id="lmodel" role="group" aria-label="Model for the librarian">
             <button type="button" data-model="sonnet" class="on">Sonnet</button>
@@ -593,7 +593,7 @@ $('#lout').addEventListener('click', async e => {
 // The ceiling is 20. Not a clamp: silently turning 50 into 20 answers a
 // different question from the one that was asked, and the reader has no way to
 // tell it happened. Say so and let them decide.
-const MAX_BOOKS = 20;
+const MAX_BOOKS = 50;
 
 function readCount() {
   const el = $('#lc'), err = $('#lcerr');

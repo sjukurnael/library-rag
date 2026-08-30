@@ -381,6 +381,28 @@ details.trace[open] summary { color: var(--ink); }
 #panel #ppdf a.alt { color: var(--dim); font-weight: 400; }
 #panel #ppdf a:hover { text-decoration: underline; }
 
+/* The indexed list's destination picker, on the section heading it applies to. */
+.sectionhead.withpick { display: flex; align-items: center; gap: 10px; }
+.addto { margin-left: auto; display: flex; align-items: center; gap: 8px;
+         font-size: 12.5px; font-weight: 400; color: var(--dim);
+         text-transform: none; letter-spacing: 0; }
+.addto select {
+  font: inherit; font-size: 12.5px; padding: 6px 9px; max-width: 220px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--bg); color: var(--ink);
+}
+.addto select:focus { outline: none; border-color: var(--accent); }
+/* The row's own ground is var(--surface), which is also .btn's, so the default
+   button was invisible on it. Given the page background and a hairline instead. */
+.run .side .addbook {
+  padding: 5px 12px; font-size: 12.5px; white-space: nowrap;
+  background: var(--bg); border: 1px solid var(--line); color: var(--ink);
+}
+.run .side .addbook:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.run .side .addbook:disabled { opacity: .6; cursor: default; }
+.run .addmsg .ok  { color: #1e6b33; }
+.run .addmsg .bad { color: #b3261e; }
+
 /* -------------------------------------------------------------- activity -- */
 /* .pagebody has no top padding -- it sits under a fixed .roomhead everywhere
    else. This page has no header above it, so it supplies its own. */
@@ -654,6 +676,25 @@ details.trace[open] summary { color: var(--ink); }
 }
 .bcopen:hover { text-decoration: underline; }
 
+/* Add to a shelf without leaving the run. Pinned to the bottom of the card so
+   it reads as the action the whole card is building towards, and separated by a
+   rule so it is not mistaken for more evidence. */
+.bcadd {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line);
+}
+.bcadd select {
+  flex: 1; min-width: 0; font: inherit; font-size: 13px;
+  padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg); color: var(--ink);
+}
+.bcadd select:focus { outline: none; border-color: var(--accent); }
+.bcadd .btn { flex: none; }
+.bcadd .addnote { flex-basis: 100%; font-size: 12.5px; }
+.bcadd .addnote.ok { color: #1e6b33; }
+.bcadd .addnote.ok a { color: inherit; }
+.bcadd .addnote.bad { color: #b3261e; }
+
 /* The angle badge, shared by the table's Angles cell and the card. */
 .anum.sm {
   width: 19px; height: 19px; font-size: 11px; flex: none;
@@ -887,7 +928,11 @@ details.trace[open] summary { color: var(--ink); }
 .run .t a:hover { color: var(--accent); text-decoration: underline; }
 .run .m { font-size: 12px; color: var(--dim); margin-top: 2px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .run .errline { font-size: 12.5px; color: var(--bad); margin-top: 4px; overflow-wrap: anywhere; }
-.run .side { display: flex; align-items: center; gap: 10px; }
+/* flex-direction is set explicitly because `.side` is TWO things in this app:
+   the page sidebar (line 96, a column) and a row's right-hand controls. The
+   sidebar's direction was leaking in here and went unnoticed while this cell
+   held a single button; the moment it held two they stacked. */
+.run .side { display: flex; flex-direction: row; align-items: center; gap: 10px; }
 .run .del {
   border: 0; background: none; color: var(--dim); cursor: pointer;
   font-size: 16px; line-height: 1; padding: 4px 6px; border-radius: 999px;
