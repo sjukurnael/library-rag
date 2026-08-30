@@ -381,6 +381,172 @@ details.trace[open] summary { color: var(--ink); }
 #panel #ppdf a.alt { color: var(--dim); font-weight: 400; }
 #panel #ppdf a:hover { text-decoration: underline; }
 
+/* -------------------------------------------------------------- activity -- */
+.pagesay { color: var(--dim); font-size: var(--t-ui); margin: -4px 0 18px; max-width: 70ch; }
+.agentfilter { display: flex; gap: 6px; }
+.agentfilter .chip {
+  border: 1px solid var(--line); background: var(--bg); color: var(--dim);
+  padding: 7px 14px; border-radius: 999px; font: inherit; font-size: 13px;
+  cursor: pointer;
+}
+.agentfilter .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* One run per row. Grid rather than flex so the agent, the outcome and the time
+   line up down the page -- a list you scan by column, not by reading each row. */
+.runrow {
+  display: grid; grid-template-columns: 92px 1fr auto 64px;
+  align-items: center; gap: 16px;
+  padding: 14px 16px; border-bottom: 1px solid var(--line);
+  text-decoration: none; color: inherit;
+}
+.runrow:hover { background: var(--surface); }
+.runrow .ragent {
+  font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  padding: 4px 9px; border-radius: 999px; text-align: center;
+}
+.runrow .ragent.librarian { background: #ece7fb; color: #5b3fc4; }
+.runrow .ragent.tutor     { background: #e3f0ff; color: #14549e; }
+.runrow .rmain { min-width: 0; }
+.runrow .rq {
+  display: block; font-size: 14.5px; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.runrow .rmeta { display: block; font-size: 12.5px; color: var(--dim); margin-top: 3px; }
+.runrow .rout { font-size: 13px; color: var(--dim); white-space: nowrap; }
+.runrow .rout .rbad { color: var(--bad, #b3261e); }
+.runrow .rout .rrun { color: var(--accent); }
+.runrow .rwhen { font-size: 12.5px; color: var(--dim); text-align: right; }
+
+.pager { display: flex; align-items: center; gap: 14px; padding: 16px; }
+.pager .pcount { font-size: 13px; color: var(--dim); }
+
+/* ------------------------------------------------------------- one run -- */
+.backlink {
+  display: inline-block; margin-bottom: 12px; font-size: 13px;
+  color: var(--dim); text-decoration: none;
+}
+.backlink:hover { color: var(--accent); }
+
+.runhead { margin-bottom: 20px; }
+.runhead .rkind {
+  font-size: 11.5px; font-weight: 600; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--dim); margin-bottom: 6px;
+}
+.runhead h1 { font-size: 22px; line-height: 1.3; margin: 0 0 8px; max-width: 60ch; }
+.runhead .rbits { font-size: 13px; color: var(--dim); }
+.runhead .rbits a { color: var(--accent); text-decoration: none; }
+.runhead .rbits .sep { opacity: .5; margin: 0 2px; }
+.rstat {
+  margin-left: 8px; padding: 2px 8px; border-radius: 999px; font-size: 11px;
+  background: var(--surface); color: var(--dim);
+}
+.rstat.failed { background: #fce8e6; color: #b3261e; }
+
+/* The narrowing, as one line. Four numbers that only mean something next to
+   each other: 8 angles found 80 books, it read 6, it kept 12. */
+.funnel {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--surface); margin-bottom: 26px;
+}
+.funnel .fstep { display: flex; flex-direction: column; gap: 2px; }
+.funnel .fn { font-size: 20px; font-weight: 600; color: var(--ink); line-height: 1; }
+.funnel .fl { font-size: 12px; color: var(--dim); }
+.funnel .farrow { color: var(--dim); opacity: .6; }
+
+.sect { margin-bottom: 32px; }
+.sect h2 {
+  font-size: 15px; font-weight: 600; margin: 0 0 4px;
+  display: flex; align-items: center; gap: 8px;
+}
+.sect h2 .count {
+  font-size: 12px; font-weight: 500; color: var(--dim);
+  background: var(--surface); border-radius: 999px; padding: 2px 9px;
+}
+.sect .say { color: var(--dim); font-size: 13px; margin: 0 0 14px; max-width: 72ch; }
+
+/* Dense but scannable. Wrapped in its own scroller so a long book title never
+   makes the whole page scroll sideways. */
+.runtable { width: 100%; border-collapse: collapse; font-size: 13.5px; display: table; }
+.runtable th {
+  text-align: left; font-size: 11.5px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--dim);
+  padding: 0 12px 8px; border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+.runtable td { padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.runtable tr:hover td { background: var(--surface); }
+.runtable .rank { width: 34px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.runtable .bt { color: var(--ink); }
+.runtable .bt .bp { display: block; font-size: 12px; color: var(--dim); margin-top: 2px; }
+/* The centroid's heading trail, which can be a whole breadcrumb ("The Hebrew
+   Bible and its reception > A. Genesis 3 > VI. Gnosticism"). Clamped to two
+   lines: unclamped it triples every row's height and the table stops being
+   something you can scan. Full text on hover. */
+.runtable .cv { color: var(--dim); width: 26ch; font-size: 12.5px; }
+/* The clamp goes on an inner block, not the cell. A <td> is not a normal box:
+   -webkit-box + overflow:hidden on it leaves a half-cut line showing through,
+   which reads as a rendering fault rather than as truncation. */
+.runtable .cv .cvt {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; line-height: 1.45;
+}
+.runtable .dim { color: var(--dim); opacity: .6; }
+.runtable.inner { margin-top: 10px; }
+
+/* Match strength: four pips and a word. The number is in the title attribute
+   for anyone who wants it and out of the way of everyone who does not. */
+.stren { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.stren .pips { display: inline-flex; gap: 2px; }
+.stren .pips i {
+  width: 5px; height: 12px; border-radius: 2px; background: var(--line); display: block;
+}
+.stren.s4 .pips i.on { background: #1e8e3e; }
+.stren.s3 .pips i.on { background: #3d8bfd; }
+.stren.s2 .pips i.on { background: #e8a33d; }
+.stren.s1 .pips i.on { background: #c0c4cc; }
+.stren .slab { font-size: 12px; color: var(--dim); }
+
+.corro {
+  font-size: 12px; font-weight: 600; color: #5b3fc4;
+  background: #ece7fb; border-radius: 999px; padding: 2px 8px;
+}
+
+.fate { font-size: 12px; border-radius: 999px; padding: 3px 9px; white-space: nowrap; }
+.fate.shelved { background: #e6f4ea; color: #1e6b33; }
+.fate.opened  { background: #fef7e0; color: #8a6116; }
+.fate.seen    { background: var(--surface); color: var(--dim); }
+
+/* An angle: the librarian's own words for what it was looking for, with its
+   ranking folded underneath. The first is open, the rest are one click. */
+.angle { border: 1px solid var(--line); border-radius: 12px; margin-bottom: 10px; }
+.angle > summary {
+  display: flex; align-items: center; gap: 12px; cursor: pointer;
+  padding: 13px 16px; list-style: none;
+}
+.angle > summary::-webkit-details-marker { display: none; }
+.angle[open] > summary { border-bottom: 1px solid var(--line); }
+.angle .anum {
+  flex: none; width: 22px; height: 22px; border-radius: 999px;
+  background: var(--surface); color: var(--dim);
+  font-size: 11.5px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+}
+.angle .atopic { flex: 1; min-width: 0; font-size: 14px; color: var(--ink); }
+.angle .ameta { flex: none; font-size: 12.5px; color: var(--dim); }
+.angle .ameta .thin { color: #8a6116; }
+.angle > .runtable { padding: 0 4px 8px; }
+
+.shelf1 { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.shelf1 .s1t { font-size: 14.5px; color: var(--ink); }
+.shelf1 .s1w { font-size: 13px; color: var(--dim); margin-top: 4px; max-width: 78ch; }
+.shelf1 .s1q {
+  margin-top: 8px; padding: 10px 14px; background: var(--surface);
+  border-radius: 10px; font-size: 13px; line-height: 1.55; max-width: 78ch;
+}
+.shelf1 .s1q .s1p { display: block; margin-top: 6px; font-size: 12px; color: var(--dim); }
+
+.ranswer { font-size: 14px; line-height: 1.6; color: var(--ink); max-width: 78ch; }
+
 /* --------------------------------------------------------- model picker -- */
 /* Two models, shown as one control rather than a dropdown: there are exactly
    two, and a select would hide the one you are not using behind a click. The

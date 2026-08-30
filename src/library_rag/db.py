@@ -1060,7 +1060,8 @@ RESEARCH_INTERRUPTED = (
 
 
 def create_research_run(conn, run_id: str, question: str,
-                        classroom_id: int | None = None) -> None:
+                        classroom_id: int | None = None,
+                        agent: str = "tutor", model: str | None = None) -> None:
     """The row, written before any work starts.
 
     Ordering matters: the request that mints a run_id must not return until the
@@ -1072,9 +1073,9 @@ def create_research_run(conn, run_id: str, question: str,
     research_runs when what runs against a classroom is the tutor.
     """
     conn.execute(
-        "INSERT INTO research_runs (run_id, question, classroom_id) "
-        "VALUES (%s, %s, %s)",
-        (run_id, question, classroom_id),
+        "INSERT INTO research_runs (run_id, question, classroom_id, agent, model) "
+        "VALUES (%s, %s, %s, %s, %s)",
+        (run_id, question, classroom_id, agent, model),
     )
     conn.commit()
 
@@ -1748,3 +1749,51 @@ def page_of_passage(conn, book_id: int, passage: str) -> tuple | None:
         if row:
             return (row[0], row[1])
     return None
+
+
+RUNS_PAGE = 30
+
+
+def list_runs(conn, *, agent: str | None = None, limit: int = RUNS_PAGE,
+              offset: int = 0) -> dict:
+    """Runs newest-first, with enough per row to render a list without opening
+    any of them.
+
+    The classroom is joined rather than stored: a run outlives the shelf it was
+    taken off (0014 made classroom_id SET NULL on delete), so the name has to
+    come from the classrooms table when it is still there and be absent, not
+    wrong, when it is not.
+
+    `total` is a second query on purpose. Counting in the same statement as a
+    LIMIT means either a window function over every matching row or a lateral,
+    and this table is small enough that two cheap queries beat one clever one.
+    """
+    where = "WHERE r.agent = %s" if agent else ""
+    params = [agent] if agent else []
+
+    total = conn.execute(
+        f"SELECT count(*) FROM research_runs r {where}", params
+    ).fetchone()[0]
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+        SELECT r.run_id, r.agent, r.question, r.status::text, r.model,
+               r.iterations, r.searches, r.error,
+               r.input_tokens, r.output_tokens,
+               r.cache_read_tokens, r.cache_write_tokens,
+               r.started_at, r.finished_at,
+               r.classroom_id, c.name AS classroom_name,
+               EXTRACT(EPOCH FROM (coalesce(r.finished_at, now()) - r.started_at))
+                   AS seconds
+        FROM research_runs r
+        LEFT JOIN classrooms c ON c.id = r.classroom_id
+        {where}
+        ORDER BY r.started_at DESC
+        LIMIT %s OFFSET %s
+            """,
+            params + [limit, offset],
+        )
+        rows = cur.fetchall()
+
+    return {"runs": rows, "total": total, "limit": limit, "offset": offset}

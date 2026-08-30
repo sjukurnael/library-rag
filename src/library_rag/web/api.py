@@ -283,6 +283,22 @@ def queue():
     return _page("queue.html")
 
 
+@app.get("/runs")
+def runs():
+    """Activity: every agent run, newest first.
+
+    A fourth page because it is a fourth task -- looking at what the agents did,
+    rather than reading, choosing what to read, or watching work happen."""
+    return _page("runs.html")
+
+
+@app.get("/runs/{run_id}")
+def run_page(run_id: str):
+    """One run, in full. The id is read from the path by the page itself, the
+    same way /classroom/{id} works."""
+    return _page("run.html")
+
+
 @app.get("/static/{name}")
 def static_file(name: str):
     """Shared CSS/JS. Whitelisted rather than mounted as a directory: this
@@ -954,20 +970,29 @@ def remove_classroom_book(classroom_id: int, book_id: int):
 
 @app.post("/api/librarian")
 def librarian_stream(req: LibrarianRequest):
-    """The librarian, streamed. Ephemeral -- no run id, no resume.
+    """The librarian, streamed -- and recorded as it streams.
 
-    Unlike a tutor run this is not a record of anything: its output is a
-    shortlist the reader either acts on within the minute or discards, and what
-    survives it is the classroom they built, which IS durable. If that changes
-    -- "the shortlist from yesterday" becoming a thing people want -- this
-    should adopt the two-phase pattern /api/research uses.
+    It used to be ephemeral: no run id, nothing left afterwards, on the argument
+    that a shortlist is acted on within the minute and what survives it is the
+    classroom. That held right up until someone asked which books it CONSIDERED
+    and why it dropped one -- a question about a run that no longer existed.
+
+    Still one phase rather than two. The page gets the same live stream it
+    always did; the record is written alongside it, event by event, so a run
+    killed halfway leaves the half it finished. Resuming a disconnected
+    librarian run is the part that would need /api/research's two-phase shape,
+    and nothing asks for it yet.
     """
     if not config.VOYAGE_API_KEY:
         raise HTTPException(500, "VOYAGE_API_KEY is not set")
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(500, "ANTHROPIC_API_KEY is not set")
 
+    run_id = secrets.token_hex(16)
+    model = model_choice.resolve(req.model, librarian_loop.MODEL)
+
     def stream():
+        recorded = False
         try:
             voyage = embed_mod.build_client()
             with db.get_conn() as conn:
@@ -975,21 +1000,81 @@ def librarian_stream(req: LibrarianRequest):
                     db.classroom_book_ids(conn, req.classroom_id, ready_only=False)
                     if req.classroom_id else []
                 )
+                db.create_research_run(conn, run_id, req.brief,
+                                       classroom_id=req.classroom_id,
+                                       agent="librarian", model=model)
+                recorded = True
+                # The run id reaches the page before any work does, so a reader
+                # can open the recorded run while it is still going.
+                yield f"data: {json.dumps({'type': 'run', 'run_id': run_id})}\n\n"
+
+                searches = 0
                 for event in librarian_loop.run(
                         req.brief, conn, voyage, count=req.count,
-                        classroom_ids=on_shelf,
-                        model=model_choice.resolve(req.model,
-                                                   librarian_loop.MODEL)):
+                        classroom_ids=on_shelf, model=model):
+                    if event.get("type") == "tool" and event.get("name") == "find_books":
+                        searches += 1
+                    db.append_research_event(conn, run_id, event)
+                    if event.get("type") == "done":
+                        db.finish_research_run(
+                            conn, run_id, status="done",
+                            iterations=event.get("iterations"),
+                            searches=searches, usage=event.get("usage"),
+                        )
                     yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:  # noqa: BLE001 -- headers are already out; a 500
             # is no longer available, so the failure has to travel in the stream.
             log.exception("librarian run failed")
-            yield f"data: {json.dumps({'type': 'error', 'message': _failure_message(e)})}\n\n"
+            message = _failure_message(e)
+            # A run that died is recorded as having died. Its own connection is
+            # gone with the `with` block above, so this takes a fresh one --
+            # and only when the row exists, since the failure may be the very
+            # thing that stopped it being written.
+            if recorded:
+                with contextlib.suppress(Exception), db.get_conn() as conn:
+                    db.finish_research_run(conn, run_id, status="failed",
+                                           error=message)
+            yield f"data: {json.dumps({'type': 'error', 'message': message})}\n\n"
 
     return StreamingResponse(
         stream(), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/api/runs")
+def list_runs(agent: str | None = Query(default=None, pattern="^(tutor|librarian)$"),
+              limit: int = Query(default=db.RUNS_PAGE, ge=1, le=100),
+              offset: int = Query(default=0, ge=0)):
+    """Runs newest-first, for the Activity list.
+
+    Paginated at the edge rather than "return everything and let the page cope":
+    this table grows with every question anyone asks, and the page only ever
+    shows a screenful.
+    """
+    with db.get_conn() as conn:
+        return db.list_runs(conn, agent=agent, limit=limit, offset=offset)
+
+
+@app.get("/api/runs/{run_id}")
+def get_run(run_id: str):
+    """One run and every event it produced, in order.
+
+    Events come back whole rather than summarised again. They were already
+    summarised once, on the way in -- _summarize decides what a step is worth
+    saying -- and re-cutting them here would mean the recorded run could
+    disagree with the live one, which is the one thing this page must not do.
+    """
+    with db.get_conn() as conn:
+        run = db.fetch_research_run(conn, run_id)
+        if run is None:
+            raise HTTPException(404, f"No run with id {run_id}.")
+        events = db.fetch_research_events(conn, run_id, after=0)
+        classroom = (db.fetch_classroom(conn, run["classroom_id"])
+                     if run.get("classroom_id") else None)
+    return {"run": run, "events": events,
+            "classroom": {"id": classroom["id"], "name": classroom["name"]}
+                         if classroom else None}
 
 
 @app.post("/api/library/drive")

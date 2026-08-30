@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library — activity</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <a class="brand" href="/"><span class="logo"></span>Library</a>
+
+    <nav class="snav">
+      <a href="/">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M12 7v10"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Classrooms</a>
+      <a href="/library">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        Drive</a>
+      <a href="/queue">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Processing</a>
+      <a href="/runs" class="on">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+        Activity</a>
+      <!--bible--><a href="/bible">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Bible</a><!--/bible-->
+    </nav>
+
+    <div class="sideauth" id="sideauth" hidden></div>
+    <div class="sidefoot" id="sidefoot">loading…</div>
+  </aside>
+
+  <div class="page">
+    <div class="roomhead">
+      <h1>Activity</h1>
+      <span class="grow"></span>
+      <div class="agentfilter" id="filter">
+        <button class="chip on" data-agent="">Everything</button>
+        <button class="chip" data-agent="librarian">Librarian</button>
+        <button class="chip" data-agent="tutor">Tutor</button>
+      </div>
+    </div>
+    <p class="pagesay">Every run an agent has made — what it searched for, which
+      books it considered, and what it did with them.</p>
+
+    <div id="list"><div class="prog">loading…</div></div>
+    <div class="pager" id="pager" hidden></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+const PAGE = 30;
+let AGENT = '';
+let OFFSET = 0;
+
+/* Cost from the token counters, so a run says what it cost rather than making
+   anyone look it up. $/1M tokens; a cache write is 1.25x input and a read a
+   tenth, which is why the two cache columns cannot just be added to input. */
+const PRICE = {
+  'claude-sonnet-5': [2, 10],
+  'claude-opus-5':   [5, 25],
+};
+
+function costOf(r) {
+  const p = PRICE[r.model];
+  if (!p || !r.input_tokens) return null;
+  const [i, o] = p;
+  return ((r.input_tokens * i) + (r.output_tokens * o)
+        + ((r.cache_write_tokens || 0) * i * 1.25)
+        + ((r.cache_read_tokens || 0) * i * 0.10)) / 1e6;
+}
+
+function money(n) {
+  if (n == null) return '';
+  return n < 0.01 ? '<$0.01' : '$' + n.toFixed(2);
+}
+
+function duration(secs) {
+  if (secs == null) return '';
+  const s = Math.round(secs);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+}
+
+/* "3:42 PM" for today, "Aug 27" before that. A timestamp is only useful at the
+   precision someone would actually use to find it again. */
+function when(iso) {
+  const d = new Date(iso);
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  return sameDay
+    ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+const MODEL_LABEL = { 'claude-sonnet-5': 'Sonnet', 'claude-opus-5': 'Opus' };
+
+function row(r) {
+  const bits = [];
+  if (r.classroom_name) bits.push(esc(r.classroom_name));
+  if (r.model) bits.push(MODEL_LABEL[r.model] || esc(r.model));
+  const d = duration(r.seconds); if (d) bits.push(d);
+  const c = money(costOf(r));    if (c) bits.push(c);
+
+  // What the run produced, in the units of the agent that made it.
+  let outcome = '';
+  if (r.status === 'failed') outcome = '<span class="rbad">failed</span>';
+  else if (r.status === 'running') outcome = '<span class="rrun">running…</span>';
+  else {
+    const n = r.searches || 0;
+    const noun = r.agent === 'librarian' ? 'angle' : 'search';
+    outcome = `${n} ${noun}${n === 1 ? '' : noun === 'search' ? 'es' : 's'}`;
+  }
+
+  return `<a class="runrow" href="/runs/${esc(r.run_id)}">
+      <span class="ragent ${esc(r.agent)}">${r.agent === 'librarian' ? 'Librarian' : 'Tutor'}</span>
+      <span class="rmain">
+        <span class="rq">${esc(r.question || '(no brief)')}</span>
+        <span class="rmeta">${bits.join(' · ')}</span>
+      </span>
+      <span class="rout">${outcome}</span>
+      <span class="rwhen">${esc(when(r.started_at))}</span>
+    </a>`;
+}
+
+async function load() {
+  const el = $('#list');
+  try {
+    const q = new URLSearchParams({ limit: PAGE, offset: OFFSET });
+    if (AGENT) q.set('agent', AGENT);
+    const d = await (await fetch('/api/runs?' + q)).json();
+
+    el.innerHTML = d.runs.length
+      ? d.runs.map(row).join('')
+      : `<div class="empty">No runs yet. Ask the librarian for books, or ask the
+           tutor a question, and it will show up here.</div>`;
+
+    const pager = $('#pager');
+    const shown = OFFSET + d.runs.length;
+    if (d.total > PAGE) {
+      pager.hidden = false;
+      pager.innerHTML =
+        `<button class="btn" ${OFFSET ? '' : 'disabled'} id="prev">Newer</button>
+         <span class="pcount">${OFFSET + 1}–${shown} of ${d.total}</span>
+         <button class="btn" ${shown >= d.total ? 'disabled' : ''} id="next">Older</button>`;
+      const prev = $('#prev'), next = $('#next');
+      if (prev) prev.onclick = () => { OFFSET = Math.max(0, OFFSET - PAGE); load(); };
+      if (next) next.onclick = () => { OFFSET += PAGE; load(); };
+    } else {
+      pager.hidden = true;
+    }
+  } catch (err) {
+    el.innerHTML = failed('Could not load activity', err, load);
+  }
+}
+
+$('#filter').addEventListener('click', e => {
+  const b = e.target.closest('button[data-agent]');
+  if (!b) return;
+  $('#filter').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+  AGENT = b.dataset.agent;
+  OFFSET = 0;
+  load();
+});
+
+load();
+</script>
+</body>
+</html>

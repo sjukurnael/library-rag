@@ -363,8 +363,12 @@ def test_an_empty_balance_is_reported_as_an_empty_balance(browse_web, monkeypatc
     route must not forward the SDK's dict repr and must not stay silent."""
     frames = _browse_frames(browse_web, monkeypatch, BALANCE)
 
-    assert [f["type"] for f in frames] == ["error"]
-    message = frames[0]["message"]
+    # 'run' first: the id is emitted before any work so a reader can open the
+    # recorded run while it is still going. Then the failure.
+    assert [f["type"] for f in frames] == ["run", "error"]
+    # By type, not by position: the run id now leads the stream, and a test that
+    # indexes frames[0] breaks on any frame added in front of the one it means.
+    message = next(f for f in frames if f["type"] == "error")["message"]
     assert "out of credit" in message
     assert "console.anthropic.com" in message
     # The shape that caused the confusion: a dict repr, or the bare word "400".

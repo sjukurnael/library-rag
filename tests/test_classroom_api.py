@@ -309,3 +309,59 @@ def test_omitting_the_model_leaves_the_deployment_default(client, conn, monkeypa
 
     client.post("/api/research", json={"question": "q", "classroom_id": cid})
     assert seen["model"] == "claude-from-the-environment"
+
+
+# ------------------------------------------------------------- activity --
+
+def test_runs_are_listed_newest_first_and_filtered_by_agent(client, conn):
+    """Both agents write to one table now, so the list has to be able to
+    separate them -- and 0016 backfilled every pre-existing row as 'tutor',
+    which was the only thing it could have been."""
+    db.create_research_run(conn, "r-tutor", "a question", agent="tutor")
+    db.create_research_run(conn, "r-lib", "a brief", agent="librarian",
+                           model="claude-sonnet-5")
+
+    everything = client.get("/api/runs").json()
+    assert everything["total"] == 2
+    assert everything["runs"][0]["run_id"] == "r-lib", "newest first"
+
+    only_lib = client.get("/api/runs?agent=librarian").json()
+    assert [r["run_id"] for r in only_lib["runs"]] == ["r-lib"]
+    assert only_lib["runs"][0]["model"] == "claude-sonnet-5"
+
+    assert client.get("/api/runs?agent=nonsense").status_code == 422
+
+
+def test_a_run_comes_back_with_its_events_in_order(client, conn):
+    """The page rebuilds the whole run from these -- which angles were searched,
+    what each returned, what was opened. Order is the run."""
+    db.create_research_run(conn, "r1", "a brief", agent="librarian")
+    for e in ({"type": "tool", "name": "find_books", "input": {"topic": "one"}},
+              {"type": "results", "name": "find_books",
+               "summary": {"topic": "one", "candidates": [{"book_id": 7}]}},
+              {"type": "done", "iterations": 2}):
+        db.append_research_event(conn, "r1", e)
+
+    body = client.get("/api/runs/r1").json()
+    assert body["run"]["agent"] == "librarian"
+    assert [e["payload"]["type"] for e in body["events"]] == \
+        ["tool", "results", "done"]
+    assert body["events"][1]["payload"]["summary"]["candidates"] == [{"book_id": 7}]
+
+
+def test_an_unknown_run_is_404(client, conn):
+    assert client.get("/api/runs/nope").status_code == 404
+
+
+def test_a_run_names_the_classroom_it_was_taken_off(client, conn):
+    """Joined, not stored: 0014 made classroom_id SET NULL when a shelf is
+    deleted, so the name must be absent rather than wrong once it is gone."""
+    cid = client.post("/api/classrooms", json={"name": "Atonement"}).json()["classroom"]["id"]
+    db.create_research_run(conn, "r1", "q", classroom_id=cid, agent="tutor")
+
+    assert client.get("/api/runs").json()["runs"][0]["classroom_name"] == "Atonement"
+    assert client.get("/api/runs/r1").json()["classroom"]["name"] == "Atonement"
+
+    client.delete(f"/api/classrooms/{cid}")
+    assert client.get("/api/runs").json()["runs"][0]["classroom_name"] is None
+    assert client.get("/api/runs/r1").json()["classroom"] is None

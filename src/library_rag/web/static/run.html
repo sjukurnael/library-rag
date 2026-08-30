@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library — run</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <a class="brand" href="/"><span class="logo"></span>Library</a>
+
+    <nav class="snav">
+      <a href="/">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M12 7v10"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Classrooms</a>
+      <a href="/library">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        Drive</a>
+      <a href="/queue">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Processing</a>
+      <a href="/runs" class="on">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+        Activity</a>
+      <!--bible--><a href="/bible">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Bible</a><!--/bible-->
+    </nav>
+
+    <div class="sideauth" id="sideauth" hidden></div>
+    <div class="sidefoot" id="sidefoot">loading…</div>
+  </aside>
+
+  <div class="page">
+    <a class="backlink" href="/runs">← Activity</a>
+    <div id="run"><div class="prog">loading…</div></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+const RUN_ID = decodeURIComponent(location.pathname.split('/').pop());
+
+const MODEL_LABEL = { 'claude-sonnet-5': 'Sonnet', 'claude-opus-5': 'Opus' };
+const PRICE = { 'claude-sonnet-5': [2, 10], 'claude-opus-5': [5, 25] };
+
+function costOf(r) {
+  const p = PRICE[r.model];
+  if (!p || !r.input_tokens) return null;
+  const [i, o] = p;
+  return ((r.input_tokens * i) + (r.output_tokens * o)
+        + ((r.cache_write_tokens || 0) * i * 1.25)
+        + ((r.cache_read_tokens || 0) * i * 0.10)) / 1e6;
+}
+
+function duration(secs) {
+  if (secs == null) return null;
+  const s = Math.round(secs);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+}
+
+/* A cosine distance is not a thing to show a reader. 0.19 means nothing on its
+   own, and the numbers that matter here live in a narrow band -- measured runs
+   sit between 0.19 and 0.36, and PROFILE_RELEVANCE_FLOOR calls 0.50 the point
+   past which a match is not really a match. So it becomes a word and four bars,
+   with the raw figure on hover for whoever wants it. */
+function strength(d) {
+  if (d == null)  return { label: 'unknown', n: 0 };
+  if (d < 0.25)   return { label: 'Strong',  n: 4 };
+  if (d < 0.35)   return { label: 'Good',    n: 3 };
+  if (d < 0.50)   return { label: 'Fair',    n: 2 };
+  return            { label: 'Weak',    n: 1 };
+}
+
+function bars(d) {
+  const s = strength(d);
+  const pips = [1, 2, 3, 4]
+    .map(i => `<i class="${i <= s.n ? 'on' : ''}"></i>`).join('');
+  const raw = d == null ? '' : ` (cosine distance ${d})`;
+  return `<span class="stren s${s.n}" title="${esc(s.label)}${esc(raw)}">
+            <span class="pips">${pips}</span><span class="slab">${s.label}</span></span>`;
+}
+
+/* ------------------------------------------------- reading the event log -- */
+
+/* One run's events into the three things worth showing: what it searched for,
+   every book those searches surfaced, and what became of each one.
+
+   The union is the point. Eight searches return twelve books each, so "80
+   books" is a DEDUPED count and no single ranking of eighty exists -- a book
+   can be second for one angle and fortieth for another. Each book therefore
+   keeps its best distance, and a count of how many angles found it at all,
+   which is its own quality signal: three independent searches agreeing is
+   worth more than one strong hit. */
+function digest(events) {
+  const angles = [];
+  const opened = new Map();     // book_id -> passages returned
+  const books  = new Map();     // book_id -> union record
+  let shelved = [], answer = '', usage = null, pendingTopic = null;
+
+  for (const { payload: e } of events) {
+    if (e.type === 'tool' && e.name === 'find_books') {
+      pendingTopic = (e.input && e.input.topic) || null;
+    } else if (e.type === 'results' && e.name === 'find_books') {
+      const s = e.summary || {};
+      const angle = {
+        topic: s.topic || pendingTopic || '(no topic recorded)',
+        thin: !!s.thin,
+        nearest: s.nearest,
+        candidates: s.candidates || [],
+      };
+      angles.push(angle);
+      angle.candidates.forEach((c, i) => {
+        if (c.book_id == null) return;
+        const prev = books.get(c.book_id);
+        const rank = i + 1;
+        if (!prev) {
+          books.set(c.book_id, { ...c, best: c.distance, angles: 1, bestRank: rank });
+        } else {
+          prev.angles += 1;
+          if (c.distance != null && (prev.best == null || c.distance < prev.best)) {
+            prev.best = c.distance;
+            prev.covers = c.covers;      // the label from its STRONGEST angle
+            prev.bestRank = rank;
+          }
+        }
+      });
+    } else if (e.type === 'results' && e.name === 'look_inside') {
+      const s = e.summary || {};
+      if (s.book_id != null) opened.set(s.book_id, s.passages || 0);
+    } else if (e.type === 'recommendations') {
+      shelved = e.books || [];
+    } else if (e.type === 'answer') {
+      answer = e.text || '';
+    } else if (e.type === 'done') {
+      usage = e.usage || null;
+    }
+  }
+
+  const shelvedIds = new Set(shelved.map(b => b.book_id).filter(x => x != null));
+  const considered = [...books.values()].map(b => ({
+    ...b,
+    opened: opened.has(b.book_id),
+    shelved: shelvedIds.has(b.book_id),
+  })).sort((a, b) => (a.best ?? 9) - (b.best ?? 9));
+
+  return { angles, considered, opened, shelved, answer, usage };
+}
+
+/* --------------------------------------------------------------- render -- */
+
+function fate(b) {
+  if (b.shelved) return '<span class="fate shelved">Shelved</span>';
+  if (b.opened)  return '<span class="fate opened">Opened, not shelved</span>';
+  return '<span class="fate seen">Not opened</span>';
+}
+
+function bookRow(b, rank) {
+  return `<tr>
+      <td class="rank">${rank}</td>
+      <td class="bt">${esc(b.title || '(untitled)')}
+        ${b.pages ? `<span class="bp">${b.pages} pages</span>` : ''}</td>
+      <td class="cv" title="${esc(b.covers || '')}"><span class="cvt">${
+        b.covers ? esc(b.covers) : '<span class="dim">—</span>'}</span></td>
+      <td class="st">${bars(b.best ?? b.distance)}</td>
+      <td class="ag">${b.angles > 1
+          ? `<span class="corro" title="Found by ${b.angles} independent searches">${b.angles}×</span>`
+          : '<span class="dim">1×</span>'}</td>
+      <td class="ft">${fate(b)}</td>
+    </tr>`;
+}
+
+function consideredTable(considered) {
+  return `<table class="runtable">
+      <thead><tr>
+        <th class="rank">#</th><th>Book</th><th>Matched on</th>
+        <th>Match</th><th title="How many of the searches found this book">Angles</th>
+        <th>What happened</th>
+      </tr></thead>
+      <tbody>${considered.map((b, i) => bookRow(b, i + 1)).join('')}</tbody>
+    </table>`;
+}
+
+function angleCard(a, i, openedIds, shelvedIds) {
+  const rows = a.candidates.map((c, j) => {
+    const b = { ...c, opened: openedIds.has(c.book_id), shelved: shelvedIds.has(c.book_id) };
+    return `<tr>
+        <td class="rank">${j + 1}</td>
+        <td class="bt">${esc(c.title || '(untitled)')}</td>
+        <td class="cv" title="${esc(c.covers || '')}"><span class="cvt">${
+          c.covers ? esc(c.covers) : '<span class="dim">—</span>'}</span></td>
+        <td class="st">${bars(c.distance)}</td>
+        <td class="ft">${fate(b)}</td>
+      </tr>`;
+  }).join('');
+
+  return `<details class="angle"${i === 0 ? ' open' : ''}>
+      <summary>
+        <span class="anum">${i + 1}</span>
+        <span class="atopic">${esc(a.topic)}</span>
+        <span class="ameta">${a.candidates.length} books${
+          a.thin ? ' · <span class="thin">library is thin here</span>' : ''}</span>
+      </summary>
+      <table class="runtable inner">
+        <thead><tr><th class="rank">#</th><th>Book</th><th>Matched on</th>
+          <th>Match</th><th>What happened</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </details>`;
+}
+
+function funnel(d) {
+  const steps = [
+    [d.angles.length, 'angles searched'],
+    [d.considered.length, 'books considered'],
+    [d.opened.size, 'opened and read'],
+    [d.shelved.length, 'shelved'],
+  ];
+  return `<div class="funnel">${steps.map(([n, label], i) =>
+    `<div class="fstep"><span class="fn">${n}</span><span class="fl">${label}</span></div>` +
+    (i < steps.length - 1 ? '<span class="farrow">→</span>' : '')
+  ).join('')}</div>`;
+}
+
+function header(run, classroom, d) {
+  const bits = [];
+  if (classroom) bits.push(`<a href="/classroom/${classroom.id}">${esc(classroom.name)}</a>`);
+  if (run.model) bits.push(esc(MODEL_LABEL[run.model] || run.model));
+  const dur = duration(run.seconds != null ? run.seconds
+    : (run.finished_at ? (new Date(run.finished_at) - new Date(run.started_at)) / 1000 : null));
+  if (dur) bits.push(dur);
+  const c = costOf(run);
+  if (c != null) bits.push(c < 0.01 ? '<$0.01' : '$' + c.toFixed(2));
+  if (run.iterations) bits.push(`${run.iterations} turns`);
+
+  const badge = run.status === 'done' ? '' :
+    `<span class="rstat ${esc(run.status)}">${esc(run.status)}</span>`;
+
+  return `<div class="runhead">
+      <div class="rkind">${run.agent === 'librarian' ? 'Librarian' : 'Tutor'}${badge}</div>
+      <h1>${esc(run.question || '(no brief)')}</h1>
+      <div class="rbits">${bits.join(' <span class="sep">·</span> ')}</div>
+    </div>
+    ${run.error ? `<div class="banner bad">${esc(run.error)}</div>` : ''}`;
+}
+
+function render(data) {
+  const { run, classroom } = data;
+  const d = digest(data.events || []);
+  const openedIds = new Set(d.opened.keys());
+  const shelvedIds = new Set(d.shelved.map(b => b.book_id).filter(x => x != null));
+
+  let html = header(run, classroom, d);
+
+  if (run.agent !== 'librarian') {
+    // The tutor's runs are a different shape -- searches inside a fixed shelf,
+    // not a search FOR a shelf -- so this page shows what it has rather than
+    // pretending the librarian's structure fits.
+    html += `<div class="sect"><h2>Answer</h2>
+      <div class="ranswer">${esc(run.answer || '(no answer recorded)')}</div></div>`;
+    $('#run').innerHTML = html;
+    return;
+  }
+
+  html += funnel(d);
+
+  html += `<div class="sect">
+      <h2>Books considered <span class="count">${d.considered.length}</span></h2>
+      <p class="say">Every book the searches surfaced, best match first. A book
+        can appear in more than one search — the strongest is the one shown, and
+        the angles column says how many found it.</p>
+      ${d.considered.length ? consideredTable(d.considered)
+                            : '<div class="empty">No candidates recorded.</div>'}
+    </div>`;
+
+  html += `<div class="sect">
+      <h2>What it searched for <span class="count">${d.angles.length}</span></h2>
+      <p class="say">Each angle is a separate search, in the librarian's own
+        words. These are what it decided were the useful ways in.</p>
+      ${d.angles.map((a, i) => angleCard(a, i, openedIds, shelvedIds)).join('')}
+    </div>`;
+
+  if (d.shelved.length) {
+    html += `<div class="sect">
+        <h2>Recommended <span class="count">${d.shelved.length}</span></h2>
+        ${d.shelved.map(b => `<div class="shelf1">
+            <div class="s1t">${esc(b.title || '(untitled)')}</div>
+            ${b.why ? `<div class="s1w">${esc(b.why)}</div>` : ''}
+            ${b.passage ? `<div class="s1q">“${esc(b.passage)}”${
+              b.passage_pages ? `<span class="s1p">${esc(b.passage_pages)}</span>` : ''
+            }</div>` : ''}
+          </div>`).join('')}
+      </div>`;
+  }
+
+  if (d.answer) {
+    html += `<div class="sect"><h2>Closing note</h2>
+      <div class="ranswer">${esc(d.answer)}</div></div>`;
+  }
+
+  $('#run').innerHTML = html;
+}
+
+async function load() {
+  try {
+    const r = await fetch('/api/runs/' + encodeURIComponent(RUN_ID));
+    if (!r.ok) throw new Error(r.status === 404 ? 'No such run.' : r.statusText);
+    render(await r.json());
+  } catch (err) {
+    $('#run').innerHTML = failed('Could not load this run', err, load);
+  }
+}
+
+load();
+</script>
+</body>
+</html>

@@ -245,6 +245,24 @@ def _summarize(name, result):
         return {"returned": result.get("returned", 0),
                 "nearest": result.get("nearest"),
                 "thin": result.get("thin", False),
+                # The angle in the librarian's own words. Of everything in a
+                # recorded run this is the most readable thing there is: eight
+                # of these say what the agent's strategy WAS, with no vector
+                # literacy required of whoever reads them later.
+                "topic": result.get("topic"),
+                # Every candidate this angle surfaced, not just how many. The
+                # run page answers "what did it consider and reject", and that
+                # question is unanswerable from a count. `covers` is the label
+                # of the topic centroid that matched -- real words out of the
+                # book -- which is what lets a ranking be read by someone who
+                # does not know what a cosine distance is.
+                "candidates": [
+                    {"book_id": b.get("book_id"), "title": b.get("title"),
+                     "distance": b.get("distance"), "covers": b.get("covers"),
+                     "pages": b.get("pages"),
+                     "in_classroom": b.get("in_classroom", False)}
+                    for b in books
+                ],
                 # The ids, so the page can count DISTINCT books across a whole
                 # run. Every search returns k of something, so summing
                 # `returned` over twelve searches counts the same book up to
@@ -255,7 +273,11 @@ def _summarize(name, result):
                     1 for b in books if b.get("in_classroom")
                 )}
     if name == "look_inside":
-        return {"book": result.get("book"), "passages": result.get("returned", 0),
+        # book_id as well as the title, so the run page can mark which of the
+        # candidates above were actually opened. Matching on title would break
+        # on the two books in this library that share one.
+        return {"book": result.get("book"), "book_id": result.get("book_id"),
+                "passages": result.get("returned", 0),
                 "nearest": result.get("nearest")}
     if name == "search_drive":
         return {"returned": result.get("returned", 0),

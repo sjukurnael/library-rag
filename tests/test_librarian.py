@@ -164,7 +164,9 @@ def test_summaries_stay_small_enough_to_stream(conn, monkeypatch):
 
     # A count of passages, never their text. The key set is the contract; the
     # size check is what would catch someone adding a field that carries prose.
-    assert set(summary) == {"book", "passages", "nearest"}
+    # book_id joined the set when the run page needed to mark which candidates
+    # were actually opened -- an integer, which is the point.
+    assert set(summary) == {"book", "book_id", "passages", "nearest"}
     assert len(json.dumps(summary)) < 200
     assert len(json.dumps(raw)) > len(json.dumps(summary)) * 2, \
         "the summary should be much smaller than the result it summarises"
@@ -511,3 +513,43 @@ def test_a_paraphrase_still_gets_no_page(conn):
 
     assert db.page_of_passage(
         conn, book, "the author argues at length that the snake represents wisdom") is None
+
+
+def test_the_candidate_list_carries_titles_and_never_prose(conn, monkeypatch):
+    """find_books summaries DO carry every candidate now -- the run page exists
+    to show which books were considered, and a count cannot answer that.
+
+    What must not change is the kind of thing they carry. Titles and centroid
+    labels are short and bounded by k; a passage is a paragraph, and twenty of
+    those per search is a book going through the event stream. The list is also
+    capped at what the tool returned, so it cannot outgrow k."""
+    monkeypatch.setattr(tools.embed_mod, "embed_query",
+                        lambda text, client: lexical_vector(text))
+    _shelf(conn)
+
+    raw = tools.find_books(conn, "atonement sacrifice propitiation",
+                           voyage=FakeVoyage())
+    summary = loop._summarize("find_books", raw)
+
+    assert set(summary) == {"returned", "nearest", "thin", "topic",
+                            "candidates", "book_ids", "already_on_shelf"}
+    assert len(summary["candidates"]) == summary["returned"] <= tools.MAX_FIND_K
+
+    for c in summary["candidates"]:
+        assert set(c) == {"book_id", "title", "distance", "covers", "pages",
+                          "in_classroom"}
+        # The label is a heading, not a paragraph. Anything approaching prose
+        # length here means a passage found its way in.
+        assert len(c["covers"] or "") < 200, "covers should be a label, not prose"
+
+
+def test_the_angle_is_recorded_with_its_results(conn, monkeypatch):
+    """The topic string is the most readable thing in a recorded run -- it is
+    what the librarian decided to go looking for, in its own words. Losing it
+    would leave the run page with rankings and no reason for them."""
+    monkeypatch.setattr(tools.embed_mod, "embed_query",
+                        lambda text, client: lexical_vector(text))
+    _shelf(conn)
+
+    raw = tools.find_books(conn, "penal substitution", voyage=FakeVoyage())
+    assert loop._summarize("find_books", raw)["topic"] == "penal substitution"
