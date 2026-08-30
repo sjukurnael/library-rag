@@ -381,6 +381,39 @@ details.trace[open] summary { color: var(--ink); }
 #panel #ppdf a.alt { color: var(--dim); font-weight: 400; }
 #panel #ppdf a:hover { text-decoration: underline; }
 
+/* --------------------------------------------------- classroom picker -- */
+/* Sized to its content rather than the 900x680 the browse modal wants: a list
+   of eight shelves in a window that tall is mostly empty space. */
+.modalbox.pick { width: min(440px, 100%); height: auto; max-height: min(560px, 100%); }
+.modalbox.pick .modalhead { padding: 18px 20px 14px; border-bottom: 1px solid var(--line); }
+.rpsub {
+  flex: none; padding: 12px 20px 0; font-size: 13px; color: var(--dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rplist { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px 16px; }
+
+/* One shelf per row: the name, how full it is, and the action. Buttons rather
+   than list items so the whole row is the target and the keyboard works. */
+.rprow {
+  display: grid; grid-template-columns: 1fr auto; gap: 2px 12px;
+  width: 100%; text-align: left; border: 0; cursor: pointer;
+  background: transparent; border-radius: 12px; padding: 11px 12px; font: inherit;
+}
+.rprow:hover:not(:disabled) { background: var(--surface); }
+.rprow:disabled { opacity: .5; cursor: default; }
+/* Every cell placed explicitly. Auto-placement put .rpgo in column 1 -- it
+   carries an explicit grid-row, which takes it out of the normal flow order --
+   and the name got pushed into column 2 and right-aligned. */
+.rprow .rpn { grid-column: 1; grid-row: 1; font-size: 14px; color: var(--ink); }
+.rprow .rpm { grid-column: 1; grid-row: 2; font-size: 12.5px; color: var(--dim); }
+.rprow .rpgo {
+  grid-column: 2; grid-row: 1 / span 2; align-self: center; justify-self: end;
+  font-size: 12.5px; font-weight: 500; color: var(--accent);
+}
+.rprow.ok { background: #e6f4ea; }
+.rprow.ok .rpgo { color: #1e6b33; }
+.rperr { padding: 0 12px 10px; font-size: 12.5px; color: #b3261e; }
+
 /* The indexed list's destination picker, on the section heading it applies to. */
 .sectionhead.withpick { display: flex; align-items: center; gap: 10px; }
 .addto { margin-left: auto; display: flex; align-items: center; gap: 8px;

@@ -755,3 +755,121 @@ async function newClassroom() {
                        fields: [], confirm: 'OK', cancel: 'Close' });
   }
 }
+
+
+// ------------------------------------------------------ classroom picker --
+
+/* "Add to classroom" as a dialog, not a <select>.
+ *
+ * A native dropdown was the first thing here and it was wrong twice over: it
+ * looks like 2005, and it shows a bare list of names when what a reader needs
+ * to choose between shelves is how big each one is and which one they were just
+ * looking at. A dialog has room for both.
+ *
+ * Shared here rather than duplicated per page because two pages ask the same
+ * question -- the run's book card and the indexed list -- and a picker that
+ * drifts between them is worse than either.
+ */
+let _roomCache = null;
+
+async function _rooms(force) {
+  if (!_roomCache || force) {
+    const d = await fetchJSON('/api/classrooms', {}, 15000);
+    _roomCache = d.classrooms || [];
+  }
+  return _roomCache;
+}
+
+function _pickerEl() {
+  let el = $('#roompick');
+  if (el) return el;
+  el = document.createElement('div');
+  el.className = 'modal';
+  el.id = 'roompick';
+  el.hidden = true;
+  el.innerHTML = `
+    <div class="modalbox pick" role="dialog" aria-modal="true" aria-labelledby="rpt">
+      <div class="modalhead">
+        <span class="t" id="rpt">Add to classroom</span>
+        <button class="x" id="rpx" title="Close">&times;</button>
+      </div>
+      <div class="rpsub" id="rpsub"></div>
+      <div class="rplist" id="rplist"></div>
+    </div>`;
+  document.body.appendChild(el);
+  const close = () => { el.hidden = true; };
+  el.addEventListener('click', e => { if (e.target === el) close(); });
+  el.querySelector('#rpx').addEventListener('click', close);
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !el.hidden) close();
+  });
+  return el;
+}
+
+/* Open the picker for one book. `preferId` floats a shelf to the top and marks
+ * it -- the run's own classroom, where the book is nearly always going. */
+async function pickClassroom({ bookId, title, preferId = null,
+                               addedBy = 'reader', rationale = null,
+                               onAdded = null }) {
+  const el = _pickerEl();
+  const list = el.querySelector('#rplist');
+  el.querySelector('#rpsub').textContent = title || '';
+  list.innerHTML = '<div class="prog">loading…</div>';
+  el.hidden = false;
+
+  let rooms;
+  try {
+    rooms = await _rooms();
+  } catch (err) {
+    list.innerHTML = failed('Could not load your classrooms', err,
+                            () => pickClassroom({ bookId, title, preferId, addedBy, rationale, onAdded }));
+    return;
+  }
+
+  if (!rooms.length) {
+    list.innerHTML = `<div class="empty">No classrooms yet.
+      <a href="/">Make one</a> and it will show up here.</div>`;
+    return;
+  }
+
+  const order = [...rooms].sort((a, b) =>
+    (b.id === preferId) - (a.id === preferId) || a.name.localeCompare(b.name));
+
+  list.innerHTML = order.map(r => `
+    <button class="rprow" data-room="${r.id}">
+      <span class="rpn">${esc(r.name)}</span>
+      <span class="rpm">${r.book_count} book${r.book_count === 1 ? '' : 's'}${
+        r.id === preferId ? ' · <b>this run</b>' : ''}</span>
+      <span class="rpgo">Add</span>
+    </button>`).join('');
+
+  list.querySelectorAll('.rprow').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const roomId = Number(btn.dataset.room);
+      const go = btn.querySelector('.rpgo');
+      list.querySelectorAll('.rprow').forEach(b => b.disabled = true);
+      go.textContent = 'Adding…';
+      try {
+        const r = await fetch(`/api/classrooms/${roomId}/books`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ book_ids: [Number(bookId)], added_by: addedBy,
+                                 rationale: rationale || null }),
+        });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          throw new Error(d.detail || r.statusText);
+        }
+        go.textContent = 'Added ✓';
+        btn.classList.add('ok');
+        _roomCache = null;              // the count on that shelf just changed
+        if (onAdded) onAdded(roomId, order.find(x => x.id === roomId));
+        setTimeout(() => { el.hidden = true; }, 700);
+      } catch (err) {
+        go.textContent = 'Add';
+        list.querySelectorAll('.rprow').forEach(b => b.disabled = false);
+        btn.insertAdjacentHTML('afterend',
+          `<div class="rperr">${esc(String(err.message || err))}</div>`);
+      }
+    });
+  });
+}

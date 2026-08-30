@@ -63,7 +63,6 @@ const RUN_ID = decodeURIComponent(location.pathname.split('/').pop());
 let SHELF = new Set();
 let HAS_SHELF = false;
 let NANGLES = 0;
-let ROOMS = [];        // every classroom, for the picker
 let RUN_ROOM = null;   // the one this run was taken off, if any
 
 const MODEL_LABEL = { 'claude-sonnet-5': 'Sonnet', 'claude-opus-5': 'Opus' };
@@ -438,7 +437,7 @@ function openCard(bookId) {
     ${addBlock(b)}`;
   $('#cardtitle').textContent = b.title || '(untitled)';
   const go = $('#addgo');
-  if (go) go.addEventListener('click', () => addToRoom(go.dataset.book));
+  if (go) go.addEventListener('click', () => openPicker(go.dataset.book));
   $('#cardwrap').hidden = false;
 }
 
@@ -450,73 +449,48 @@ function openCard(bookId) {
    Nothing is shown when a book is already on the chosen shelf; the useful
    thing then is to say so, not to offer an add that would 409. */
 function addBlock(b) {
-  if (!ROOMS.length) {
-    return `<div class="bcadd"><span class="dim">No classrooms yet — make one
-      from the Classrooms page to add books to it.</span></div>`;
-  }
-  const opts = ROOMS.map(r =>
-    `<option value="${r.id}"${r.id === RUN_ROOM ? ' selected' : ''}>${
-      esc(r.name)}${r.id === RUN_ROOM ? ' (this run)' : ''}</option>`).join('');
-  return `<div class="bcadd" id="bcadd">
-      <select id="addroom" aria-label="Classroom">${opts}</select>
-      <button class="btn primary" id="addgo" data-book="${b.book_id}">Add</button>
+  return `<div class="bcadd">
+      <button class="btn primary" id="addgo" data-book="${b.book_id}">Add to classroom</button>
       <div class="addnote" id="addnote" hidden></div>
     </div>`;
 }
 
-async function addToRoom(bookId) {
-  const sel = $('#addroom'), go = $('#addgo'), note = $('#addnote');
-  const roomId = Number(sel.value);
+/* The picker defaults to the classroom this run was taken off, which is where
+   the book is nearly always going -- but every shelf is one click away. */
+function openPicker(bookId) {
   const b = CARDS.get(Number(bookId));
-  go.disabled = true; go.textContent = 'Adding…';
-  try {
-    const r = await fetch(`/api/classrooms/${roomId}/books`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      // Carried across so the shelf keeps the librarian's evidence rather than
-      // recording the book as something the reader picked out of nowhere.
-      body: JSON.stringify({
-        book_ids: [Number(bookId)],
-        added_by: b && b.recommended ? 'librarian' : 'reader',
-        rationale: b && b.pick ? (b.pick.why || null) : null,
-      }),
-    });
-    if (!r.ok) {
-      const d = await r.json().catch(() => ({}));
-      throw new Error(d.detail || r.statusText);
-    }
-    // Only the run's OWN classroom drives the User action column, so the table
-    // is repainted only when the book landed there.
-    if (roomId === RUN_ROOM) {
-      SHELF.add(Number(bookId));
-      const b2 = CARDS.get(Number(bookId));
-      if (b2) b2.onShelf = true;
-      const row = $('#run').querySelector(`tr[data-book="${bookId}"] td.ft:last-child`);
-      if (row) row.innerHTML = userDid({ onShelf: true }, true);
-    }
-    const room = ROOMS.find(x => x.id === roomId);
-    note.hidden = false;
-    note.className = 'addnote ok';
-    note.innerHTML = `Added to <a href="/classroom/${roomId}">${esc(room ? room.name : 'the classroom')}</a>.`;
-    go.textContent = 'Added';
-  } catch (err) {
-    note.hidden = false;
-    note.className = 'addnote bad';
-    note.textContent = String(err.message || err);
-    go.disabled = false; go.textContent = 'Add';
-  }
+  pickClassroom({
+    bookId,
+    title: b ? b.title : '',
+    preferId: RUN_ROOM,
+    // Carried across so the shelf keeps the librarian's evidence rather than
+    // recording the book as something the reader produced from nowhere.
+    addedBy: b && b.recommended ? 'librarian' : 'reader',
+    rationale: b && b.pick ? (b.pick.why || null) : null,
+    onAdded: (roomId, room) => {
+      if (roomId === RUN_ROOM) {
+        SHELF.add(Number(bookId));
+        if (b) b.onShelf = true;
+        const cell = $('#run').querySelector(`tr[data-book="${bookId}"] td.ft:last-child`);
+        if (cell) cell.innerHTML = userDid({ onShelf: true }, true);
+      }
+      const note = $('#addnote');
+      if (note) {
+        note.hidden = false;
+        note.className = 'addnote ok';
+        note.innerHTML = `Added to <a href="/classroom/${roomId}">${
+          esc(room ? room.name : 'the classroom')}</a>.`;
+      }
+    },
+  });
 }
 
 function closeCard() { $('#cardwrap').hidden = true; }
 
 async function load() {
   try {
-    const [r, rooms] = await Promise.all([
-      fetch('/api/runs/' + encodeURIComponent(RUN_ID)),
-      fetch('/api/classrooms').then(x => x.ok ? x.json() : { classrooms: [] })
-                              .catch(() => ({ classrooms: [] })),
-    ]);
+    const r = await fetch('/api/runs/' + encodeURIComponent(RUN_ID));
     if (!r.ok) throw new Error(r.status === 404 ? 'No such run.' : r.statusText);
-    ROOMS = rooms.classrooms || [];
     const data = await r.json();
     RUN_ROOM = data.classroom ? data.classroom.id : null;
     render(data);
