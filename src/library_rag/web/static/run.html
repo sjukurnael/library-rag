@@ -41,6 +41,17 @@
   </div>
 </div>
 
+<div class="cardwrap" id="cardwrap" hidden>
+  <div class="cardback" id="cardback"></div>
+  <aside class="bookcard" role="dialog" aria-modal="true" aria-labelledby="cardtitle">
+    <div class="bchead">
+      <h2 id="cardtitle"></h2>
+      <button class="bcx" id="cardclose" title="Close">&times;</button>
+    </div>
+    <div class="bcbody" id="cardbody"></div>
+  </aside>
+</div>
+
 <script src="/static/app.js"></script>
 <script>
 const RUN_ID = decodeURIComponent(location.pathname.split('/').pop());
@@ -51,6 +62,7 @@ const RUN_ID = decodeURIComponent(location.pathname.split('/').pop());
    recommended, and ones they have since taken off. */
 let SHELF = new Set();
 let HAS_SHELF = false;
+let NANGLES = 0;
 
 const MODEL_LABEL = { 'claude-sonnet-5': 'Sonnet', 'claude-opus-5': 'Opus' };
 const PRICE = { 'claude-sonnet-5': [2, 10], 'claude-opus-5': [5, 25] };
@@ -105,13 +117,18 @@ function bars(d) {
    worth more than one strong hit. */
 function digest(events) {
   const angles = [];
-  const opened = new Map();     // book_id -> passages returned
+  const opened = new Map();     // book_id -> {passages, nearest, question}
   const books  = new Map();     // book_id -> union record
-  let shelved = [], answer = '', usage = null, pendingTopic = null;
+  let shelved = [], answer = '', usage = null, pendingTopic = null, pendingAsk = null;
 
   for (const { payload: e } of events) {
     if (e.type === 'tool' && e.name === 'find_books') {
       pendingTopic = (e.input && e.input.topic) || null;
+    } else if (e.type === 'tool' && e.name === 'look_inside') {
+      // The question it chose to ask this book -- the clearest statement
+      // anywhere of WHY it opened this one. Held until the result arrives,
+      // which is the event carrying the book_id.
+      pendingAsk = (e.input && e.input.question) || null;
     } else if (e.type === 'results' && e.name === 'find_books') {
       const s = e.summary || {};
       const angle = {
@@ -121,24 +138,33 @@ function digest(events) {
         candidates: s.candidates || [],
       };
       angles.push(angle);
+      const angleNo = angles.length;
       angle.candidates.forEach((c, i) => {
         if (c.book_id == null) return;
-        const prev = books.get(c.book_id);
         const rank = i + 1;
+        // Every appearance is kept, not just the best one. A book found by four
+        // angles has four different ranks, distances and matched labels, and
+        // the card shows all of them -- that spread IS the evidence.
+        const hit = { angle: angleNo, topic: angle.topic, rank,
+                      distance: c.distance, covers: c.covers };
+        const prev = books.get(c.book_id);
         if (!prev) {
-          books.set(c.book_id, { ...c, best: c.distance, angles: 1, bestRank: rank });
+          books.set(c.book_id, { ...c, best: c.distance, hits: [hit] });
         } else {
-          prev.angles += 1;
+          prev.hits.push(hit);
           if (c.distance != null && (prev.best == null || c.distance < prev.best)) {
             prev.best = c.distance;
             prev.covers = c.covers;      // the label from its STRONGEST angle
-            prev.bestRank = rank;
           }
         }
       });
     } else if (e.type === 'results' && e.name === 'look_inside') {
       const s = e.summary || {};
-      if (s.book_id != null) opened.set(s.book_id, s.passages || 0);
+      if (s.book_id != null) {
+        opened.set(s.book_id, { passages: s.passages || 0, nearest: s.nearest,
+                                question: pendingAsk });
+      }
+      pendingAsk = null;
     } else if (e.type === 'recommendations') {
       shelved = e.books || [];
     } else if (e.type === 'answer') {
@@ -148,11 +174,14 @@ function digest(events) {
     }
   }
 
-  const recommendedIds = new Set(shelved.map(b => b.book_id).filter(x => x != null));
+  const byId = new Map(shelved.filter(b => b.book_id != null).map(b => [b.book_id, b]));
   const considered = [...books.values()].map(b => ({
     ...b,
+    hits: b.hits.sort((x, y) => (x.distance ?? 9) - (y.distance ?? 9)),
     opened: opened.has(b.book_id),
-    recommended: recommendedIds.has(b.book_id),
+    read: opened.get(b.book_id) || null,
+    recommended: byId.has(b.book_id),
+    pick: byId.get(b.book_id) || null,
     onShelf: SHELF.has(b.book_id),
   })).sort((a, b) => (a.best ?? 9) - (b.best ?? 9));
 
@@ -181,16 +210,16 @@ function userDid(b, hasShelf) {
 }
 
 function bookRow(b, rank) {
-  return `<tr>
+  return `<tr class="clicky" data-book="${b.book_id}" tabindex="0">
       <td class="rank">${rank}</td>
       <td class="bt">${esc(b.title || '(untitled)')}
         ${b.pages ? `<span class="bp">${b.pages} pages</span>` : ''}</td>
       <td class="cv" title="${esc(b.covers || '')}"><span class="cvt">${
         b.covers ? esc(b.covers) : '<span class="dim">—</span>'}</span></td>
       <td class="st">${bars(b.best ?? b.distance)}</td>
-      <td class="ag">${b.angles > 1
-          ? `<span class="corro" title="Found by ${b.angles} independent searches">${b.angles}×</span>`
-          : '<span class="dim">1×</span>'}</td>
+      <td class="ag">${b.hits.map(h =>
+          `<span class="anum sm" title="${esc(h.topic)} — ranked #${h.rank} here">${h.angle}</span>`
+        ).join('')}</td>
       <td class="ft">${didWhat(b)}</td>
       <td class="ft">${userDid(b, HAS_SHELF)}</td>
     </tr>`;
@@ -337,7 +366,75 @@ function render(data) {
   }
 
   $('#run').innerHTML = html;
+
+  CARDS = new Map(d.considered.map(b => [b.book_id, b]));
+  NANGLES = d.angles.length;
+  $('#run').querySelectorAll('tr.clicky').forEach(tr => {
+    tr.addEventListener('click', () => openCard(tr.dataset.book));
+    tr.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openCard(tr.dataset.book); }
+    });
+  });
 }
+
+/* ------------------------------------------------------------ book card -- */
+
+/* One book, in full. A row fits seven columns; this does not, so everything
+   that cannot be scanned at a glance lives here -- every angle that found it
+   with its own rank and label, the question the librarian put to it, and what
+   came back.
+
+   A slide-over rather than a modal: the table stays visible behind it, so
+   moving between books does not feel like leaving the run. */
+let CARDS = new Map();
+
+function angleLine(h) {
+  return `<li>
+      <div class="alh"><span class="anum sm">${h.angle}</span>
+        <span class="alt">${esc(h.topic)}</span></div>
+      <div class="alm">ranked <b>#${h.rank}</b> here${
+        h.distance != null ? ' · ' + bars(h.distance) : ''}</div>
+      ${h.covers ? `<div class="alc">matched on <span>${esc(h.covers)}</span></div>` : ''}
+    </li>`;
+}
+
+function openCard(bookId) {
+  const b = CARDS.get(Number(bookId));
+  if (!b) return;
+  const src = `/api/books/${b.book_id}/source`;
+  const page = b.pick && b.pick.passage_page ? `?page=${b.pick.passage_page}` : '';
+
+  $('#cardbody').innerHTML = `
+    <dl class="bcstats">
+      <dt>Best match</dt><dd>${bars(b.best)}</dd>
+      <dt>Found by</dt><dd><b>${b.hits.length}</b> of ${NANGLES} angles</dd>
+      ${b.pages ? `<dt>Length</dt><dd><b>${b.pages}</b> pages</dd>` : ''}
+    </dl>
+    <div class="bcchips">${didWhat(b)}${
+      HAS_SHELF ? ' ' + userDid(b, true) : ''}</div>
+
+    <h3>Where it matched</h3>
+    <ul class="alist">${b.hits.map(angleLine).join('')}</ul>
+
+    ${b.read ? `<h3>What the librarian asked it</h3>
+      <div class="bcask">${b.read.question ? '“' + esc(b.read.question) + '”'
+        : '<span class="dim">not recorded</span>'}</div>
+      <div class="bcmeta">${b.read.passages} passage(s) came back${
+        b.read.nearest != null ? ' · closest ' + b.read.nearest : ''}</div>` : ''}
+
+    ${b.pick ? `<h3>Why it was recommended</h3>
+      ${b.pick.why ? `<div class="bcwhy">${esc(b.pick.why)}</div>` : ''}
+      ${b.pick.passage ? `<div class="bcq">“${esc(b.pick.passage)}”${
+        b.pick.passage_pages ? `<span class="bcp">${esc(b.pick.passage_pages)}</span>` : ''
+      }</div>` : ''}` : ''}
+
+    <a class="bcopen" href="${esc(src + page)}" target="_blank" rel="noopener">
+      Open the PDF in Drive ↗</a>`;
+  $('#cardtitle').textContent = b.title || '(untitled)';
+  $('#cardwrap').hidden = false;
+}
+
+function closeCard() { $('#cardwrap').hidden = true; }
 
 async function load() {
   try {
@@ -348,6 +445,10 @@ async function load() {
     $('#run').innerHTML = failed('Could not load this run', err, load);
   }
 }
+
+$('#cardclose').addEventListener('click', closeCard);
+$('#cardback').addEventListener('click', closeCard);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeCard(); });
 
 paintAuth();
 paintLibraryFoot();

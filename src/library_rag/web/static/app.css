@@ -576,6 +576,91 @@ details.trace[open] summary { color: var(--ink); }
 
 .ranswer { font-size: 14px; line-height: 1.6; color: var(--ink); max-width: 78ch; }
 
+/* ------------------------------------------------------------- book card -- */
+/* A slide-over, not a modal: the table stays visible behind it, so moving from
+   book to book reads as inspecting rows rather than leaving the page. */
+.cardwrap { position: fixed; inset: 0; z-index: 60; }
+.cardback { position: absolute; inset: 0; background: rgba(15,18,24,.32); }
+.bookcard {
+  position: absolute; top: 0; right: 0; bottom: 0; width: min(480px, 92vw);
+  background: var(--bg); display: flex; flex-direction: column;
+  box-shadow: -12px 0 40px rgba(15,18,24,.14);
+  animation: cardin .16s ease-out;
+}
+@keyframes cardin { from { transform: translateX(14px); opacity: .4 } to { transform: none; opacity: 1 } }
+
+.bchead {
+  display: flex; align-items: flex-start; gap: 12px; flex: none;
+  padding: 20px 20px 14px; border-bottom: 1px solid var(--line);
+}
+.bchead h2 {
+  flex: 1; min-width: 0; margin: 0; font-size: 16px; line-height: 1.4;
+  font-weight: 600; overflow-wrap: anywhere;
+}
+.bcx {
+  flex: none; border: 0; background: transparent; cursor: pointer;
+  font-size: 22px; line-height: 1; color: var(--dim); padding: 0 2px;
+}
+.bcx:hover { color: var(--ink); }
+
+.bcbody { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px 24px; }
+.bcbody h3 {
+  font-size: 11.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--dim); margin: 24px 0 10px;
+}
+.bcbody h3:first-child { margin-top: 0; }
+
+/* The three facts worth knowing before reading anything else. */
+/* Label left, value right, one per line. A two-column grid orphaned the third
+   stat and broke "302 pages" across lines; at this width a list always fits. */
+.bcstats {
+  display: grid; grid-template-columns: auto 1fr; gap: 9px 18px; margin: 0;
+  padding: 14px 16px; background: var(--surface); border-radius: 12px;
+  align-items: center;
+}
+.bcstats dt { font-size: 12.5px; color: var(--dim); }
+.bcstats dd { margin: 0; font-size: 13px; color: var(--ink); justify-self: end; }
+.bcchips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+
+/* Every angle that found this book: its wording, the rank it gave, and which
+   part of the book it matched. Four of these is the corroboration argument
+   made concrete. */
+.alist { list-style: none; margin: 0; padding: 0; }
+.alist li { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.alist li:last-child { border-bottom: 0; }
+.alh { display: flex; align-items: flex-start; gap: 9px; }
+.alt { font-size: 13.5px; line-height: 1.45; color: var(--ink); }
+.alm { margin: 6px 0 0 31px; font-size: 12.5px; color: var(--dim);
+       display: flex; align-items: center; gap: 8px; }
+.alc { margin: 5px 0 0 31px; font-size: 12.5px; color: var(--dim); }
+.alc span { color: var(--ink); }
+
+.bcask { font-size: 13.5px; line-height: 1.55; color: var(--ink); }
+.bcmeta { margin-top: 6px; font-size: 12.5px; color: var(--dim); }
+.bcwhy { font-size: 13.5px; line-height: 1.55; color: var(--ink); }
+.bcq {
+  margin-top: 10px; padding: 12px 14px; background: var(--surface);
+  border-radius: 10px; font-size: 13px; line-height: 1.6;
+}
+.bcq .bcp { display: block; margin-top: 7px; font-size: 12px; color: var(--dim); }
+
+.bcopen {
+  display: inline-block; margin-top: 24px; font-size: 13px; font-weight: 500;
+  color: var(--accent); text-decoration: none;
+}
+.bcopen:hover { text-decoration: underline; }
+
+/* The angle badge, shared by the table's Angles cell and the card. */
+.anum.sm {
+  width: 19px; height: 19px; font-size: 11px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px; background: #ece7fb; color: #5b3fc4; font-weight: 600;
+  margin-right: 3px;
+}
+.runtable .ag { white-space: nowrap; }
+.runtable tr.clicky { cursor: pointer; }
+.runtable tr.clicky:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
 /* --------------------------------------------------------- model picker -- */
 /* Two models, shown as one control rather than a dropdown: there are exactly
    two, and a select would hide the one you are not using behind a click. The
