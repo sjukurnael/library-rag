@@ -393,7 +393,12 @@ details.trace[open] summary { color: var(--ink); }
   padding: 7px 14px; border-radius: 999px; font: inherit; font-size: 13px;
   cursor: pointer;
 }
+/* Independent toggles, not one-of-N: grey is off, blue is on, and both can be
+   on at once. So the pressed state has to be unmistakable rather than merely
+   "the one that is different". */
 .agentfilter .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.agentfilter .chip:hover { border-color: var(--accent); }
+.agentfilter .chip.on:hover { background: var(--accent); }
 
 /* One run per row. Grid rather than flex so the agent, the outcome and the time
    line up down the page -- a list you scan by column, not by reading each row. */
@@ -543,7 +548,10 @@ details.trace[open] summary { color: var(--ink); }
 .angle > summary {
   display: flex; align-items: center; gap: 12px; cursor: pointer;
   padding: 13px 16px; list-style: none;
+  background: var(--surface); border-radius: 11px;
 }
+.angle[open] > summary { border-radius: 11px 11px 0 0; }
+.angle > summary:hover { background: var(--line); }
 .angle > summary::-webkit-details-marker { display: none; }
 .angle[open] > summary { border-bottom: 1px solid var(--line); }
 .angle .anum {

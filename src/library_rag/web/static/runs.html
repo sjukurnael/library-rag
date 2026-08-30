@@ -38,9 +38,8 @@
       <h1>Activity</h1>
       <span class="grow"></span>
       <div class="agentfilter" id="filter">
-        <button class="chip on" data-agent="">Everything</button>
-        <button class="chip" data-agent="librarian">Librarian</button>
-        <button class="chip" data-agent="tutor">Tutor</button>
+        <button class="chip on" data-agent="librarian" aria-pressed="true">Librarian</button>
+        <button class="chip on" data-agent="tutor" aria-pressed="true">Tutor</button>
       </div>
     </div>
     <div class="pagebody">
@@ -56,7 +55,9 @@
 <script src="/static/app.js"></script>
 <script>
 const PAGE = 30;
-let AGENT = '';
+/* Two independent toggles rather than one-of-N. Both on is the default and is
+   also what "no filter" means to the API, which takes a single agent or none. */
+let SHOW = new Set(['librarian', 'tutor']);
 let OFFSET = 0;
 
 /* Cost from the token counters, so a run says what it cost rather than making
@@ -131,8 +132,18 @@ function row(r) {
 async function load() {
   const el = $('#list');
   try {
+    // Nothing selected is a real state, not an error, and it is the one thing
+    // the API cannot express -- omitting `agent` means BOTH. So it is answered
+    // here rather than by asking the server for everything and hiding it.
+    if (SHOW.size === 0) {
+      el.innerHTML = `<div class="empty">Nothing selected. Turn on Librarian or
+        Tutor above to see runs.</div>`;
+      $('#pager').hidden = true;
+      return;
+    }
+
     const q = new URLSearchParams({ limit: PAGE, offset: OFFSET });
-    if (AGENT) q.set('agent', AGENT);
+    if (SHOW.size === 1) q.set('agent', [...SHOW][0]);
     const d = await (await fetch('/api/runs?' + q)).json();
 
     el.innerHTML = d.runs.length
@@ -162,9 +173,12 @@ async function load() {
 $('#filter').addEventListener('click', e => {
   const b = e.target.closest('button[data-agent]');
   if (!b) return;
-  $('#filter').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
-  AGENT = b.dataset.agent;
-  OFFSET = 0;
+  const agent = b.dataset.agent;
+  const on = !SHOW.has(agent);
+  if (on) SHOW.add(agent); else SHOW.delete(agent);
+  b.classList.toggle('on', on);
+  b.setAttribute('aria-pressed', String(on));
+  OFFSET = 0;   // a different filter is a different list; page 3 of it means nothing
   load();
 });
 

@@ -201,7 +201,8 @@ function consideredTable(considered) {
   // outgrow a narrow window, and the page body must never scroll sideways.
   return `<div class="tablewrap"><table class="runtable">
       <thead><tr>
-        <th class="rank">#</th><th>Book</th><th>Matched on</th>
+        <th class="rank" title="Position after combining every angle — not a rank the search produced">#</th>
+        <th>Book</th><th>Matched on</th>
         <th>Match</th><th title="How many of the searches found this book">Angles</th>
         <th>Librarian</th><th>User action</th>
       </tr></thead>
@@ -233,7 +234,9 @@ function angleCard(a, i, openedIds, shelvedIds) {  // shelvedIds = recommended
           a.thin ? ' · <span class="thin">library is thin here</span>' : ''}</span>
       </summary>
       <div class="tablewrap inner"><table class="runtable">
-        <thead><tr><th class="rank">#</th><th>Book</th><th>Matched on</th>
+        <thead><tr>
+          <th class="rank" title="Rank within this angle — this one IS the search's own order">#</th>
+          <th>Book</th><th>Matched on</th>
           <th>Match</th><th>Librarian</th><th>User action</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
@@ -299,9 +302,11 @@ function render(data) {
 
   html += `<div class="sect">
       <h2>Books considered <span class="count">${d.considered.length}</span></h2>
-      <p class="say">Every book the searches surfaced, best match first. A book
-        can appear in more than one search — the strongest is the one shown, and
-        the angles column says how many found it.</p>
+      <p class="say">Every book the searches surfaced, ordered by its best match
+        across all ${d.angles.length} angles. There is no single ranking of
+        ${d.considered.length} — each angle ranks its own twelve — so a book's
+        place here is the best it managed anywhere, and <b>Angles</b> says how
+        many searches found it at all.</p>
       ${d.considered.length ? consideredTable(d.considered)
                             : '<div class="empty">No candidates recorded.</div>'}
     </div>`;
