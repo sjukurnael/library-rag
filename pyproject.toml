@@ -28,6 +28,9 @@ dependencies = [
     # vectors (pipeline/profile.py). Already present transitively, but this
     # is a direct dependency now and a transitive one can vanish.
     "numpy>=1.26",
+    # The Bible map's events arrive as an .xlsx (cli/biblemap.py). Only the
+    # loader imports it; the web app never reads a spreadsheet.
+    "openpyxl>=3.1",
     "voyageai>=0.3.0",
     "tiktoken>=0.8.0",
     "mistralai>=1.2.0",
@@ -66,6 +69,7 @@ library-rag-search = "library_rag.cli.search:main"
 library-rag-evaluate = "library_rag.cli.evaluate:main"
 library-rag-migrate = "library_rag.cli.migrate:main"
 library-rag-bible = "library_rag.cli.bible:main"
+library-rag-biblemap = "library_rag.cli.biblemap:main"
 library-rag-users = "library_rag.cli.users:main"
 
 # src layout: the package is importable ONLY once installed, so a test can never

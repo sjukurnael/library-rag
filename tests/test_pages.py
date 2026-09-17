@@ -143,6 +143,78 @@ def test_the_other_nav_entries_survive_the_strip(client):
         assert href in html, href
 
 
+# --------------------------------------------------------- the Bible map flag --
+
+BIBLEMAP_ROUTES = ["/biblemap", "/api/biblemap/data", "/biblemap/source",
+                   "/api/biblemap/sources", "/api/biblemap/sources/events",
+                   "/api/biblemap/locate?kind=event&id=1"]
+
+
+@pytest.fixture
+def biblemap_on(monkeypatch):
+    monkeypatch.setattr(api.config, "BIBLEMAP_ENABLED", True)
+
+
+@pytest.mark.parametrize("route", BIBLEMAP_ROUTES)
+def test_the_bible_map_is_off_by_default(client, route):
+    r = client.get(route)
+    assert r.status_code == 404, route
+    assert r.json()["detail"] == GATE_404, route
+
+
+@pytest.mark.parametrize("page", sorted(PAGES))
+def test_the_bible_map_nav_entries_are_gone_when_it_is_off(client, page):
+    html = client.get(page).text
+    assert 'href="/biblemap"' not in html and 'href="/biblemap/source"' not in html
+
+
+@pytest.mark.parametrize("page", sorted(PAGES))
+def test_the_flag_brings_the_bible_map_nav_entries_back(client, biblemap_on, page):
+    html = client.get(page).text
+    nav = html[html.index('<nav class="snav">'):html.index("</nav>")]
+    assert 'href="/biblemap"' in nav and 'href="/biblemap/source"' in nav
+
+
+def test_the_two_nav_strips_are_independent(client, biblemap_on):
+    """Bible off, map on: the Bible link goes, the map links stay."""
+    html = client.get("/").text
+    assert 'href="/bible"' not in html
+    assert 'href="/biblemap"' in html
+
+
+def test_the_flag_opens_the_bible_map_page(client, biblemap_on):
+    r = client.get("/biblemap")
+    assert r.status_code == 200
+    assert (STATIC / "biblemap.html").read_text()[:200] in r.text
+
+
+def test_the_bible_map_api_reports_an_empty_database_as_data(client, conn, biblemap_on):
+    """Not loaded is a state the page explains, not a 500."""
+    r = client.get("/api/biblemap/data")
+    assert r.status_code == 200
+    assert r.json()["loaded"] is False
+
+
+def test_the_flag_opens_the_source_viewer(client, biblemap_on):
+    r = client.get("/biblemap/source")
+    assert r.status_code == 200
+    assert (STATIC / "biblemap_source.html").read_text()[:200] in r.text
+
+
+@pytest.mark.parametrize("page", ["biblemap.html", "biblemap_source.html"])
+def test_the_bible_map_pages_ask_only_for_static_files_that_are_served(client, page):
+    html = (STATIC / page).read_text()
+    for ref in set(re.findall(r'(?:src|href)=["\'](/static/[\w.\-]+)["\']', html)):
+        assert client.get(ref).status_code == 200, ref
+
+
+def test_every_map_record_links_to_its_source_row(client):
+    """Event, person and place each carry "Show in original data"."""
+    html = (STATIC / "biblemap.html").read_text()
+    for kind in ("event", "person", "place"):
+        assert f"srcButton('{kind}'" in html, kind
+
+
 @pytest.mark.parametrize("page", sorted(PAGES) + ["/classroom/1"])
 def test_every_page_can_get_back_to_the_classrooms(client, page):
     """The classroom pages dropped "Classrooms" from the nav when the sidebar

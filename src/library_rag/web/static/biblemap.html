@@ -1,0 +1,669 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library — bible map</title>
+<link rel="stylesheet" href="/static/app.css">
+<!-- The map library and the events' icon font, from public CDNs. Leaflet draws
+     the map; the tiles themselves come from Esri and OpenTopoMap (see TILES
+     below). None of the three needs an API key. -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@phosphor-icons/web@2.1.1/src/regular/style.css">
+<!-- Groups nearby places into one numbered circle in the Place view. -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.min.css">
+<style>
+/* Page-local while this is a prototype; moves into app.css if it graduates. */
+.pagebody.mapbody { display: flex; gap: var(--s4); overflow: hidden; padding-bottom: var(--s5); }
+#map { flex: 1; min-width: 0; border-radius: 16px; background: var(--surface); }
+.evpanel {
+  width: 360px; flex: none; display: flex; flex-direction: column;
+  background: var(--surface); border-radius: 16px; overflow: hidden;
+}
+.evctl { padding: var(--s3) var(--s4); border-bottom: 1px solid var(--line); }
+.evctl .row { display: flex; align-items: center; gap: var(--s2); }
+.evctl input[type=range] { flex: 1; accent-color: var(--accent); }
+.evctl .count { font-size: var(--t-meta); color: var(--muted); white-space: nowrap; }
+.evbody { flex: 1; overflow-y: auto; padding: var(--s4); }
+.evhead { display: flex; gap: var(--s3); align-items: flex-start; margin-bottom: var(--s3); }
+.evicon {
+  width: 36px; height: 36px; border-radius: 10px; flex: none;
+  display: grid; place-items: center; font-size: 20px;
+  background: var(--accent-soft); color: var(--accent-ink);
+}
+/* Phosphor's icon class is `.ph`, and so is the librarian's phase row in
+   app.css -- a 3-column grid at 13px -- which shrank each glyph and pushed it
+   into the first column. Undo that for the icon specifically. */
+.evicon .ph {
+  display: block; width: 20px; height: 20px; font-size: 20px; line-height: 1;
+  grid-template-columns: none; gap: 0;
+}
+.evpass { font-size: var(--t-meta); color: var(--muted); }
+.evtitle { font-size: var(--t-title); font-weight: 500; }
+.evdesc { font-size: var(--t-body); line-height: 1.5; margin-bottom: var(--s4); }
+.evlabel {
+  font-size: var(--t-label); text-transform: uppercase; letter-spacing: .06em;
+  color: var(--dim); margin: var(--s4) 0 var(--s2);
+}
+.chips { display: flex; flex-wrap: wrap; gap: var(--s1); }
+.chips .chip { padding: 3px 10px; font-size: var(--t-meta); }
+.chip.unmapped { border-style: dashed; }
+.evlist { display: flex; flex-direction: column; gap: 2px; }
+.evrow {
+  display: flex; gap: var(--s2); text-align: left; width: 100%;
+  background: none; border: 0; border-radius: 8px; padding: 6px var(--s2);
+  color: var(--ink); font: inherit; font-size: var(--t-ui); cursor: pointer;
+}
+.evrow:hover { background: var(--surface-2); }
+.evrow.on { background: var(--accent-soft); color: var(--accent-ink); }
+.evrow .n { color: var(--dim); min-width: 22px; text-align: right; }
+.evrow .p { color: var(--muted); font-size: var(--t-meta); display: block; }
+.modes { display: flex; gap: var(--s1); }
+.srcbtn { font-size: var(--t-meta); padding: 4px 10px; margin: 0 0 var(--s3); text-decoration: none; display: inline-flex; }
+.nomap { font-size: var(--t-meta); color: var(--warn); margin-top: var(--s2); }
+.rnum {
+  width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent); color: var(--bg); font-size: 11px; font-weight: 600;
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.leaflet-tooltip.ptip { font-size: 12px; padding: 2px 6px; }
+/* Place view: a dot per place, sized by how many events happened there, and a
+   numbered circle where several places are too close to tell apart. */
+.pdot {
+  width: 100%; height: 100%; border-radius: 50%; box-sizing: border-box;
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+  border: 1.5px solid var(--accent); cursor: pointer;
+}
+.pdot:hover { background: var(--accent); }
+/* The chosen place: solid, ringed, and drawn above every other dot. */
+.psel {
+  width: 100%; height: 100%; border-radius: 50%; box-sizing: border-box;
+  background: var(--accent); border: 3px solid var(--panel);
+  box-shadow: 0 0 0 2px var(--accent), 0 2px 8px rgba(0,0,0,.35);
+}
+.pgroup {
+  width: 100%; height: 100%; border-radius: 50%; display: grid; place-items: center;
+  background: var(--panel); color: var(--accent-ink); font-size: 12px; font-weight: 600;
+  border: 2px solid var(--accent); box-shadow: 0 1px 4px rgba(0,0,0,.25); cursor: zoom-in;
+}
+.pgroup.small { font-size: 11px; border-width: 1.5px; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+.maplegend {
+  background: var(--panel); border-radius: 10px; padding: 8px 10px; box-shadow: var(--shadow);
+  font-size: 12px; color: var(--muted); line-height: 1.5;
+}
+.maplegend .sw { display: inline-block; vertical-align: middle; margin-right: 6px; }
+.maplegend .pdot, .maplegend .pgroup { display: inline-grid; cursor: default; }
+.nolocation {
+  font-size: var(--t-meta); color: var(--muted); background: var(--panel);
+  border-radius: 10px; padding: var(--s2) var(--s3); margin-top: var(--s3); line-height: 1.5;
+}
+@media (max-width: 900px) {
+  .pagehead { flex-wrap: wrap; }
+  .pagebody.mapbody { flex-direction: column; overflow-y: auto; }
+  #map { flex: none; height: 55vh; }
+  .evpanel { width: auto; overflow: visible; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <aside class="side">
+    <div class="brand"><span class="logo"></span>Library</div>
+    <nav class="snav">
+      <a href="/">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M12 7v10"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Classrooms</a>
+      <a href="/library">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        Drive</a>
+      <a href="/queue">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Processing</a>
+      <a href="/runs">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+        Activity</a>
+      <!--bible--><a href="/bible">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Bible</a><!--/bible-->
+      <!--biblemap--><a href="/biblemap" class="on">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/></svg>
+        Bible map</a>
+      <a href="/biblemap/source">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+        Source data</a><!--/biblemap-->
+    </nav>
+    <div class="sidefoot" id="sidefoot"></div>
+  </aside>
+
+  <div class="page">
+    <div class="pagehead">
+      <h1>Bible map</h1>
+      <div class="modes" role="tablist">
+        <button class="chip on" data-mode="timeline">Timeline</button>
+        <button class="chip" data-mode="person">Person</button>
+        <button class="chip" data-mode="place">Place</button>
+      </div>
+      <span style="flex:1"></span>
+      <form class="searchpill" id="sf" style="max-width:360px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="text" id="sq" list="sqlist" autocomplete="off" placeholder="Find an event…">
+        <datalist id="sqlist"></datalist>
+      </form>
+    </div>
+
+    <div class="pagebody mapbody">
+      <div id="map"></div>
+      <div class="evpanel">
+        <div class="evctl" id="ctl" hidden>
+          <div class="row">
+            <button class="btn step" id="prev" title="Previous (←)">‹</button>
+            <input type="range" id="slider" min="1" value="1" aria-label="Event">
+            <button class="btn step" id="next" title="Next (→)">›</button>
+          </div>
+          <div class="count" id="count"></div>
+        </div>
+        <div class="evbody" id="card"><div class="empty">loading…</div></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js"></script>
+<script src="/static/app.js"></script>
+<script>
+// Read off window rather than used bare: the boot test evaluates this script
+// without Leaflet, and a bare `L` would be a ReferenceError there.
+const Leaf = window.L;
+
+// The basemaps, first one the default. Deliberately label-free where possible:
+// a modern map is full of today's roads, borders and city names, and every one
+// of them competes with the ancient names this page is for. None needs a key.
+// (CARTO's no-label style was the first choice and now watermarks every tile
+// "API KEY REQUIRED".) Swapping to a keyed provider later is a change to these
+// URLs and nothing else.
+//
+// maxNativeZoom: Esri's terrain tiles stop at 13; past that Leaflet enlarges
+// zoom-13 tiles rather than requesting ones that do not exist.
+const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services';
+const TILES = {
+  Terrain: {
+    url: `${ESRI}/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}`,
+    opts: { maxZoom: 18, maxNativeZoom: 13,
+            attribution: 'Tiles &copy; Esri &mdash; Source: USGS, Esri, TANA, DeLorme, and NPS' },
+  },
+  Satellite: {
+    url: `${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`,
+    opts: { maxZoom: 18,
+            attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community' },
+  },
+  Topographic: {
+    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+    opts: { subdomains: 'abc', maxZoom: 17,
+            attribution: 'Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, SRTM | Style &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)' },
+  },
+};
+
+let EVENTS = [];                 // in Bible order; an event's index is its place in the timeline
+const PLACE = new Map();         // id -> {id, name, lat, lng}
+const PERSON = new Map();        // id -> {id, name, descriptor}
+const EV_INDEX = new Map();      // event id -> index into EVENTS
+const BY_PERSON = new Map();     // person id -> [event index]
+const BY_PLACE = new Map();      // place id -> [event index], counting route stops too
+
+let mode = 'timeline';
+let idx = 0;                     // timeline position
+let personId = null, personStep = 0;
+let placeId = null;
+let map = null, overlay = null, placeLayer = null, legend = null;
+const SEARCH = new Map();        // datalist label -> action
+
+// ------------------------------------------------------------------ boot --
+
+async function boot() {
+  let d;
+  try {
+    d = await fetchJSON('/api/biblemap/data', {}, 30000);
+  } catch (err) {
+    $('#card').innerHTML = `<div class="failnote">${esc(err.message)}</div>`;
+    return;
+  }
+  if (!d.loaded) {
+    $('#card').innerHTML =
+      '<div class="empty">No map data loaded yet.<br><br>Run:<br>' +
+      '<code>python -m library_rag.cli.migrate</code><br>' +
+      '<code>python -m library_rag.cli.biblemap --load ../biblemap_project</code></div>';
+    return;
+  }
+
+  EVENTS = d.events;
+  d.places.forEach(p => PLACE.set(p.id, p));
+  d.people.forEach(p => PERSON.set(p.id, p));
+  EVENTS.forEach((e, i) => {
+    EV_INDEX.set(e.id, i);
+    e.people.forEach(pid => push(BY_PERSON, pid, i));
+    new Set([...e.places, ...e.route]).forEach(pid => push(BY_PLACE, pid, i));
+  });
+
+  $('#sidefoot').textContent =
+    `${EVENTS.length.toLocaleString()} events · ${PERSON.size.toLocaleString()} people · ` +
+    `${PLACE.size.toLocaleString()} places`;
+  initMap();
+  fromHash() || showEvent(0);
+}
+
+function push(m, k, v) { (m.get(k) || m.set(k, []).get(k)).push(v); }
+
+// ------------------------------------------------------------------- map --
+
+function initMap() {
+  if (!Leaf) {
+    $('#map').innerHTML = '<div class="empty">The map library did not load.</div>';
+    return;
+  }
+  const bases = Object.fromEntries(Object.entries(TILES)
+    .map(([name, t]) => [name, Leaf.tileLayer(t.url, t.opts)]));
+
+  map = Leaf.map('map', { layers: [Object.values(bases)[0]], zoomControl: true })
+    .setView([31.5, 36], 6);
+  Leaf.control.layers(bases, null, { position: 'topright' }).addTo(map);
+  overlay = Leaf.layerGroup().addTo(map);
+
+  // Every place any event mentions, for the Place view. Built once, shown only
+  // in that mode.
+  //
+  // Hundreds of places sit in a strip of land 200 km long, so at country zoom
+  // they are drawn as numbered groups that split apart as you zoom in -- one
+  // readable circle instead of a blot. From zoom 9 every place is its own dot.
+  // If the grouping library failed to load, fall back to plain dots.
+  placeLayer = Leaf.markerClusterGroup
+    ? Leaf.markerClusterGroup({
+        // 45px -- about a group circle's own width. Any tighter and the group
+        // circles themselves pile up over Judea, which is the blot all over again.
+        maxClusterRadius: 45, disableClusteringAtZoom: 9, showCoverageOnHover: false,
+        iconCreateFunction: group => {
+          const n = group.getChildCount();
+          // Small groups stay small and quiet, so a handful of "2"s does not
+          // compete with the groups that actually hold most of the map.
+          const d = n < 10 ? 24 : n < 100 ? 34 : 44;
+          return Leaf.divIcon({ className: '', iconSize: [d, d],
+                                html: `<div class="pgroup${n < 10 ? ' small' : ''}" title="${n} places — click to zoom in">${n}</div>` });
+        },
+      })
+    : Leaf.layerGroup();
+  for (const p of PLACE.values()) {
+    if (p.lat == null) continue;
+    const n = (BY_PLACE.get(p.id) || []).length;
+    const d = dotSize(n);
+    Leaf.marker([p.lat, p.lng], {
+      icon: Leaf.divIcon({ className: '', html: '<div class="pdot"></div>',
+                           iconSize: [d, d], iconAnchor: [d / 2, d / 2] }),
+    })
+      .bindTooltip(`${esc(p.name)} · ${n} event${n === 1 ? '' : 's'}`,
+                   { direction: 'top', className: 'ptip', offset: [0, -d / 2] })
+      .on('click', () => showPlace(p.id))
+      .addTo(placeLayer);
+  }
+
+  // What the dots mean, shown with the Place view only.
+  legend = Leaf.control({ position: 'bottomleft' });
+  legend.onAdd = () => {
+    const el = Leaf.DomUtil.create('div', 'maplegend');
+    el.innerHTML =
+      `<div><span class="sw" style="width:${dotSize(1)}px;height:${dotSize(1)}px"><span class="pdot"></span></span>` +
+      `<span class="sw" style="width:${dotSize(40)}px;height:${dotSize(40)}px"><span class="pdot"></span></span>` +
+      `A place — bigger means more events</div>` +
+      `<div><span class="sw" style="width:22px;height:22px"><span class="pgroup" style="font-size:10px">12</span></span>` +
+      `Nearby places grouped — click to zoom in</div>`;
+    return el;
+  };
+}
+
+// Dot diameter in pixels for a place with `n` events. Square root so area, not
+// width, tracks the count: Jerusalem's 410 events should read as big, not as a
+// disc that swallows Judea.
+function dotSize(n) {
+  return Math.round(Math.min(10 + Math.sqrt(Math.max(n, 1) - 1) * 1.6, 30));
+}
+
+function css(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function mapped(ids) {
+  return ids.map(id => PLACE.get(id)).filter(p => p && p.lat != null);
+}
+
+// Pins for `places`; a numbered line through `route`. Returns the points drawn,
+// so the caller can decide what to fit the view to.
+function drawEvent(e, { fit = true, strong = true } = {}) {
+  if (!map) return [];
+  const accent = css('--accent');
+  const route = mapped(e.route);
+  const pins = mapped(e.places);
+  const pts = [];
+
+  if (route.length > 1) {
+    const line = route.map(p => [p.lat, p.lng]);
+    Leaf.polyline(line, { color: accent, weight: 3, dashArray: '6 6', opacity: strong ? .9 : .4 })
+      .addTo(overlay);
+    route.forEach((p, n) => {
+      Leaf.marker([p.lat, p.lng], {
+        icon: Leaf.divIcon({ className: '', html: `<div class="rnum">${n + 1}</div>`,
+                             iconSize: [20, 20], iconAnchor: [10, 10] }),
+      }).bindTooltip(esc(p.name), { direction: 'top', className: 'ptip' }).addTo(overlay);
+      pts.push([p.lat, p.lng]);
+    });
+  }
+  const labelAll = pins.length <= 6;
+  for (const p of pins) {
+    Leaf.circleMarker([p.lat, p.lng], { radius: strong ? 8 : 5, weight: 2, color: accent,
+                                        fillColor: accent, fillOpacity: strong ? .35 : .2 })
+      .bindTooltip(esc(p.name), { direction: 'top', className: 'ptip',
+                                  permanent: strong && labelAll })
+      .on('click', () => showPlace(p.id))
+      .addTo(overlay);
+    pts.push([p.lat, p.lng]);
+  }
+  if (fit) fitTo(pts);
+  return pts;
+}
+
+function fitTo(pts) {
+  if (!map || !pts.length) return;
+  if (pts.length === 1) map.setView(pts[0], Math.max(map.getZoom(), 7));
+  else map.fitBounds(pts, { padding: [40, 40], maxZoom: 9 });
+}
+
+// ------------------------------------------------------------------ card --
+
+// Opens the row this record was loaded from, in the source viewer, in a new
+// tab -- so the map stays where it was while you compare.
+function srcButton(kind, id) {
+  return `<a class="btn soft srcbtn" href="/biblemap/source#${kind}=${id}" target="_blank"
+            title="Open the spreadsheet row this ${kind} was loaded from">Show in original data</a>`;
+}
+
+function eventHead(e) {
+  return `
+    <div class="evhead">
+      <div class="evicon"><i class="ph ${esc(e.icon || 'ph-book-open')}"></i></div>
+      <div><div class="evpass">${esc(e.passage)}</div>
+           <div class="evtitle">${esc(e.title)}</div></div>
+    </div>`;
+}
+
+// The source names Phosphor icons, and some names are not in the set
+// (ph-caravan). An unknown class renders nothing -- an empty tile -- so swap in
+// a generic icon when the class produced no glyph.
+function fixIcons() {
+  document.querySelectorAll('.evicon i').forEach(i => {
+    const glyph = getComputedStyle(i, '::before').content;
+    if (!glyph || glyph === 'none' || glyph === 'normal' || glyph === '""') {
+      i.className = 'ph ph-book-open';
+    }
+  });
+}
+
+function eventDetail(e) {
+  const people = e.people.map(id => PERSON.get(id)).filter(Boolean);
+  // Places and route stops together, once each: the reader wants "where",
+  // and the map already shows which were stops on the way.
+  const placeIds = [...new Set([...e.places, ...e.route])];
+  const places = placeIds.map(id => PLACE.get(id)).filter(Boolean);
+  const anyMapped = places.some(p => p.lat != null);
+  return `
+    ${eventHead(e)}
+    ${srcButton('event', e.id)}
+    ${e.description ? `<div class="evdesc">${esc(e.description)}</div>` : ''}
+    ${people.length ? `<div class="evlabel">People</div><div class="chips">${
+      people.map(p => `<button class="chip" data-person="${p.id}"
+        title="${esc(p.descriptor)}">${esc(p.name)}</button>`).join('')}</div>` : ''}
+    ${places.length ? `<div class="evlabel">Places</div><div class="chips">${
+      places.map(p => `<button class="chip${p.lat == null ? ' unmapped' : ''}" data-place="${p.id}"
+        title="${p.lat == null ? 'no coordinates' : ''}">${esc(p.name)}</button>`).join('')}</div>` : ''}
+    ${anyMapped ? '' : '<div class="nomap">No location on the map for this event.</div>'}`;
+}
+
+function eventList(indexes, current) {
+  return `<div class="evlist">${indexes.map((i, n) => {
+    const e = EVENTS[i];
+    return `<button class="evrow${i === current ? ' on' : ''}" data-event="${e.id}">
+      <span class="n">${n + 1}</span>
+      <span>${esc(e.title)}<span class="p">${esc(e.passage)}</span></span></button>`;
+  }).join('')}</div>`;
+}
+
+// ----------------------------------------------------------------- views --
+
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll('[data-mode]').forEach(b =>
+    b.classList.toggle('on', b.dataset.mode === m));
+  $('#sq').value = '';
+  $('#sq').placeholder = { timeline: 'Find an event…', person: 'Find a person…',
+                           place: 'Find a place…' }[m];
+  fillSearch();
+  if (map) {
+    overlay.clearLayers();
+    if (m === 'place') { placeLayer.addTo(map); legend.addTo(map); }
+    else { placeLayer.remove(); legend.remove(); }
+  }
+}
+
+function setHash(h) {
+  history.replaceState(null, '', `#${h}`);
+}
+
+function showEvent(i) {
+  if (mode !== 'timeline') setMode('timeline');
+  idx = Math.min(Math.max(i, 0), EVENTS.length - 1);
+  const e = EVENTS[idx];
+  $('#ctl').hidden = false;
+  $('#slider').max = String(EVENTS.length);
+  $('#slider').value = String(idx + 1);
+  $('#count').textContent = `Event ${idx + 1} of ${EVENTS.length.toLocaleString()}`;
+  $('#card').innerHTML = eventDetail(e);
+  fixIcons();
+  if (map) { overlay.clearLayers(); drawEvent(e); }
+  setHash(`event=${e.id}`);
+}
+
+function showPerson(id, step = 0) {
+  const list = BY_PERSON.get(id);
+  if (!list) return;
+  const changed = mode !== 'person' || personId !== id;
+  if (mode !== 'person') setMode('person');
+  personId = id;
+  personStep = Math.min(Math.max(step, 0), list.length - 1);
+  const p = PERSON.get(id);
+  const e = EVENTS[list[personStep]];
+
+  $('#ctl').hidden = false;
+  $('#slider').max = String(list.length);
+  $('#slider').value = String(personStep + 1);
+  $('#count').textContent = `${p.name} · event ${personStep + 1} of ${list.length}`;
+  $('#card').innerHTML =
+    `<div class="evtitle">${esc(p.name)}</div>
+     ${p.descriptor ? `<div class="evpass">${esc(p.descriptor)}</div>` : ''}
+     <div style="margin-top:8px">${srcButton('person', p.id)}</div>
+     <div class="evlabel">Now</div>${eventDetail(e)}
+     <div class="evlabel">All ${list.length} events</div>${eventList(list, list[personStep])}`;
+  fixIcons();
+
+  if (map) {
+    overlay.clearLayers();
+    // The journey: one point per event, the first mapped place of each, in
+    // order. Consecutive repeats collapsed, so a stay in one city is a dot and
+    // not a line folding back on itself.
+    const journey = [];
+    for (const i of list) {
+      const ev = EVENTS[i];
+      const first = mapped([...ev.places, ...ev.route])[0];
+      if (!first) continue;
+      const pt = [first.lat, first.lng];
+      const last = journey[journey.length - 1];
+      if (!last || last[0] !== pt[0] || last[1] !== pt[1]) journey.push(pt);
+    }
+    if (journey.length > 1) {
+      Leaf.polyline(journey, { color: css('--plum'), weight: 2, opacity: .6 }).addTo(overlay);
+    }
+    journey.forEach(pt => Leaf.circleMarker(pt, { radius: 3, weight: 0, fillColor: css('--plum'),
+                                                   fillOpacity: .8 }).addTo(overlay));
+    const here = drawEvent(e, { fit: false });
+    if (changed) fitTo(journey.length ? journey : here);
+    else if (here.length) fitTo(here);
+  }
+  setHash(`person=${id}&step=${personStep + 1}`);
+}
+
+function showPlace(id) {
+  if (mode !== 'place') setMode('place');
+  placeId = id;
+  const p = PLACE.get(id);
+  const list = BY_PLACE.get(id) || [];
+  $('#ctl').hidden = true;
+  $('#card').innerHTML = p
+    ? `<div class="evtitle">${esc(p.name)}</div>
+       <div class="evpass">${list.length} event${list.length === 1 ? '' : 's'}</div>
+       ${p.lat == null ? `<div class="nolocation">${esc(p.name)} has no known location, so it
+         isn't shown on the map. Its events are still listed below.</div>` : ''}
+       <div style="margin-top:8px">${srcButton('place', p.id)}</div>
+       <div class="evlabel">What happened here</div>${eventList(list, -1)}`
+    : '<div class="empty">Click a place on the map, or search for one.</div>';
+
+  if (map && p) {
+    overlay.clearLayers();
+    if (p.lat != null) {
+      // A marker, not a circle: markers draw above the place dots (which are
+      // markers too), so the selection cannot end up buried under them.
+      const d = dotSize(list.length) + 10;
+      Leaf.marker([p.lat, p.lng], {
+        zIndexOffset: 1000, interactive: false,
+        icon: Leaf.divIcon({ className: '', html: '<div class="psel"></div>',
+                             iconSize: [d, d], iconAnchor: [d / 2, d / 2] }),
+      })
+        .bindTooltip(esc(p.name), { direction: 'top', className: 'ptip', permanent: true,
+                                    offset: [0, -d / 2] })
+        .addTo(overlay);
+      // Zoom 9 is where grouping stops, so the chosen place is never hidden
+      // inside a numbered circle.
+      map.setView([p.lat, p.lng], Math.max(map.getZoom(), 9));
+    }
+  }
+  if (p) setHash(`place=${id}`);
+}
+
+function openMode(m) {
+  if (m === 'timeline') return showEvent(idx);
+  if (m === 'person') {
+    if (personId != null) return showPerson(personId, personStep);
+    setMode('person');
+    $('#ctl').hidden = true;
+    $('#card').innerHTML = '<div class="empty">Search for a person, or click a name on any event.</div>';
+    return;
+  }
+  if (placeId != null) return showPlace(placeId);
+  setMode('place');
+  $('#ctl').hidden = true;
+  $('#card').innerHTML = '<div class="empty">Click a place on the map, or search for one.</div>';
+}
+
+function step(delta) {
+  if (mode === 'timeline') showEvent(idx + delta);
+  else if (mode === 'person' && personId != null) showPerson(personId, personStep + delta);
+}
+
+// ---------------------------------------------------------------- search --
+// A <datalist> per mode. Labels carry the ID because names repeat -- there are
+// many Zechariahs -- and the label is the only thing the input hands back.
+
+function fillSearch() {
+  SEARCH.clear();
+  if (mode === 'timeline') {
+    EVENTS.forEach((e, i) => SEARCH.set(`${e.passage} — ${e.title}`, () => showEvent(i)));
+  } else if (mode === 'person') {
+    for (const p of PERSON.values()) {
+      const n = (BY_PERSON.get(p.id) || []).length;
+      SEARCH.set(`${p.name}${p.descriptor ? ` (${p.descriptor})` : ''} · ${n} event${n === 1 ? '' : 's'} · #${p.id}`,
+                 () => showPerson(p.id));
+    }
+  } else {
+    for (const p of PLACE.values()) {
+      const n = (BY_PLACE.get(p.id) || []).length;
+      SEARCH.set(`${p.name} · ${n} event${n === 1 ? '' : 's'} · #${p.id}`, () => showPlace(p.id));
+    }
+  }
+  $('#sqlist').innerHTML = [...SEARCH.keys()]
+    .map(k => `<option value="${esc(k)}"></option>`).join('');
+}
+
+function runSearch() {
+  const q = $('#sq').value.trim();
+  const exact = SEARCH.get(q);
+  if (exact) { $('#sq').blur(); return exact(); }
+  // Not picked from the list: take the first label that contains the text.
+  const lower = q.toLowerCase();
+  const hit = q && [...SEARCH.keys()].find(k => k.toLowerCase().includes(lower));
+  if (hit) { $('#sq').value = hit; SEARCH.get(hit)(); }
+}
+
+$('#sf').onsubmit = ev => { ev.preventDefault(); runSearch(); };
+// Picking an option from the datalist fires `input` with the full label; act on
+// it straight away rather than waiting for Enter.
+$('#sq').addEventListener('input', () => { if (SEARCH.has($('#sq').value)) runSearch(); });
+
+// ---------------------------------------------------------------- wiring --
+
+$('#prev').onclick = () => step(-1);
+$('#next').onclick = () => step(1);
+$('#slider').addEventListener('input', ev => {
+  const n = +ev.target.value - 1;
+  if (mode === 'timeline') showEvent(n);
+  else if (mode === 'person' && personId != null) showPerson(personId, n);
+});
+
+window.addEventListener('keydown', e => {
+  if (e.target.matches('input, select, textarea')) return;
+  if (e.key === 'ArrowLeft') step(-1);
+  if (e.key === 'ArrowRight') step(1);
+});
+
+document.addEventListener('click', ev => {
+  const m = ev.target.closest('[data-mode]');
+  if (m) return openMode(m.dataset.mode);
+  const person = ev.target.closest('[data-person]');
+  if (person) return showPerson(+person.dataset.person);
+  const place = ev.target.closest('[data-place]');
+  if (place) return showPlace(+place.dataset.place);
+  const row = ev.target.closest('[data-event]');
+  if (row) {
+    const i = EV_INDEX.get(+row.dataset.event);
+    // Inside a person's list, stay in their journey; anywhere else, go to the
+    // timeline at that event.
+    if (mode === 'person' && personId != null) {
+      const s = BY_PERSON.get(personId).indexOf(i);
+      if (s >= 0) return showPerson(personId, s);
+    }
+    return showEvent(i);
+  }
+});
+
+// The hash is an address: a pasted /biblemap#person=78 lands on that journey.
+function fromHash() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (h.has('event') && EV_INDEX.has(+h.get('event'))) { showEvent(EV_INDEX.get(+h.get('event'))); return true; }
+  if (h.has('person') && BY_PERSON.has(+h.get('person'))) {
+    showPerson(+h.get('person'), (+h.get('step') || 1) - 1); return true;
+  }
+  if (h.has('place') && PLACE.has(+h.get('place'))) { showPlace(+h.get('place')); return true; }
+  return false;
+}
+window.addEventListener('hashchange', () => { if (EVENTS.length) fromHash(); });
+
+boot();
+</script>
+</body>
+</html>

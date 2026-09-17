@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library — bible map source data</title>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+/* Page-local while the Bible map is a prototype. */
+.pagebody.srcbody { display: flex; gap: var(--s4); overflow: hidden; padding-bottom: var(--s5); }
+.srcmain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--s2); }
+.srcinfo { display: flex; align-items: center; gap: var(--s3); font-size: var(--t-meta); color: var(--muted); flex-wrap: wrap; }
+.srcinfo .srcfile { color: var(--ink); font-weight: 500; }
+.srcgrid { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--line); border-radius: 12px; }
+.srcgrid table { border-collapse: separate; border-spacing: 0; font-size: var(--t-meta); }
+.srcgrid th, .srcgrid td {
+  padding: 5px 10px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line);
+  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
+}
+.srcgrid thead th {
+  position: sticky; top: 0; z-index: 2; background: var(--surface);
+  font-weight: 600; color: var(--ink);
+}
+.srcgrid thead th.used { background: var(--accent-soft); color: var(--accent-ink); }
+.srcgrid .rn {
+  position: sticky; left: 0; z-index: 1; background: var(--surface);
+  color: var(--dim); text-align: right; min-width: 44px;
+}
+.srcgrid thead .rn { z-index: 3; }
+.srcgrid tbody tr { cursor: pointer; }
+.srcgrid tbody tr:hover td { background: var(--surface); }
+.srcgrid tbody tr.on td, .srcgrid tbody tr.on .rn { background: var(--accent-soft); color: var(--accent-ink); }
+.srcgrid td.nil { color: var(--dim); }
+.srcgrid td.todo { color: var(--bad); }
+.srcdetail {
+  width: 400px; flex: none; overflow-y: auto; background: var(--surface);
+  border-radius: 16px; padding: var(--s4);
+}
+.srcdetail h2 { font-size: var(--t-title); font-weight: 500; margin: 0 0 var(--s1); }
+.kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px var(--s3); font-size: var(--t-meta); margin-top: var(--s4); }
+.kv .k { color: var(--muted); word-break: break-word; }
+.kv .k.used { color: var(--accent-ink); font-weight: 600; }
+.kv .v { white-space: pre-wrap; word-break: break-word; }
+.kv .v.nil { color: var(--dim); }
+.idlink { color: var(--accent); text-decoration: underline dotted; text-underline-offset: 2px; }
+.idlink:hover { text-decoration-style: solid; }
+.idname { color: var(--muted); }
+.idbad { color: var(--bad); }
+.legend { font-size: var(--t-meta); color: var(--muted); }
+.legend b { background: var(--accent-soft); color: var(--accent-ink); padding: 1px 6px; border-radius: 4px; font-weight: 600; }
+@media (max-width: 1000px) {
+  .pagebody.srcbody { flex-direction: column; overflow-y: auto; }
+  .srcgrid { flex: none; height: 60vh; }
+  .srcdetail { width: auto; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <aside class="side">
+    <div class="brand"><span class="logo"></span>Library</div>
+    <nav class="snav">
+      <a href="/">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M12 7v10"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Classrooms</a>
+      <a href="/library">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        Drive</a>
+      <a href="/queue">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Processing</a>
+      <a href="/runs">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+        Activity</a>
+      <!--bible--><a href="/bible">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        Bible</a><!--/bible-->
+      <!--biblemap--><a href="/biblemap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/></svg>
+        Bible map</a>
+      <a href="/biblemap/source" class="on">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+        Source data</a><!--/biblemap-->
+    </nav>
+    <div class="sidefoot" id="sidefoot"></div>
+  </aside>
+
+  <div class="page">
+    <div class="pagehead">
+      <h1>Source data</h1>
+      <div class="modes" id="tabs" style="display:flex;gap:4px"></div>
+      <span style="flex:1"></span>
+      <form class="searchpill" id="sf" style="max-width:320px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="text" id="sq" autocomplete="off" placeholder="Filter rows…">
+      </form>
+    </div>
+
+    <div class="pagebody srcbody">
+      <div class="srcmain">
+        <div class="srcinfo" id="info"></div>
+        <div class="srcgrid" id="grid"><div class="empty">loading…</div></div>
+      </div>
+      <aside class="srcdetail" id="detail">
+        <div class="empty">Click a row to see every column in full.</div>
+      </aside>
+    </div>
+  </div>
+
+</div>
+
+<script src="/static/app.js"></script>
+<script>
+// The four source files exactly as the loader read them: every row and column,
+// as text, numbered the way Excel numbers them. Columns the map reads are
+// highlighted, so it is clear which cells can change what the map shows.
+
+const LIMIT = 200;
+const LABEL = { events: 'Events', places: 'Places', new_places: 'New places', people: 'People' };
+// Where a row's record opens on the map.
+const MAP_LINK = { events: 'event', places: 'place', new_places: 'place', people: 'person' };
+
+let FILES = [];
+let cur = null;          // {file, offset, total, q, rows}
+let selected = null;     // row number
+let NAMES = { place: {}, person: {} };   // id -> name, for labelling ID links
+
+async function boot() {
+  let d;
+  try {
+    d = await fetchJSON('/api/biblemap/sources', {}, 15000);
+  } catch (err) {
+    $('#grid').innerHTML = `<div class="failnote">${esc(err.message)}</div>`;
+    return;
+  }
+  if (!d.loaded) {
+    $('#grid').innerHTML =
+      '<div class="empty">No map data loaded yet. Run ' +
+      '<code>python -m library_rag.cli.biblemap --load ../biblemap_project</code></div>';
+    return;
+  }
+  FILES = d.files;
+  NAMES = d.names;
+  $('#tabs').innerHTML = FILES.map(f =>
+    `<button class="chip" data-file="${esc(f.key)}">${esc(LABEL[f.key] || f.key)}
+       <span class="sub">${f.rows.toLocaleString()}</span></button>`).join('');
+  $('#sidefoot').textContent = `Loaded ${new Date(FILES[0].loaded_at).toLocaleString()}`;
+  await fromHash() || open(FILES[0].key);
+}
+
+function fileOf(key) { return FILES.find(f => f.key === key); }
+
+// A cell as HTML. In an ID column (file.links) every ID becomes a link to the
+// row it names -- the foreign keys between the spreadsheets, made clickable. A
+// link is a plain #place=527 address, so it lands through fromHash like any
+// other and the browser's Back button returns to the row you came from.
+// `named` adds each ID's name after it, for the detail panel where there is room.
+function cellHtml(file, column, v, named = false) {
+  const kind = file.links && file.links[column];
+  if (!kind || !/^[\d,\s]+$/.test(v)) return esc(v);
+  return v.split(/(\d+)/).map(tok => {
+    // With names in between, "1189,527" needs the space the raw cell lacks.
+    if (!/^\d+$/.test(tok)) return named && tok.trim() === ',' ? ', ' : esc(tok);
+    const name = NAMES[kind][tok];
+    if (name === undefined) {
+      return `<span class="idbad" title="No ${kind} has ID ${tok}">${tok}</span>`;
+    }
+    return `<a class="idlink" href="#${kind}=${tok}" title="${kind} ${tok}: ${esc(name)}">${tok}</a>` +
+           (named ? ` <span class="idname">${esc(name)}</span>` : '');
+  }).join('');
+}
+
+// ------------------------------------------------------------------ grid --
+
+async function open(key, { row = null, offset = 0, q = '' } = {}) {
+  const file = fileOf(key);
+  if (!file) return;
+  document.querySelectorAll('[data-file]').forEach(b =>
+    b.classList.toggle('on', b.dataset.file === key));
+  $('#sq').value = q;
+
+  const params = new URLSearchParams({ limit: LIMIT, offset, q });
+  if (row) params.set('row', row);
+  let d;
+  try {
+    d = await fetchJSON(`/api/biblemap/sources/${encodeURIComponent(key)}?${params}`, {}, 20000);
+  } catch (err) {
+    $('#grid').innerHTML = `<div class="failnote">${esc(err.message)}</div>`;
+    return;
+  }
+  cur = { file, offset: d.offset, total: d.total, q: d.q, rows: d.rows };
+  renderGrid();
+  if (row) select(row, true); else showDetail(null);
+}
+
+function renderGrid() {
+  const { file, rows, offset, total, q } = cur;
+  const used = new Set(file.used);
+  const from = total ? offset + 1 : 0, to = offset + rows.length;
+  $('#info').innerHTML = `
+    <span class="srcfile">${esc(file.filename)}</span>
+    <span>${q ? `${total.toLocaleString()} rows contain “${esc(q)}”` : `${total.toLocaleString()} rows`}
+      · showing ${from.toLocaleString()}–${to.toLocaleString()}</span>
+    <button class="btn step" id="pprev" ${offset ? '' : 'disabled'}>‹</button>
+    <button class="btn step" id="pnext" ${to < total ? '' : 'disabled'}>›</button>
+    <span class="legend"><b>Highlighted</b> columns are read by the map${
+      Object.keys(file.links || {}).length ? ' · <span class="idlink">underlined</span> IDs open their row' : ''}</span>`;
+
+  $('#grid').innerHTML = rows.length ? `
+    <table>
+      <thead><tr><th class="rn">Row</th>${file.columns.map(c =>
+        `<th class="${used.has(c) ? 'used' : ''}" title="${esc(c)}">${esc(c)}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map(r => `
+        <tr data-row="${r.row}" class="${r.row === selected ? 'on' : ''}">
+          <td class="rn">${r.row}</td>${r.cells.map((v, i) =>
+            `<td class="${v === '' ? 'nil' : /TODO/.test(v) ? 'todo' : ''}" title="${esc(v)}">${cellHtml(file, file.columns[i], v)}</td>`
+          ).join('')}
+        </tr>`).join('')}</tbody>
+    </table>` : '<div class="empty">No rows match.</div>';
+}
+
+function select(rowNum, scroll = false) {
+  selected = rowNum;
+  document.querySelectorAll('#grid tr[data-row]').forEach(tr =>
+    tr.classList.toggle('on', +tr.dataset.row === rowNum));
+  const r = cur.rows.find(x => x.row === rowNum);
+  showDetail(r);
+  if (scroll) {
+    const tr = document.querySelector(`#grid tr[data-row="${rowNum}"]`);
+    if (tr) tr.scrollIntoView({ block: 'center' });
+  }
+  history.replaceState(null, '', `#file=${cur.file.key}&row=${rowNum}`);
+}
+
+function showDetail(r) {
+  if (!r) {
+    $('#detail').innerHTML = '<div class="empty">Click a row to see every column in full.</div>';
+    return;
+  }
+  const { file } = cur;
+  const used = new Set(file.used);
+  const kind = MAP_LINK[file.key];
+  $('#detail').innerHTML = `
+    <h2>${esc(LABEL[file.key])} · row ${r.row}</h2>
+    <div class="sub">${esc(file.filename)}</div>
+    ${r.id != null
+      ? `<p><a class="btn soft" href="/biblemap#${kind}=${r.id}" target="_blank">Open on the map</a>
+           <span class="sub">${kind} ${r.id}</span></p>`
+      : '<p class="sub">This row was not loaded onto the map (blank, or no ID).</p>'}
+    <div class="kv">${file.columns.map((c, i) => {
+      const v = r.cells[i] ?? '';
+      return `<div class="k ${used.has(c) ? 'used' : ''}">${esc(c)}</div>
+              <div class="v ${v === '' ? 'nil' : ''}">${v === '' ? '(empty)' : cellHtml(file, c, v, true)}</div>`;
+    }).join('')}</div>`;
+}
+
+// -------------------------------------------------------------- wiring --
+
+document.addEventListener('click', ev => {
+  // An ID link navigates by its href; it must not also select the row it sits in.
+  if (ev.target.closest('a.idlink')) return;
+  const tab = ev.target.closest('[data-file]');
+  if (tab) return open(tab.dataset.file);
+  if (ev.target.closest('#pprev')) return open(cur.file.key, { offset: Math.max(cur.offset - LIMIT, 0), q: cur.q });
+  if (ev.target.closest('#pnext')) return open(cur.file.key, { offset: cur.offset + LIMIT, q: cur.q });
+  const tr = ev.target.closest('#grid tr[data-row]');
+  if (tr) select(+tr.dataset.row);
+});
+
+$('#sf').onsubmit = ev => {
+  ev.preventDefault();
+  if (cur) open(cur.file.key, { q: $('#sq').value.trim() });
+};
+
+// Addresses: #file=events&row=41 opens that row; #event=40, #place=354 and
+// #person=58 find the row a map record came from -- that is what the map's
+// "Show in original data" buttons link to.
+async function fromHash() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  if (h.has('file') && fileOf(h.get('file'))) {
+    await open(h.get('file'), { row: +h.get('row') || null });
+    return true;
+  }
+  for (const kind of ['event', 'place', 'person']) {
+    if (!h.has(kind)) continue;
+    try {
+      const hit = await fetchJSON(`/api/biblemap/locate?kind=${kind}&id=${encodeURIComponent(h.get(kind))}`, {}, 15000);
+      await open(hit.key, { row: hit.row });
+    } catch (err) {
+      $('#grid').innerHTML = `<div class="failnote">${esc(err.message)}</div>`;
+      return true;  // the message IS the answer; do not cover it with another file
+    }
+    return true;
+  }
+  return false;
+}
+window.addEventListener('hashchange', () => { if (FILES.length) fromHash(); });
+
+boot();
+</script>
+</body>
+</html>

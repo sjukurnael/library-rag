@@ -177,7 +177,9 @@ def conn(test_database_url, monkeypatch):
             # next one, where "list every classroom" quietly returns someone
             # else's. CASCADE carries classroom_books and the runs with it.
             "TRUNCATE books, drive_files, bible_verses, allowed_users, "
-            "drive_credentials, research_runs, classrooms "
+            "drive_credentials, research_runs, classrooms, "
+            # CASCADE carries the three biblemap link tables with these.
+            "biblemap.events, biblemap.people, biblemap.places, biblemap.source_files "
             "RESTART IDENTITY CASCADE"
         )
         c.commit()

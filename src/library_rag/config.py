@@ -403,6 +403,13 @@ SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "").lower() in {
 # hiding the link while leaving /bible reachable would be a menu that lies.
 BIBLE_ENABLED = os.environ.get("BIBLE_ENABLED", "").lower() in {"1", "true", "yes"}
 
+# ---- Bible map ----
+# The map of biblical places, people and events (library_rag/biblemap.py).
+# Off by default. BIBLEMAP_ENABLED=1 opens /biblemap, the source viewer at
+# /biblemap/source, their API, and both nav entries together -- the same
+# page-routes-and-link gate as BIBLE_ENABLED above.
+BIBLEMAP_ENABLED = os.environ.get("BIBLEMAP_ENABLED", "").lower() in {"1", "true", "yes"}
+
 
 # ---- Classrooms ----
 # The most books one classroom may hold.

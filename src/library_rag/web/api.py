@@ -45,7 +45,7 @@ from fastapi.responses import (
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
-from library_rag import bible, config, db, ingest, jobs, storage
+from library_rag import bible, biblemap, config, db, ingest, jobs, storage
 from library_rag.drive import client as drive_client
 from library_rag.drive import mirror
 from library_rag.drive import store as drive_store
@@ -222,6 +222,9 @@ class LibrarianRequest(BaseModel):
 # The Bible nav entry in every page, between markers, so config.BIBLE_ENABLED
 # can take it out in one place instead of five.
 _BIBLE_NAV = re.compile(r"[ \t]*<!--bible-->.*?<!--/bible-->\n?", re.S)
+# The same for the Bible map's two entries (the map and its source viewer),
+# under config.BIBLEMAP_ENABLED.
+_BIBLEMAP_NAV = re.compile(r"[ \t]*<!--biblemap-->.*?<!--/biblemap-->\n?", re.S)
 
 
 def _page(name: str) -> Response:
@@ -239,9 +242,13 @@ def _page(name: str) -> Response:
     returns 404. Removing it is the honest version, and it costs one regex on a
     file we were already reading.
     """
-    if config.BIBLE_ENABLED:
+    if config.BIBLE_ENABLED and config.BIBLEMAP_ENABLED:
         return FileResponse(_STATIC / name, headers={"Cache-Control": "no-cache"})
-    html = _BIBLE_NAV.sub("", (_STATIC / name).read_text(encoding="utf-8"))
+    html = (_STATIC / name).read_text(encoding="utf-8")
+    if not config.BIBLE_ENABLED:
+        html = _BIBLE_NAV.sub("", html)
+    if not config.BIBLEMAP_ENABLED:
+        html = _BIBLEMAP_NAV.sub("", html)
     return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 
@@ -1511,6 +1518,108 @@ def bible_search(q: str):
             for b, name, c, v, t in rows
         ],
     }
+
+
+# ---------------------------------------------------------------- bible map --
+# Biblical places, people and events on a map. See migrations/0018_biblemap.sql
+# and library_rag/biblemap.py. A prototype behind config.BIBLEMAP_ENABLED, gated
+# page and API together for the same reason as the Bible above.
+
+
+def _require_biblemap() -> None:
+    """404 when the map is switched off. See _require_bible for why not 403."""
+    if not config.BIBLEMAP_ENABLED:
+        raise HTTPException(404, "Not found.")
+
+
+@app.get("/biblemap")
+def biblemap_page():
+    _require_biblemap()
+    return _page("biblemap.html")
+
+
+@app.get("/api/biblemap/data")
+def biblemap_data():
+    """Every event with its places, route and people, plus the places and
+    people they mention -- the whole map in one response.
+
+    `loaded` false on an empty or unmigrated database, so the page can say which
+    command to run instead of showing a 500.
+    """
+    _require_biblemap()
+    with db.get_conn() as conn:
+        if not biblemap.loaded(conn):
+            return {"loaded": False, "events": [], "places": [], "people": []}
+        return {"loaded": True, **biblemap.data(conn)}
+
+
+@app.get("/biblemap/source")
+def biblemap_source_page():
+    """The source spreadsheets as they were loaded, for checking the map
+    against them. Reached from "Show in original data" on the map."""
+    _require_biblemap()
+    return _page("biblemap_source.html")
+
+
+@app.get("/api/biblemap/sources")
+def biblemap_sources():
+    _require_biblemap()
+    with db.get_conn() as conn:
+        if not biblemap.loaded(conn):
+            return {"loaded": False, "files": []}
+        rows = biblemap.source_files(conn)
+        names = biblemap.record_names(conn)
+    return {
+        "loaded": True,
+        "files": [
+            {"key": key, "filename": filename, "columns": columns, "rows": n,
+             "used": biblemap.USED_COLUMNS.get(key, []),
+             "links": biblemap.LINK_COLUMNS.get(key, {}),
+             "loaded_at": loaded_at.isoformat()}
+            for key, filename, columns, n, loaded_at in rows
+        ],
+        # ~5,000 id -> name pairs, fetched once, so an ID link can say what it
+        # points at without a request per hover.
+        "names": names,
+    }
+
+
+# Rows per window of the source viewer. The People file is 43 columns wide, so
+# a full 3,688-row table is ~160k cells -- enough to make the browser stutter.
+SOURCE_PAGE_MAX = 500
+
+
+@app.get("/api/biblemap/sources/{key}")
+def biblemap_source_rows(
+    key: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=SOURCE_PAGE_MAX),
+    q: str = "",
+    row: int | None = Query(None, ge=1),
+):
+    """One window of a source file. With `row`, the window is moved so that
+    row is in it -- which is how a link to one row opens on that row."""
+    _require_biblemap()
+    q = q.strip()
+    with db.get_conn() as conn:
+        if row is not None and not q:
+            offset = biblemap.source_row_index(conn, key, row) // limit * limit
+        total, rows = biblemap.source_page(conn, key, offset, limit, q)
+    return {
+        "key": key, "offset": offset, "limit": limit, "q": q, "total": total,
+        "rows": [{"row": r, "id": rid, "cells": cells} for r, rid, cells in rows],
+    }
+
+
+@app.get("/api/biblemap/locate")
+def biblemap_locate(kind: Literal["event", "place", "person"], id: int):
+    """Which source file and row a map record came from."""
+    _require_biblemap()
+    with db.get_conn() as conn:
+        hit = biblemap.locate(conn, kind, id)
+    if not hit:
+        raise HTTPException(404, f"No source row for {kind} {id}.")
+    return {"key": hit[0], "row": hit[1]}
 
 
 # -------------------------------------------------------------------- auth --

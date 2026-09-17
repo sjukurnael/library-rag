@@ -49,7 +49,8 @@ function makeDom() {
 
 const results = [];
 for (const page of ['classrooms.html', 'classroom.html', 'library.html',
-                    'queue.html', 'bible.html']) {
+                    'queue.html', 'bible.html', 'biblemap.html',
+                    'biblemap_source.html']) {
   const html = fs.readFileSync(path.join(STATIC, page), 'utf8');
 
   // 1. The page must actually link the shared bundle.
