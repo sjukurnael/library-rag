@@ -98,7 +98,7 @@ const _retries = new Map();
 let _retryId = 0;
 
 function failed(message, err, retry) {
-  const detail = err ? String(err.message || err) : '';
+  const detail = errText(err);
   let attr = '';
   if (retry) { _retries.set(++_retryId, retry); attr = ` data-retry="${_retryId}"`; }
   return `<div class="failnote"><span class="fmsg">${esc(message)}` +
@@ -148,6 +148,68 @@ function progress(el, { label, normal = 8, hint = '' } = {}) {
   };
 }
 
+// FastAPI's `detail` is a string for a raised HTTPException but a LIST OF
+// OBJECTS for a 422 -- the schema rejected the request before the handler ran.
+// Passed to Error() as-is that array stringifies to "[object Object]", which is
+// what a reader saw when a 64-book selection hit the shelf cap: the server had
+// said exactly what was wrong and the page threw the sentence away.
+//
+// Flattening it is not enough on its own. Pydantic writes for the developer who
+// wrote the schema -- "book_ids: List should have at most 80 items after
+// validation, not 64" names a JSON field nobody typed and a validation pass
+// nobody asked about. So the field gets the reader's word for it and the common
+// failures get a sentence, with pydantic's own wording kept only as the
+// last-resort case for a rule this map has not been taught.
+const _FIELD_WORDS = {
+  book_ids: 'books', rationales: 'notes', rationale: 'note',
+  added_by: 'who added it', name: 'name', brief: 'brief',
+  file_ids: 'files', question: 'question', model: 'model', count: 'count',
+};
+
+function _oneDetail(e) {
+  // loc is like ["body", "book_ids"]; the field is the part worth naming.
+  const raw = Array.isArray(e.loc)
+    ? e.loc.filter(x => typeof x === 'string' && x !== 'body').pop() : null;
+  const word = raw ? (_FIELD_WORDS[raw] || raw.replace(/_/g, ' ')) : null;
+  const ctx = e.ctx || {};
+  switch (e.type) {
+    case 'too_long':
+      return word && ctx.max_length != null
+        ? `That is more ${word} than fit — ${ctx.max_length} is the limit.`
+        : `That is more than fits.`;
+    case 'too_short':
+      return word ? `Pick at least one of the ${word}.` : `Nothing was selected.`;
+    case 'missing':
+      return word ? `Missing the ${word}.` : `Something required was missing.`;
+    case 'string_too_long':
+      return word && ctx.max_length != null
+        ? `The ${word} is too long — ${ctx.max_length} characters is the limit.`
+        : `That text is too long.`;
+    case 'string_too_short':
+      return word ? `The ${word} cannot be empty.` : `That cannot be empty.`;
+  }
+  const msg = e.msg || e.type || 'invalid';
+  return word ? `${word}: ${msg}` : msg;
+}
+
+// An Error carrying an empty message stringifies to the bare word "Error",
+// which is how a failure ends up reported as "Could not add them - Error".
+// Nothing is a better report than that, so an empty one says so plainly.
+function errText(err) {
+  if (!err) return '';
+  const m = typeof err === 'string' ? err : String(err.message || '');
+  return m.trim() || 'the server did not say what went wrong';
+}
+
+function detailText(d, fallback) {
+  const detail = d && d.detail;
+  if (typeof detail === 'string' && detail) return detail;
+  if (Array.isArray(detail) && detail.length) {
+    return detail.map(_oneDetail).join(' ');
+  }
+  return fallback;
+}
+
 // fetch() has NO default timeout: a request the server never answers hangs
 // forever and the page waits with it. Every non-streaming call goes through
 // this instead so a dead backend surfaces as a message rather than a spinner.
@@ -157,7 +219,7 @@ async function fetchJSON(url, opts = {}, timeoutMs = 30000) {
   try {
     const r = await fetch(url, { ...opts, signal: ctrl.signal });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(d.detail || `${r.status} ${r.statusText}`);
+    if (!r.ok) throw new Error(detailText(d, `${r.status} ${r.statusText}`));
     return d;
   } catch (e) {
     if (e.name === 'AbortError') {
@@ -522,7 +584,7 @@ function wireIndexButtons(root, lookup) {
         body: JSON.stringify({ file_ids: [book.file_id] }),
       });
       const d = await r.json();
-      if (!r.ok) throw new Error(d.detail || `failed (${r.status})`);
+      if (!r.ok) throw new Error(detailText(d, `failed (${r.status})`));
       btn.textContent = d.added.length ? 'Queued' : 'Already yours';
       // The queue page and the sidebar report the ingest from here on -- no
       // second progress mechanism needed.
@@ -771,13 +833,23 @@ async function newClassroom() {
  * drifts between them is worse than either.
  */
 let _roomCache = null;
+// The shelf cap, as the server reports it. Kept rather than hardcoded: it is a
+// server constant the picker must agree with, and a page carrying its own copy
+// would start lying the day the cap moves.
+let _roomMax = null;
 
 async function _rooms(force) {
   if (!_roomCache || force) {
     const d = await fetchJSON('/api/classrooms', {}, 15000);
     _roomCache = d.classrooms || [];
+    if (typeof d.max_books === 'number') _roomMax = d.max_books;
   }
   return _roomCache;
+}
+
+// How many more books this shelf can take, or null when the cap is unknown.
+function _room(r) {
+  return _roomMax == null ? null : Math.max(0, _roomMax - (r.book_count || 0));
 }
 
 function _pickerEl() {
@@ -795,6 +867,7 @@ function _pickerEl() {
       </div>
       <div class="rpsub" id="rpsub"></div>
       <div class="rplist" id="rplist"></div>
+      <div class="rpfoot" id="rpfoot" hidden></div>
     </div>`;
   document.body.appendChild(el);
   const close = () => { el.hidden = true; };
@@ -813,7 +886,13 @@ async function pickClassroom({ bookId, title, preferId = null,
                                onAdded = null }) {
   const el = _pickerEl();
   const list = el.querySelector('#rplist');
+  // The element is shared with pickClassrooms below, so both modes state their
+  // own heading and footer rather than inheriting the last open's.
+  el.querySelector('#rpt').textContent = 'Add to classroom';
+  el.querySelector('#rpsub').className = 'rpsub';
   el.querySelector('#rpsub').textContent = title || '';
+  el.querySelector('#rpfoot').hidden = true;
+  list.onchange = null;                    // left behind by the bulk picker
   list.innerHTML = '<div class="prog">loading…</div>';
   el.hidden = false;
 
@@ -835,15 +914,19 @@ async function pickClassroom({ bookId, title, preferId = null,
   const order = [...rooms].sort((a, b) =>
     (b.id === preferId) - (a.id === preferId) || a.name.localeCompare(b.name));
 
-  list.innerHTML = order.map(r => `
-    <button class="rprow" data-room="${r.id}">
+  list.innerHTML = order.map(r => {
+    const full = _room(r) === 0;
+    return `
+    <button class="rprow" data-room="${r.id}"${full ? ' disabled' : ''}>
       <span class="rpn">${esc(r.name)}</span>
       <span class="rpm">${r.book_count} book${r.book_count === 1 ? '' : 's'}${
-        r.id === preferId ? ' · <b>Default Classroom</b>' : ''}</span>
-      <span class="rpgo">Add</span>
-    </button>`).join('');
+        r.id === preferId ? ' · <b>Default Classroom</b>' : ''}${
+        full ? ' · <b>full</b>' : ''}</span>
+      <span class="rpgo">${full ? 'Full' : 'Add'}</span>
+    </button>`;
+  }).join('');
 
-  list.querySelectorAll('.rprow').forEach(btn => {
+  list.querySelectorAll('.rprow:not([disabled])').forEach(btn => {
     btn.addEventListener('click', async () => {
       const roomId = Number(btn.dataset.room);
       const go = btn.querySelector('.rpgo');
@@ -857,7 +940,7 @@ async function pickClassroom({ bookId, title, preferId = null,
         });
         if (!r.ok) {
           const d = await r.json().catch(() => ({}));
-          throw new Error(d.detail || r.statusText);
+          throw new Error(detailText(d, r.statusText));
         }
         go.textContent = 'Added ✓';
         btn.classList.add('ok');
@@ -866,10 +949,201 @@ async function pickClassroom({ bookId, title, preferId = null,
         setTimeout(() => { el.hidden = true; }, 700);
       } catch (err) {
         go.textContent = 'Add';
-        list.querySelectorAll('.rprow').forEach(b => b.disabled = false);
+        // Only the ones that were live to begin with: a shelf disabled because
+        // it is full must stay that way.
+        list.querySelectorAll('.rprow').forEach(b => {
+          if (_room(order.find(x => x.id === Number(b.dataset.room))) !== 0) {
+            b.disabled = false;
+          }
+        });
         btn.insertAdjacentHTML('afterend',
-          `<div class="rperr">${esc(String(err.message || err))}</div>`);
+          `<div class="rperr">${esc(errText(err))}</div>`);
       }
     });
+  });
+}
+
+
+/* One shelf, one batch -- but split by WHO chose each book.
+ *
+ * `added_by` is a property of the request, not of a row, so a mixed selection
+ * (some the librarian's picks, some books the reader ticked itself) needs one
+ * call per provenance. Sent as a single call it would record whichever label
+ * the batch carried across every book in it, and a shelf that says the
+ * librarian recommended something it never opened is worse than no label.
+ *
+ * Returns how many rows were actually new. The rest were already on the shelf:
+ * the insert is ON CONFLICT DO NOTHING, so re-adding is a no-op rather than an
+ * error, and the difference is the useful thing to report.
+ */
+async function _addBooks(roomId, books) {
+  let added = 0;
+  for (const by of ['librarian', 'reader']) {
+    const group = books.filter(b => (b.addedBy || 'reader') === by);
+    if (!group.length) continue;
+    // Per book, keyed by id as a string -- JSON has no integer keys. One quote
+    // stamped across a whole shortlist would make every book but one lie about
+    // why it is there.
+    const rationales = {};
+    for (const b of group) if (b.rationale) rationales[String(b.id)] = b.rationale;
+    const r = await fetch(`/api/classrooms/${roomId}/books`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        book_ids: group.map(b => Number(b.id)),
+        added_by: by,
+        rationales: Object.keys(rationales).length ? rationales : null,
+      }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(detailText(d, r.statusText));
+    }
+    added += (await r.json()).added || 0;
+  }
+  return added;
+}
+
+/* The same picker, for a whole selection at once.
+ *
+ * A twelve-book shortlist added one book at a time is twelve trips through the
+ * dialog, and it asks the wrong question each time: the reader's actual move is
+ * "put these on a shelf", not "put this one on a shelf, twelve times". So the
+ * books are a list, and the classrooms become checkboxes with a confirm -- the
+ * same selection can go to two shelves in one pass.
+ *
+ * `books` is [{ id, title, addedBy, rationale }, ...]; each keeps its own
+ * evidence. `onDone(roomId, room, added)` fires per shelf that succeeded, so a
+ * caller can repaint the one it is showing.
+ */
+async function pickClassrooms({ books, preferId = null, onDone = null }) {
+  const el = _pickerEl();
+  const list = el.querySelector('#rplist');
+  const foot = el.querySelector('#rpfoot');
+  const n = books.length;
+
+  el.querySelector('#rpt').textContent =
+    `Add ${n} book${n === 1 ? '' : 's'} to classrooms`;
+  // Wrapped and clamped rather than the single nowrap line a one-book pick
+  // gets: twenty titles on one line truncate to the first title and an
+  // ellipsis, which reads as a picker for one book.
+  el.querySelector('#rpsub').className = 'rpsub multi';
+  el.querySelector('#rpsub').textContent =
+    books.map(b => b.title || '(untitled)').join(' · ');
+  list.innerHTML = '<div class="prog">loading…</div>';
+  foot.hidden = true;
+  el.hidden = false;
+
+  let rooms;
+  try {
+    rooms = await _rooms();
+  } catch (err) {
+    list.innerHTML = failed('Could not load your classrooms', err,
+                            () => pickClassrooms({ books, preferId, onDone }));
+    return;
+  }
+  if (!rooms.length) {
+    list.innerHTML = `<div class="empty">No classrooms yet.
+      <a href="/">Make one</a> and it will show up here.</div>`;
+    return;
+  }
+
+  // Same order as the single picker: the run's own shelf first and marked.
+  // Ticked too, because it is where a shortlist almost always goes -- and a
+  // confirm button means a default can be helpful without being an accident.
+  const order = [...rooms].sort((a, b) =>
+    (b.id === preferId) - (a.id === preferId) || a.name.localeCompare(b.name));
+
+  // A shelf is capped, and the add is all-or-nothing: the request carries the
+  // whole selection and the server refuses the batch rather than taking the
+  // first few. So a shelf without room for all of them is shown as unavailable
+  // and says why, instead of being tickable and then failing at the end -- the
+  // reader learns the cap before spending the click, not after.
+  const fits = r => _room(r) === null || n <= _room(r);
+
+  list.innerHTML = order.map(r => {
+    const free = _room(r);
+    const ok = fits(r);
+    const why = ok ? '' : (free === 0
+      ? ` · <b>full</b>` : ` · <b>room for ${free} more</b>`);
+    return `
+    <label class="rprow multi${ok ? '' : ' off'}">
+      <input type="checkbox" data-room="${r.id}"${
+        ok && r.id === preferId ? ' checked' : ''}${ok ? '' : ' disabled'}>
+      <span class="rpn">${esc(r.name)}</span>
+      <span class="rpm">${r.book_count} book${r.book_count === 1 ? '' : 's'}${
+        r.id === preferId ? ' · <b>Default Classroom</b>' : ''}${why}</span>
+    </label>`;
+  }).join('');
+
+  // No shelf can hold the selection at all -- every one of them is over the cap
+  // on size alone. Saying it once at the top is the honest reading of a list
+  // where every row is greyed out.
+  const anyFits = order.some(fits);
+  if (!anyFits) {
+    list.insertAdjacentHTML('afterbegin',
+      `<div class="rpcap">A classroom holds at most ${_roomMax} books, and ` +
+      `${n} are selected. Narrow the selection, or add them to more than one ` +
+      `classroom in separate passes.</div>`);
+  }
+
+  foot.innerHTML = `
+    <span class="rpcount">${n} book${n === 1 ? '' : 's'} selected</span>
+    <button class="btn ghost" id="rpcancel">Cancel</button>
+    <button class="btn primary" id="rpadd">Add</button>`;
+  foot.hidden = false;
+
+  const boxes = () => [...list.querySelectorAll('input[type=checkbox]:not(:disabled)')];
+  const chosen = () => boxes().filter(b => b.checked).map(b => Number(b.dataset.room));
+  const add = foot.querySelector('#rpadd');
+  const cancel = foot.querySelector('#rpcancel');
+
+  const repaint = () => {
+    const k = chosen().length;
+    add.disabled = k === 0;
+    add.textContent = k > 1 ? `Add to ${k} classrooms` : 'Add';
+  };
+  list.onchange = repaint;
+  repaint();
+
+  cancel.addEventListener('click', () => { el.hidden = true; });
+
+  add.addEventListener('click', async () => {
+    const picks = chosen();
+    if (!picks.length) return;
+    boxes().forEach(b => b.disabled = true);
+    add.disabled = true;
+    add.textContent = 'Adding…';
+    list.querySelectorAll('.rpres').forEach(x => x.remove());
+
+    // One shelf at a time, and one failure does not stop the rest: a shelf that
+    // is full has nothing to do with the other three, and reporting per row is
+    // what lets the reader see which of them took the books.
+    for (const roomId of picks) {
+      const row = list.querySelector(`input[data-room="${roomId}"]`).closest('.rprow');
+      try {
+        const added = await _addBooks(roomId, books);
+        const dup = n - added;
+        row.classList.add('ok');
+        row.insertAdjacentHTML('afterend',
+          `<div class="rpres ok">Added ${added}${
+            dup ? ` · ${dup} already there` : ''}</div>`);
+        if (onDone) onDone(roomId, order.find(x => x.id === roomId), added);
+      } catch (err) {
+        row.insertAdjacentHTML('afterend',
+          `<div class="rpres bad">${esc(errText(err))}</div>`);
+      }
+    }
+    _roomCache = null;                 // the counts on those shelves just moved
+
+    // Closing on top of a failure hides the only account of what happened, so
+    // it stays open when anything went wrong and gets out of the way when
+    // nothing did.
+    if (list.querySelector('.rpres.bad')) {
+      add.textContent = 'Done';
+      cancel.textContent = 'Close';
+    } else {
+      add.textContent = 'Added ✓';
+      setTimeout(() => { el.hidden = true; }, 1100);
+    }
   });
 }

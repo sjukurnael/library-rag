@@ -446,14 +446,22 @@ def test_the_book_count_is_typed_and_bounded(client):
     html = (STATIC / "classroom.html").read_text()
     assert 'id="lc" type="number"' in html
 
-    # Derived, not hardcoded. The page's ceiling has to be the shelf's ceiling:
-    # offering more books than a classroom can hold turns a bound the reader
-    # could have learned from into a 409 after the librarian has already run.
-    cap = config.CLASSROOM_MAX_BOOKS
-    assert 'min="1"' in html and f'max="{cap}"' in html
-    assert f"const MAX_BOOKS = {cap}" in html
-    assert librarian_loop.MAX_COUNT == cap, (
-        "the API bound and the shelf cap must agree, or one of them is unreachable"
+    # Derived, not hardcoded. The page's ceiling is the LIBRARIAN's ceiling --
+    # the field asks how many books one run should return -- and that ceiling
+    # must stay at or under the shelf cap: offering more books than a classroom
+    # can hold turns a bound the reader could have learned from into a 409 after
+    # the librarian has already run.
+    #
+    # At or under, not equal. The two were equal while both were 50 and this
+    # asserted it, which read as a rule but was a coincidence: raising the shelf
+    # to 80 has no bearing on how many books one run is worth asking for, and
+    # forcing them to move together would have made a wider shelf silently buy a
+    # longer, costlier librarian run nobody asked for.
+    count_max = librarian_loop.MAX_COUNT
+    assert 'min="1"' in html and f'max="{count_max}"' in html
+    assert f"const MAX_BOOKS = {count_max}" in html
+    assert count_max <= config.CLASSROOM_MAX_BOOKS, (
+        "the librarian must never offer more books than a shelf can hold"
     )
 
     fn = html[html.index("function readCount()"):]

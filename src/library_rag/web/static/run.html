@@ -27,6 +27,12 @@
       <!--bible--><a href="/bible">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
         Bible</a><!--/bible-->
+      <!--biblemap--><a href="/biblemap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/></svg>
+        Bible map</a>
+      <a href="/biblemap/source">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+        Source data</a><!--/biblemap-->
     </nav>
 
     <div class="sideauth" id="sideauth" hidden></div>
@@ -39,6 +45,12 @@
       <div id="run"><div class="prog">loading…</div></div>
     </div>
   </div>
+</div>
+
+<div class="selbar" id="selbar" hidden>
+  <span class="selc" id="selcount"></span>
+  <button class="btn ghost" id="selclear">Clear</button>
+  <button class="btn primary" id="seladd">Add to classroom</button>
 </div>
 
 <div class="cardwrap" id="cardwrap" hidden>
@@ -64,6 +76,20 @@ let SHELF = new Set();
 let HAS_SHELF = false;
 let NANGLES = 0;
 let RUN_ROOM = null;   // the one this run was taken off, if any
+
+/* What the reader has ticked, as book ids.
+ *
+ * One Set for the whole page, not one per list. The shortlist and the
+ * considered table are two views of the same books -- a recommendation is a
+ * considered book with a reason attached -- so a book ticked in one has to show
+ * as ticked in the other, and adding it twice because it was ticked twice would
+ * be a bug the reader could see.
+ *
+ * The shortlist is the reason this exists at all: twelve recommendations put on
+ * a shelf one dialog at a time is twelve dialogs asking the same question. */
+let SEL = new Set();
+let REC = new Map();                       // book_id -> its shortlist entry
+let SCOPES = { considered: [], rec: [] };  // what each "select all" covers
 
 const MODEL_LABEL = { 'claude-sonnet-5': 'Sonnet', 'claude-opus-5': 'Opus' };
 const PRICE = { 'claude-sonnet-5': [2, 10], 'claude-opus-5': [5, 25] };
@@ -210,8 +236,68 @@ function userDid(b, hasShelf) {
   return '<span class="dim">—</span>';
 }
 
+/* Rendered from SEL rather than from a stored `checked` flag, so a table that
+   is re-rendered comes back with the same books ticked. */
+function selBox(bookId) {
+  return `<input type="checkbox" class="bsel" data-book="${bookId}"
+      aria-label="Select this book"${SEL.has(Number(bookId)) ? ' checked' : ''}>`;
+}
+
+function selAll(scope, label) {
+  return `<label class="selall-lab" title="Select every book in this list">
+      <input type="checkbox" class="selall" data-scope="${scope}">
+      ${label ? esc(label) : ''}</label>`;
+}
+
+/* The bar, and the state of every "select all" box.
+ *
+ * A "select all" is three-state, not two: with some of its list ticked it is
+ * neither on nor off, and a box that shows plain-unchecked over eight ticked
+ * books invites a click that silently clears them. `indeterminate` is the
+ * honest middle, and it can only be set from script. */
+function paintSel() {
+  const n = SEL.size;
+  $('#selbar').hidden = !n;
+  $('#selcount').textContent = `${n} book${n === 1 ? '' : 's'} selected`;
+  for (const [scope, ids] of Object.entries(SCOPES)) {
+    const box = document.querySelector(`input.selall[data-scope="${scope}"]`);
+    if (!box) continue;
+    const on = ids.filter(id => SEL.has(id)).length;
+    box.checked = ids.length > 0 && on === ids.length;
+    box.indeterminate = on > 0 && on < ids.length;
+  }
+}
+
+// Every checkbox for this book, wherever it is drawn, moves together.
+function syncBoxes() {
+  document.querySelectorAll('input.bsel').forEach(b => {
+    b.checked = SEL.has(Number(b.dataset.book));
+  });
+  paintSel();
+}
+
+// Delegated: the lists are re-rendered wholesale, and a listener bound to a
+// checkbox that no longer exists is a selection that stops responding.
+document.addEventListener('change', e => {
+  const one = e.target.closest('input.bsel');
+  if (one) {
+    const id = Number(one.dataset.book);
+    if (one.checked) SEL.add(id); else SEL.delete(id);
+    syncBoxes();
+    return;
+  }
+  const all = e.target.closest('input.selall');
+  if (all) {
+    for (const id of SCOPES[all.dataset.scope] || []) {
+      if (all.checked) SEL.add(id); else SEL.delete(id);
+    }
+    syncBoxes();
+  }
+});
+
 function bookRow(b, rank) {
   return `<tr class="clicky" data-book="${b.book_id}" tabindex="0">
+      <td class="sel">${selBox(b.book_id)}</td>
       <td class="rank">${rank}</td>
       <td class="bt">${esc(b.title || '(untitled)')}
         ${b.pages ? `<span class="bp">${b.pages} pages</span>` : ''}</td>
@@ -231,6 +317,7 @@ function consideredTable(considered) {
   // outgrow a narrow window, and the page body must never scroll sideways.
   return `<div class="tablewrap"><table class="runtable">
       <thead><tr>
+        <th class="sel">${selAll('considered')}</th>
         <th class="rank" title="Position after combining every angle — not a rank the search produced">#</th>
         <th>Book</th><th>Matched on</th>
         <th>Match</th><th title="How many of the searches found this book">Angles</th>
@@ -317,6 +404,8 @@ function render(data) {
   const d = digest(data.events || []);
   const openedIds = new Set(d.opened.keys());
   const recIds = new Set(d.shelved.map(b => b.book_id).filter(x => x != null));
+  REC = new Map(d.shelved.filter(b => b.book_id != null).map(b => [b.book_id, b]));
+  SCOPES = { considered: d.considered.map(b => b.book_id), rec: [...recIds] };
 
   let html = header(run, classroom, d);
 
@@ -352,13 +441,19 @@ function render(data) {
 
   if (d.shelved.length) {
     html += `<div class="sect">
-        <h2>Recommended <span class="count">${d.shelved.length}</span></h2>
+        <div class="sechead">
+          <h2>Recommended <span class="count">${d.shelved.length}</span></h2>
+          ${REC.size ? selAll('rec', 'Select all') : ''}
+        </div>
         ${d.shelved.map(b => `<div class="shelf1">
-            <div class="s1t">${esc(b.title || '(untitled)')}</div>
-            ${b.why ? `<div class="s1w">${esc(b.why)}</div>` : ''}
-            ${b.passage ? `<div class="s1q">“${esc(b.passage)}”${
-              b.passage_pages ? `<span class="s1p">${esc(b.passage_pages)}</span>` : ''
-            }</div>` : ''}
+            ${b.book_id != null ? `<div class="s1sel">${selBox(b.book_id)}</div>` : ''}
+            <div class="s1b">
+              <div class="s1t">${esc(b.title || '(untitled)')}</div>
+              ${b.why ? `<div class="s1w">${esc(b.why)}</div>` : ''}
+              ${b.passage ? `<div class="s1q">“${esc(b.passage)}”${
+                b.passage_pages ? `<span class="s1p">${esc(b.passage_pages)}</span>` : ''
+              }</div>` : ''}
+            </div>
           </div>`).join('')}
       </div>`;
   }
@@ -373,11 +468,19 @@ function render(data) {
   CARDS = new Map(d.considered.map(b => [b.book_id, b]));
   NANGLES = d.angles.length;
   $('#run').querySelectorAll('tr.clicky').forEach(tr => {
-    tr.addEventListener('click', () => openCard(tr.dataset.book));
+    // The whole row opens the card, except its checkbox -- ticking a book is
+    // not asking to read about it, and a card sliding over every tick would
+    // make selecting a shortlist unbearable.
+    tr.addEventListener('click', e => {
+      if (e.target.closest('td.sel')) return;
+      openCard(tr.dataset.book);
+    });
     tr.addEventListener('keydown', e => {
+      if (e.target !== tr) return;        // Space belongs to the checkbox there
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openCard(tr.dataset.book); }
     });
   });
+  paintSel();
 }
 
 /* ------------------------------------------------------------ book card -- */
@@ -485,6 +588,39 @@ function openPicker(bookId) {
   });
 }
 
+/* ---------------------------------------------------------- bulk adding -- */
+
+/* The selection, with each book's own provenance and reason attached.
+ *
+ * A book on the shortlist goes onto the shelf as the librarian's pick carrying
+ * the librarian's reason; anything else the reader ticked goes on as the
+ * reader's own. Same rule as the single-book card, applied per book rather than
+ * per batch -- see _addBooks, which splits the request accordingly. */
+function selectedBooks() {
+  return [...SEL].map(id => {
+    const c = CARDS.get(id);
+    const r = REC.get(id);
+    return {
+      id,
+      title: (c && c.title) || (r && r.title) || '(untitled)',
+      addedBy: r ? 'librarian' : 'reader',
+      rationale: (r && r.why) || null,
+    };
+  });
+}
+
+// The run's own shelf is the one this page has a column for, so it is repainted
+// in place. Any other shelf is somewhere the reader is not looking.
+function markShelved(ids) {
+  for (const id of ids) {
+    SHELF.add(id);
+    const c = CARDS.get(id);
+    if (c) c.onShelf = true;
+    const cell = $('#run').querySelector(`tr[data-book="${id}"] td.ft:last-child`);
+    if (cell) cell.innerHTML = userDid({ onShelf: true }, true);
+  }
+}
+
 function closeCard() { $('#cardwrap').hidden = true; }
 
 async function load() {
@@ -498,6 +634,19 @@ async function load() {
     $('#run').innerHTML = failed('Could not load this run', err, load);
   }
 }
+
+$('#selclear').addEventListener('click', () => { SEL.clear(); syncBoxes(); });
+
+$('#seladd').addEventListener('click', () => {
+  const books = selectedBooks();
+  if (!books.length) return;
+  const ids = books.map(b => b.id);
+  pickClassrooms({
+    books,
+    preferId: RUN_ROOM,
+    onDone: roomId => { if (roomId === RUN_ROOM) markShelved(ids); },
+  });
+});
 
 $('#cardclose').addEventListener('click', closeCard);
 $('#cardback').addEventListener('click', closeCard);

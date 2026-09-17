@@ -35,11 +35,12 @@ MODEL = os.environ.get("LIBRARIAN_MODEL", "claude-sonnet-5")
 # searching.
 MAX_ITERATIONS = 40
 DEFAULT_COUNT = 12
-# 50, matching CLASSROOM_MAX_BOOKS. The two have to move together: a ceiling
-# above the shelf's own would let the librarian return books that cannot all be
-# added, which is a 409 after two minutes of work rather than a bound anyone
-# learns from. 12 stays the default -- most briefs do not want fifty books, and
-# the count drives how long a run takes.
+# Must never exceed CLASSROOM_MAX_BOOKS: a ceiling above the shelf's own would
+# let the librarian return books that cannot all be added, which is a 409 after
+# two minutes of work rather than a bound anyone learns from. It does not have
+# to track it upward, though, and this one stayed at 50 when the shelf went to
+# 80 -- a run is only worth the books someone will actually read, and fifty is
+# already past that. 12 stays the default, and the count drives run length.
 MAX_COUNT = 50
 
 

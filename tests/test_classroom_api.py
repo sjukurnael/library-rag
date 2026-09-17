@@ -125,6 +125,31 @@ def test_adding_a_batch_keeps_each_book_its_own_reason(client, conn):
     assert got["No Reason Given"] == "fallback"
 
 
+def test_a_batch_counts_only_the_books_that_were_new(client, conn):
+    """`added` is what the run page tells the reader after adding a shortlist:
+    "added 5 · 3 already there". Adding a whole shortlist to a shelf that
+    already holds part of it is the ordinary case -- a reader ticks all twenty
+    recommendations having shelved three of them by hand -- so the count has to
+    be of NEW rows, not of the request."""
+    a = _ready(conn, "a", "A")
+    b = _ready(conn, "b", "B")
+    c = _ready(conn, "c", "C")
+    cid = client.post("/api/classrooms", json={"name": "Shelf"}).json()["classroom"]["id"]
+
+    assert client.post(f"/api/classrooms/{cid}/books",
+                       json={"book_ids": [a]}).json()["added"] == 1
+
+    r = client.post(f"/api/classrooms/{cid}/books", json={"book_ids": [a, b, c]})
+    assert r.status_code == 200
+    assert r.json()["added"] == 2          # a was already there
+    assert len(r.json()["books"]) == 3
+
+    # And a batch of nothing new is a 200 saying so, not an error: the reader
+    # ticking a shelf's own books is a no-op, not a mistake.
+    assert client.post(f"/api/classrooms/{cid}/books",
+                       json={"book_ids": [a, b, c]}).json()["added"] == 0
+
+
 def test_an_unknown_classroom_is_404_everywhere(client, conn):
     assert client.get("/api/classrooms/9999").status_code == 404
     assert client.patch("/api/classrooms/9999", json={"name": "x"}).status_code == 404

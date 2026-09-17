@@ -390,6 +390,11 @@ details.trace[open] summary { color: var(--ink); }
   flex: none; padding: 12px 20px 0; font-size: 13px; color: var(--dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* A whole selection needs its titles wrapped, not truncated to the first one. */
+.rpsub.multi {
+  white-space: normal; line-height: 1.5; padding-bottom: 2px;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+}
 .rplist { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px 16px; }
 
 /* One shelf per row: the name, how full it is, and the action. Buttons rather
@@ -413,6 +418,38 @@ details.trace[open] summary { color: var(--ink); }
 .rprow.ok { background: #e6f4ea; }
 .rprow.ok .rpgo { color: #1e6b33; }
 .rperr { padding: 0 12px 10px; font-size: 12.5px; color: #b3261e; }
+
+/* Adding a whole selection: the row stops being the action -- the footer is --
+   so the shelf gets a checkbox and the third column goes away. A <label>, so
+   the name and the count are part of the target rather than dead space beside
+   a 15px box. */
+.rprow.multi { grid-template-columns: auto 1fr; column-gap: 12px; }
+.rprow.multi input { grid-column: 1; grid-row: 1 / span 2; align-self: center; }
+.rprow.multi .rpn, .rprow.multi .rpm { grid-column: 2; }
+/* A shelf without room for the whole selection. Dimmed rather than hidden: the
+   reader is looking for a shelf they know exists, and a row that vanished
+   reads as a missing classroom rather than a full one. */
+.rprow.multi.off { opacity: .5; cursor: default; }
+.rprow.multi.off:hover { background: transparent; }
+/* Said once, above the list, when the selection is over the cap for every
+   shelf -- a list where every row is greyed out needs a reason at the top. */
+.rpcap {
+  margin: 4px 12px 10px; padding: 10px 12px; border-radius: 10px;
+  background: var(--surface); font-size: 12.5px; line-height: 1.45;
+  color: var(--ink);
+}
+.rpfoot {
+  flex: none; display: flex; align-items: center; gap: var(--s2);
+  padding: 12px 20px 16px; border-top: 1px solid var(--line);
+}
+.rpfoot[hidden] { display: none; }
+/* Pushes the buttons right and states what the count in the heading means. */
+.rpfoot .rpcount { flex: 1; font-size: var(--t-meta); color: var(--dim); }
+/* One line per shelf, under the shelf it belongs to: with four selected there
+   is no other way to say which one was full and which three took the books. */
+.rpres { padding: 2px 12px 8px 39px; font-size: 12.5px; }
+.rpres.ok { color: #1e6b33; }
+.rpres.bad { color: var(--bad); }
 
 /* The indexed list's destination picker, on the section heading it applies to. */
 .sectionhead.withpick { display: flex; align-items: center; gap: 10px; }
@@ -557,6 +594,10 @@ details.trace[open] summary { color: var(--ink); }
 .runtable tbody tr:last-child td { border-bottom: 0; }
 .runtable tbody tr:hover td { background: var(--surface); }
 .runtable .rank { width: 34px; color: var(--dim); font-variant-numeric: tabular-nums; }
+/* Narrow, and padded to sit on the first line of a two-line title cell rather
+   than floating above it. */
+.runtable .sel { width: 30px; padding-right: 0; padding-top: 13px; }
+.runtable th.sel { padding-top: 10px; }
 .runtable .bt { color: var(--ink); }
 .runtable .bt .bp { display: block; font-size: 12px; color: var(--dim); margin-top: 2px; }
 /* The centroid's heading trail, which can be a whole breadcrumb ("The Hebrew
@@ -624,7 +665,16 @@ details.trace[open] summary { color: var(--ink); }
 .angle .ameta .thin { color: #8a6116; }
 .angle > .tablewrap { border-top: 0; }
 
-.shelf1 { padding: 14px 0; border-bottom: 1px solid var(--line); }
+/* Two columns so the checkbox keeps its own gutter and the reason, the quote
+   and the title all line up down one edge. Explicit placement on .s1b, because
+   a shortlist entry with no book id has no checkbox and its text would
+   otherwise slide into column 1 and break that edge. */
+.shelf1 {
+  display: grid; grid-template-columns: auto 1fr; column-gap: 12px;
+  padding: 14px 0; border-bottom: 1px solid var(--line);
+}
+.shelf1 .s1sel { grid-column: 1; padding-top: 2px; }
+.shelf1 .s1b { grid-column: 2; min-width: 0; }
 .shelf1 .s1t { font-size: 14.5px; color: var(--ink); }
 .shelf1 .s1w { font-size: 13px; color: var(--dim); margin-top: 4px; max-width: 78ch; }
 .shelf1 .s1q {
@@ -632,6 +682,37 @@ details.trace[open] summary { color: var(--ink); }
   border-radius: 10px; font-size: 13px; line-height: 1.55; max-width: 78ch;
 }
 .shelf1 .s1q .s1p { display: block; margin-top: 6px; font-size: 12px; color: var(--dim); }
+
+/* A section heading that carries an action. The heading keeps its own margin,
+   so the row is aligned on the text rather than on the box beside it. */
+.sechead { display: flex; align-items: baseline; gap: var(--s4); margin-bottom: 4px; }
+.sechead h2 { margin-bottom: 0; }
+.selall-lab {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: var(--t-ui); color: var(--muted); cursor: pointer; user-select: none;
+}
+input.bsel, input.selall {
+  width: 15px; height: 15px; margin: 0; flex: none;
+  accent-color: var(--accent); cursor: pointer;
+}
+
+/* The bulk action bar.
+   Fixed rather than in flow: a selection made in the shortlist at the bottom of
+   the page has to stay actionable while scrolling the table at the top of it,
+   and the reverse. Below .cardwrap and .modal, both of which are things the
+   reader opened deliberately and which this must never sit over. */
+.selbar {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+  z-index: 50; display: flex; align-items: center; gap: var(--s3);
+  padding: 8px 10px 8px 18px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--rp); box-shadow: var(--shadow);
+}
+.selbar[hidden] { display: none; }
+.selbar .selc {
+  font-size: var(--t-ui); color: var(--ink); white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
 
 .ranswer { font-size: 14px; line-height: 1.6; color: var(--ink); max-width: 78ch; }
 

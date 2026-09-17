@@ -428,11 +428,20 @@ BIBLE_ENABLED = os.environ.get("BIBLE_ENABLED", "").lower() in {"1", "true", "ye
 # scope measured 187ms warm and 2,745ms cold. The cap is really a promise that
 # a classroom fits in cache.
 #
-# 30 is also the right product number. The librarian returns ~20, so this is
-# room to grow a shelf without it becoming a library again -- and scope is the
-# signal the whole design runs on. A classroom holding a quarter of the corpus
-# has told the tutor nothing.
-CLASSROOM_MAX_BOOKS = 50
+# 80 is where that promise still holds and the product argument stops binding.
+# It interpolates to ~21,000 chunks and ~34 MB -- inside the band that stayed
+# resident, below the 100-book scope that fell off the cliff -- so the cache
+# claim survives, with less margin than 50 had. The reason to spend that margin
+# is that readers assemble shelves from real selections: a 64-book pick hitting
+# a 50 cap is the case that prompted this, and refusing it taught nobody
+# anything about scope. Scope is still the signal the whole design runs on;
+# 80 of 8,679 books is under 1% of the corpus, so a classroom still means
+# something. Past ~100 it stops meaning anything and the numbers above say so.
+#
+# The librarian's own ceiling (librarian/loop.py MAX_COUNT) stays at 50. It must
+# never exceed this one -- a run returning more books than a shelf can hold is a
+# 409 after two minutes of work -- but it has no reason to track it upward.
+CLASSROOM_MAX_BOOKS = 80
 
 # ---- Book profiles (the librarian's tier) ----
 # How many topic centroids a book gets. round(sqrt(chunks)), clamped -- so a
