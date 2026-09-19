@@ -1607,7 +1607,11 @@ def biblemap_source_rows(
         total, rows = biblemap.source_page(conn, key, offset, limit, q)
     return {
         "key": key, "offset": offset, "limit": limit, "q": q, "total": total,
-        "rows": [{"row": r, "id": rid, "cells": cells} for r, rid, cells in rows],
+        "rows": [
+            {"row": r, "id": rid, "cells": cells, "origin": origin,
+             "edited_at": edited_at.isoformat() if edited_at else None, "editor": editor}
+            for r, rid, cells, origin, edited_at, editor in rows
+        ],
     }
 
 
@@ -1620,6 +1624,61 @@ def biblemap_locate(kind: Literal["event", "place", "person"], id: int):
     if not hit:
         raise HTTPException(404, f"No source row for {kind} {id}.")
     return {"key": hit[0], "row": hit[1]}
+
+
+# ---- editing the source rows ----
+# The stored rows ARE the data now; the map is derived from them on every save
+# (biblemap.rebuild). A change that would break the map is refused with the
+# problems named, because a map that disagrees with the spreadsheet behind it is
+# worse than an edit that would not take.
+
+
+class RowEdit(BaseModel):
+    changes: dict[str, str] = Field(default_factory=dict)
+
+
+class RowInsert(BaseModel):
+    after_row: int = Field(ge=1)
+
+
+def _edit(fn, *args, **kwargs):
+    """Run one row operation, turning its failures into the right HTTP shape."""
+    try:
+        return fn(*args, **kwargs)
+    except biblemap.Invalid as err:
+        # 400 with every problem, not just the first: fixing a row usually means
+        # seeing all of what it broke.
+        raise HTTPException(400, {"message": "That change would break the map.",
+                                  "problems": err.problems}) from None
+    except KeyError as err:
+        raise HTTPException(404, str(err.args[0])) from None
+
+
+@app.patch("/api/biblemap/sources/{key}/rows/{row}")
+def biblemap_update_row(key: str, row: int, edit: RowEdit, request: Request):
+    _require_biblemap()
+    if not edit.changes:
+        raise HTTPException(400, "No changes.")
+    with db.get_conn() as conn:
+        return _edit(biblemap.update_row, conn, key, row, edit.changes,
+                     auth.current_user(request))
+
+
+@app.post("/api/biblemap/sources/{key}/rows")
+def biblemap_insert_row(key: str, body: RowInsert, request: Request):
+    """A blank row directly after `after_row`, as a spreadsheet would insert it:
+    every row below shifts down, and the numbers still match the file."""
+    _require_biblemap()
+    with db.get_conn() as conn:
+        return _edit(biblemap.insert_row, conn, key, body.after_row,
+                     auth.current_user(request))
+
+
+@app.delete("/api/biblemap/sources/{key}/rows/{row}")
+def biblemap_delete_row(key: str, row: int, request: Request):
+    _require_biblemap()
+    with db.get_conn() as conn:
+        return _edit(biblemap.delete_row, conn, key, row, auth.current_user(request))
 
 
 # -------------------------------------------------------------------- auth --

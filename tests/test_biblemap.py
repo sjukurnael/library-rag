@@ -67,9 +67,11 @@ def test_read_sources_parses_every_file(source):
     ds = biblemap.read_sources(source)
     assert [p[0] for p in ds.places] == [527, 1189, 272, 354, 738, 10003]
     assert ds.skipped == {"places": 1, "people": 0}
-    assert [e[:3] for e in ds.events] == [
-        (1, "Ge 2:8", "Eden"), (2, "Ge 11:31", "Terah Moves to Haran"), (3, "Jdg 1:26", "Luz")
-    ], "event ids are Bible order, skipping the blank row"
+    assert [e[:4] for e in ds.events] == [
+        (1, 1, "Ge 2:8", "Eden"),
+        (2, 2, "Ge 11:31", "Terah Moves to Haran"),
+        (3, 3, "Jdg 1:26", "Luz"),
+    ], "on a first import id and seq agree; the blank row is neither"
 
 
 def test_unknown_coordinates_become_none_not_zero(source):
@@ -191,3 +193,105 @@ def test_every_link_column_is_a_real_events_column(source):
     for column in biblemap.LINK_COLUMNS["events"]:
         if column != "Duplicate IDs":  # not in the minimal fixture
             assert column in events.columns, column
+
+
+# ----------------------------------------------------------------- editing --
+#
+# The stored rows are the data and the map is derived from them, so what these
+# pin is that the two can never disagree: every edit re-parses everything, and
+# one that would not parse leaves nothing behind.
+
+def _loaded(conn, source):
+    biblemap.load(conn, biblemap.read_sources(source))
+    return conn
+
+
+def test_rebuilding_from_the_stored_rows_matches_the_files(conn, source):
+    _loaded(conn, source)
+    before = biblemap.data(conn)
+    biblemap.rebuild(conn)
+    conn.commit()
+    assert biblemap.data(conn) == before
+
+
+def test_an_edit_changes_the_map(conn, source):
+    _loaded(conn, source)
+    row = biblemap.locate(conn, "place", 354)[1]
+    biblemap.update_row(conn, "places", row, {"Lat": "31.0", "Lng": "47.4"},
+                        editor="me@example.com")
+    eden = next(p for p in biblemap.data(conn)["places"] if p["id"] == 354)
+    assert (eden["lat"], eden["lng"]) == (31.0, 47.4)
+    assert biblemap.edit_count(conn) == 1
+    assert conn.execute(
+        "SELECT editor, column_name, old_value, new_value FROM biblemap.source_edits "
+        "WHERE column_name = 'Lat'"
+    ).fetchone() == ("me@example.com", "Lat", "0", "31.0")
+
+
+def test_an_edit_that_would_break_the_map_is_refused_whole(conn, source):
+    _loaded(conn, source)
+    before = biblemap.data(conn)
+    row = biblemap.locate(conn, "event", 2)[1]
+    with pytest.raises(biblemap.Invalid) as err:
+        biblemap.update_row(conn, "events", row, {"PlaceID": "1189,99999"})
+    assert "unknown place ID 99999" in err.value.problems[0]
+    # Neither the map nor the row it came from moved.
+    assert biblemap.data(conn) == before
+    assert biblemap.edit_count(conn) == 0
+
+
+def test_inserting_a_row_shifts_the_rows_below_and_keeps_event_ids(conn, source):
+    _loaded(conn, source)
+    ids_before = {e["passage"]: e["id"] for e in biblemap.data(conn)["events"]}
+
+    out = biblemap.insert_row(conn, "events", 2, editor="me@example.com")
+    assert out["row"] == 3
+    # A blank row is not an event, so nothing on the map changed yet...
+    assert {e["passage"]: e["id"] for e in biblemap.data(conn)["events"]} == ids_before
+    # ...and the rows below moved down, as they would in a spreadsheet.
+    assert biblemap.locate(conn, "event", 2) == ("events", 5)
+
+    biblemap.update_row(conn, "events", 3, {"Passage (Logos Data)": "Ge 3:1",
+                                            "Title": "Inserted", "PlaceID": "527"})
+    events = biblemap.data(conn)["events"]
+    new = next(e for e in events if e["title"] == "Inserted")
+    assert [e["title"] for e in events][:2] == ["Eden", "Inserted"], "it lands in place"
+    assert new["id"] not in ids_before.values(), "a new event takes a new id"
+    assert {e["passage"]: e["id"] for e in events if e["passage"] in ids_before} == ids_before, \
+        "every existing event keeps the id links point at"
+
+
+def test_a_new_place_row_arrives_with_a_free_id(conn, source):
+    _loaded(conn, source)
+    out = biblemap.insert_row(conn, "places", 2)
+    assert out["cells"][0] == "10004", "continues the 10000+ range, past Israel at 10003"
+    biblemap.update_row(conn, "places", out["row"], {"PlaceName": "Somewhere",
+                                                     "Lat": "31.5", "Lng": "35.0"})
+    # Referencing it from an event is now legal, which is the whole point.
+    biblemap.update_row(conn, "events", 4, {"PlaceID": "10004"})
+    assert [p["name"] for p in biblemap.data(conn)["places"] if p["id"] == 10004] == ["Somewhere"]
+
+
+def test_deleting_a_row_removes_it_and_records_what_it_was(conn, source):
+    _loaded(conn, source)
+    row = biblemap.locate(conn, "event", 3)[1]
+    biblemap.delete_row(conn, "events", row, editor="me@example.com")
+    assert [e["id"] for e in biblemap.data(conn)["events"]] == [1, 2]
+    snapshot = conn.execute(
+        "SELECT row_snapshot FROM biblemap.source_edits WHERE action = 'delete'"
+    ).fetchone()[0]
+    assert snapshot[1] == "Luz"
+
+
+def test_export_round_trips(conn, source, tmp_path):
+    _loaded(conn, source)
+    biblemap.update_row(conn, "places", 2, {"PlaceName": "Haran (edited)"})
+
+    out = tmp_path / "export"
+    biblemap.export(conn, out)
+    again = biblemap.read_sources(out)
+    assert [p[1] for p in again.places if p[0] == 527] == ["Haran (edited)"]
+    # ...and a fresh load of the export is the same map.
+    before = biblemap.data(conn)
+    biblemap.load(conn, again)
+    assert biblemap.data(conn) == before

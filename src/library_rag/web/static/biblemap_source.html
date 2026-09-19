@@ -6,16 +6,18 @@
 <title>Library — bible map source data</title>
 <link rel="stylesheet" href="/static/app.css">
 <style>
-/* Page-local while the Bible map is a prototype. */
-.pagebody.srcbody { display: flex; gap: var(--s4); overflow: hidden; padding-bottom: var(--s5); }
-.srcmain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--s2); }
+/* Page-local while the Bible map is a prototype.
+   The grid IS the editor: a cell is changed where it sits, the way a
+   spreadsheet does it, because this page is a view of a spreadsheet. */
+.pagebody.srcbody { display: flex; flex-direction: column; gap: var(--s2); overflow: hidden; padding-bottom: var(--s5); }
 .srcinfo { display: flex; align-items: center; gap: var(--s3); font-size: var(--t-meta); color: var(--muted); flex-wrap: wrap; }
 .srcinfo .srcfile { color: var(--ink); font-weight: 500; }
-.srcgrid { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--line); border-radius: 12px; }
+.srcgrid { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--line); border-radius: 12px; position: relative; }
 .srcgrid table { border-collapse: separate; border-spacing: 0; font-size: var(--t-meta); }
 .srcgrid th, .srcgrid td {
   padding: 5px 10px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line);
-  max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
+  max-width: 260px; height: 26px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
 }
 .srcgrid thead th {
   position: sticky; top: 0; z-index: 2; background: var(--surface);
@@ -24,35 +26,57 @@
 .srcgrid thead th.used { background: var(--accent-soft); color: var(--accent-ink); }
 .srcgrid .rn {
   position: sticky; left: 0; z-index: 1; background: var(--surface);
-  color: var(--dim); text-align: right; min-width: 44px;
+  color: var(--dim); text-align: right; min-width: 96px; white-space: nowrap;
 }
 .srcgrid thead .rn { z-index: 3; }
-.srcgrid tbody tr { cursor: pointer; }
 .srcgrid tbody tr:hover td { background: var(--surface); }
 .srcgrid tbody tr.on td, .srcgrid tbody tr.on .rn { background: var(--accent-soft); color: var(--accent-ink); }
 .srcgrid td.nil { color: var(--dim); }
 .srcgrid td.todo { color: var(--bad); }
-.srcdetail {
-  width: 400px; flex: none; overflow-y: auto; background: var(--surface);
-  border-radius: 16px; padding: var(--s4);
+/* The selected cell, and one whose save is in flight. */
+.srcgrid td.sel { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--panel); }
+.srcgrid td.saving { opacity: .45; }
+/* A row's own actions live in its number cell: open it on the map, add a row
+   below it, delete it. On hover, so 1,735 rows are not 5,205 buttons. */
+.rowtools { display: inline-flex; gap: 1px; margin-right: 6px; visibility: hidden; }
+tr:hover .rowtools, tr.on .rowtools { visibility: visible; }
+.rowtools a, .rowtools button {
+  border: 0; background: none; cursor: pointer; color: var(--muted);
+  font-size: 12px; line-height: 1; padding: 2px 3px; border-radius: 4px; text-decoration: none;
 }
-.srcdetail h2 { font-size: var(--t-title); font-weight: 500; margin: 0 0 var(--s1); }
-.kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px var(--s3); font-size: var(--t-meta); margin-top: var(--s4); }
-.kv .k { color: var(--muted); word-break: break-word; }
-.kv .k.used { color: var(--accent-ink); font-weight: 600; }
-.kv .v { white-space: pre-wrap; word-break: break-word; }
-.kv .v.nil { color: var(--dim); }
-.idlink { color: var(--accent); text-decoration: underline dotted; text-underline-offset: 2px; }
-.idlink:hover { text-decoration-style: solid; }
-.idname { color: var(--muted); }
-.idbad { color: var(--bad); }
+.rowtools a:hover, .rowtools button:hover { background: var(--surface-2); color: var(--ink); }
+.rn .dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); margin-right: 4px; vertical-align: middle;
+}
+/* The editor floats over its cell, so a long value can be read while it is
+   typed instead of staying clipped to the column width. */
+#editor {
+  position: absolute; z-index: 5; display: none; box-sizing: border-box;
+  border: 2px solid var(--accent); border-radius: 6px; background: var(--panel);
+  box-shadow: var(--shadow);
+}
+#editor textarea, #editor input {
+  width: 100%; box-sizing: border-box; border: 0; outline: none; resize: none;
+  background: none; color: var(--ink); font: inherit; font-size: var(--t-meta);
+  padding: 4px 8px;
+}
+#editor textarea { min-height: 84px; }
+#editor .names {
+  padding: 3px 8px 5px; font-size: 11px; color: var(--muted);
+  border-top: 1px solid var(--line); max-height: 56px; overflow: auto;
+}
+#editor .names .bad { color: var(--bad); }
+.banner { border-radius: 10px; padding: var(--s2) var(--s3); font-size: var(--t-meta); line-height: 1.5; }
+.banner.ok { background: var(--good-soft); color: var(--good); }
+.banner.bad { background: var(--bad-soft); color: var(--bad); }
+.banner ul { margin: 6px 0 0; padding-left: 18px; }
+.banner a { color: inherit; }
 .legend { font-size: var(--t-meta); color: var(--muted); }
 .legend b { background: var(--accent-soft); color: var(--accent-ink); padding: 1px 6px; border-radius: 4px; font-weight: 600; }
-@media (max-width: 1000px) {
-  .pagebody.srcbody { flex-direction: column; overflow-y: auto; }
-  .srcgrid { flex: none; height: 60vh; }
-  .srcdetail { width: auto; }
-}
+.idlink { color: var(--accent); text-decoration: underline dotted; text-underline-offset: 2px; }
+.idlink:hover { text-decoration-style: solid; }
+.idbad { color: var(--bad); }
 </style>
 </head>
 <body>
@@ -98,13 +122,12 @@
     </div>
 
     <div class="pagebody srcbody">
-      <div class="srcmain">
-        <div class="srcinfo" id="info"></div>
-        <div class="srcgrid" id="grid"><div class="empty">loading…</div></div>
+      <div id="banner"></div>
+      <div class="srcinfo" id="info"></div>
+      <div class="srcgrid" id="grid">
+        <div class="empty">loading…</div>
+        <div id="editor"></div>
       </div>
-      <aside class="srcdetail" id="detail">
-        <div class="empty">Click a row to see every column in full.</div>
-      </aside>
     </div>
   </div>
 
@@ -112,19 +135,27 @@
 
 <script src="/static/app.js"></script>
 <script>
-// The four source files exactly as the loader read them: every row and column,
-// as text, numbered the way Excel numbers them. Columns the map reads are
-// highlighted, so it is clear which cells can change what the map shows.
+// The source files as the loader read them -- and where they are edited.
+//
+// These rows ARE the data: the map is derived from them on every save (see
+// library_rag/biblemap.py), so this is a spreadsheet over the real thing rather
+// than a view of a copy. Click a cell and type; Enter saves and moves down, Tab
+// saves and moves right, Escape cancels. A change that would break the map is
+// refused with the reason, and nothing moves.
 
 const LIMIT = 200;
 const LABEL = { events: 'Events', places: 'Places', new_places: 'New places', people: 'People' };
 // Where a row's record opens on the map.
 const MAP_LINK = { events: 'event', places: 'place', new_places: 'place', people: 'person' };
+// Columns that get the taller editor: prose, not a value.
+const LONG = /Description|Comments|Verses|Reasoning|RefDetail|Event \(Logos/i;
 
 let FILES = [];
-let cur = null;          // {file, offset, total, q, rows}
-let selected = null;     // row number
-let NAMES = { place: {}, person: {} };   // id -> name, for labelling ID links
+let NAMES = { place: {}, person: {} };
+let cur = null;             // {file, offset, total, q, rows}
+let sel = null;             // the selected cell, {row, col}
+let editing = false;
+let banner = '';            // survives the re-render a save triggers
 
 async function boot() {
   let d;
@@ -150,35 +181,18 @@ async function boot() {
 }
 
 function fileOf(key) { return FILES.find(f => f.key === key); }
-
-// A cell as HTML. In an ID column (file.links) every ID becomes a link to the
-// row it names -- the foreign keys between the spreadsheets, made clickable. A
-// link is a plain #place=527 address, so it lands through fromHash like any
-// other and the browser's Back button returns to the row you came from.
-// `named` adds each ID's name after it, for the detail panel where there is room.
-function cellHtml(file, column, v, named = false) {
-  const kind = file.links && file.links[column];
-  if (!kind || !/^[\d,\s]+$/.test(v)) return esc(v);
-  return v.split(/(\d+)/).map(tok => {
-    // With names in between, "1189,527" needs the space the raw cell lacks.
-    if (!/^\d+$/.test(tok)) return named && tok.trim() === ',' ? ', ' : esc(tok);
-    const name = NAMES[kind][tok];
-    if (name === undefined) {
-      return `<span class="idbad" title="No ${kind} has ID ${tok}">${tok}</span>`;
-    }
-    return `<a class="idlink" href="#${kind}=${tok}" title="${kind} ${tok}: ${esc(name)}">${tok}</a>` +
-           (named ? ` <span class="idname">${esc(name)}</span>` : '');
-  }).join('');
-}
+function rowOf(n) { return cur && cur.rows.find(r => r.row === n); }
 
 // ------------------------------------------------------------------ grid --
 
-async function open(key, { row = null, offset = 0, q = '' } = {}) {
+async function open(key, { row = null, offset = 0, q = '', keepScroll = false } = {}) {
   const file = fileOf(key);
   if (!file) return;
   document.querySelectorAll('[data-file]').forEach(b =>
     b.classList.toggle('on', b.dataset.file === key));
   $('#sq').value = q;
+  const grid = $('#grid');
+  const scroll = keepScroll ? { top: grid.scrollTop, left: grid.scrollLeft } : null;
 
   const params = new URLSearchParams({ limit: LIMIT, offset, q });
   if (row) params.set('row', row);
@@ -186,17 +200,32 @@ async function open(key, { row = null, offset = 0, q = '' } = {}) {
   try {
     d = await fetchJSON(`/api/biblemap/sources/${encodeURIComponent(key)}?${params}`, {}, 20000);
   } catch (err) {
-    $('#grid').innerHTML = `<div class="failnote">${esc(err.message)}</div>`;
+    grid.innerHTML = `<div class="failnote">${esc(err.message)}</div>`;
     return;
   }
   cur = { file, offset: d.offset, total: d.total, q: d.q, rows: d.rows };
   renderGrid();
-  if (row) select(row, true); else showDetail(null);
+  if (scroll) { $('#grid').scrollTop = scroll.top; $('#grid').scrollLeft = scroll.left; }
+  if (row) selectCell(row, sel ? sel.col : 0, !scroll);
+}
+
+// A cell as HTML. In an ID column every ID is a link to the row it names -- the
+// foreign keys between the spreadsheets, made clickable.
+function cellHtml(file, column, v) {
+  const kind = file.links && file.links[column];
+  if (!kind || !/^[\d,\s]+$/.test(v)) return esc(v);
+  return v.split(/(\d+)/).map(tok => {
+    if (!/^\d+$/.test(tok)) return esc(tok);
+    const name = NAMES[kind][tok];
+    if (name === undefined) return `<span class="idbad" title="No ${kind} has ID ${tok}">${tok}</span>`;
+    return `<a class="idlink" href="#${kind}=${tok}" title="${kind} ${tok}: ${esc(name)}">${tok}</a>`;
+  }).join('');
 }
 
 function renderGrid() {
   const { file, rows, offset, total, q } = cur;
   const used = new Set(file.used);
+  const kind = MAP_LINK[file.key];
   const from = total ? offset + 1 : 0, to = offset + rows.length;
   $('#info').innerHTML = `
     <span class="srcfile">${esc(file.filename)}</span>
@@ -204,73 +233,269 @@ function renderGrid() {
       · showing ${from.toLocaleString()}–${to.toLocaleString()}</span>
     <button class="btn step" id="pprev" ${offset ? '' : 'disabled'}>‹</button>
     <button class="btn step" id="pnext" ${to < total ? '' : 'disabled'}>›</button>
-    <span class="legend"><b>Highlighted</b> columns are read by the map${
-      Object.keys(file.links || {}).length ? ' · <span class="idlink">underlined</span> IDs open their row' : ''}</span>`;
+    <span class="legend"><b>Highlighted</b> columns are read by the map ·
+      click a cell to edit · Enter saves, Tab moves across, Esc cancels</span>`;
 
-  $('#grid').innerHTML = rows.length ? `
+  $('#grid').innerHTML = (rows.length ? `
     <table>
       <thead><tr><th class="rn">Row</th>${file.columns.map(c =>
         `<th class="${used.has(c) ? 'used' : ''}" title="${esc(c)}">${esc(c)}</th>`).join('')}</tr></thead>
       <tbody>${rows.map(r => `
-        <tr data-row="${r.row}" class="${r.row === selected ? 'on' : ''}">
-          <td class="rn">${r.row}</td>${r.cells.map((v, i) =>
-            `<td class="${v === '' ? 'nil' : /TODO/.test(v) ? 'todo' : ''}" title="${esc(v)}">${cellHtml(file, file.columns[i], v)}</td>`
-          ).join('')}
+        <tr data-row="${r.row}">
+          <td class="rn" title="${r.edited_at
+            ? `edited ${new Date(r.edited_at).toLocaleString()}${r.editor ? ' by ' + esc(r.editor) : ''}`
+            : ''}"><span class="rowtools">${
+              r.id != null ? `<a href="/biblemap#${kind}=${r.id}" target="_blank"
+                title="Open ${kind} ${r.id} on the map">↗</a>` : ''
+            }<button data-insert="${r.row}" title="Add a row below this one">+</button
+            ><button data-delete="${r.row}" title="Delete this row">×</button></span>${
+              r.edited_at || r.origin === 'app' ? '<span class="dot"></span>' : ''}${r.row}</td>${
+          r.cells.map((v, i) =>
+            `<td data-row="${r.row}" data-col="${i}" class="${
+              v === '' ? 'nil' : /TODO/.test(v) ? 'todo' : ''}" title="${esc(v)}">${
+              cellHtml(file, file.columns[i], v)}</td>`).join('')}
         </tr>`).join('')}</tbody>
-    </table>` : '<div class="empty">No rows match.</div>';
+    </table>` : '<div class="empty">No rows match.</div>') + '<div id="editor"></div>';
+
+  $('#banner').innerHTML = banner;
+  banner = '';
+  if (sel) paintSelection();
 }
 
-function select(rowNum, scroll = false) {
-  selected = rowNum;
-  document.querySelectorAll('#grid tr[data-row]').forEach(tr =>
-    tr.classList.toggle('on', +tr.dataset.row === rowNum));
-  const r = cur.rows.find(x => x.row === rowNum);
-  showDetail(r);
-  if (scroll) {
-    const tr = document.querySelector(`#grid tr[data-row="${rowNum}"]`);
-    if (tr) tr.scrollIntoView({ block: 'center' });
+// ------------------------------------------------------------- selection --
+
+function cellAt(row, col) {
+  return document.querySelector(`#grid td[data-row="${row}"][data-col="${col}"]`);
+}
+
+function paintSelection() {
+  document.querySelectorAll('#grid td.sel').forEach(td => td.classList.remove('sel'));
+  document.querySelectorAll('#grid tr.on').forEach(tr => tr.classList.remove('on'));
+  if (!sel) return;
+  const td = cellAt(sel.row, sel.col);
+  if (td) { td.classList.add('sel'); td.closest('tr').classList.add('on'); }
+}
+
+function selectCell(row, col, scroll = false) {
+  if (!rowOf(row)) return;
+  sel = { row, col: Math.min(Math.max(col, 0), cur.file.columns.length - 1) };
+  paintSelection();
+  const td = cellAt(sel.row, sel.col);
+  if (td && scroll) td.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  history.replaceState(null, '', `#file=${cur.file.key}&row=${row}`);
+}
+
+function moveSelection(dRow, dCol) {
+  if (!sel) return;
+  const rows = cur.rows.map(r => r.row);
+  const i = rows.indexOf(sel.row);
+  const row = rows[Math.min(Math.max(i + dRow, 0), rows.length - 1)];
+  selectCell(row, sel.col + dCol, true);
+}
+
+// --------------------------------------------------------------- editing --
+
+function editorEl() { return $('#editor'); }
+
+function startEdit(row, col, seed = null) {
+  const td = cellAt(row, col);
+  if (!td) return;
+  selectCell(row, col);
+  const column = cur.file.columns[col];
+  const value = seed !== null ? seed : (rowOf(row).cells[col] ?? '');
+  const kind = cur.file.links && cur.file.links[column];
+  const long = LONG.test(column) || value.length > 60;
+  const box = editorEl();
+  box.innerHTML = long
+    ? `<textarea>${esc(value)}</textarea>`
+    : `<input type="text" value="${esc(value)}"${kind ? ' list="idnames"' : ''}>` +
+      (kind ? `<div class="names"></div>
+        <datalist id="idnames">${Object.entries(NAMES[kind]).slice(0, 4000)
+          .map(([id, name]) => `<option value="${esc(name)} · #${id}"></option>`).join('')}</datalist>` : '');
+
+  const grid = $('#grid'), gb = grid.getBoundingClientRect(), tb = td.getBoundingClientRect();
+  box.style.display = 'block';
+  box.style.left = `${tb.left - gb.left + grid.scrollLeft}px`;
+  box.style.top = `${tb.top - gb.top + grid.scrollTop}px`;
+  box.style.width = `${Math.max(tb.width, long ? 420 : 240)}px`;
+  editing = true;
+
+  const field = box.querySelector('textarea, input');
+  field.focus();
+  if (seed === null) field.select(); else field.setSelectionRange(seed.length, seed.length);
+  if (kind) {
+    paintNames(kind);
+    field.addEventListener('input', () => paintNames(kind));
   }
-  history.replaceState(null, '', `#file=${cur.file.key}&row=${rowNum}`);
 }
 
-function showDetail(r) {
-  if (!r) {
-    $('#detail').innerHTML = '<div class="empty">Click a row to see every column in full.</div>';
-    return;
+// Under an ID cell while it is typed: what those IDs actually are. An unknown
+// one is named as unknown before a save refuses it.
+function paintNames(kind) {
+  const box = editorEl();
+  const el = box.querySelector('.names');
+  if (!el) return;
+  const ids = idsOf(box.querySelector('input').value);
+  el.innerHTML = ids.length
+    ? ids.map(id => {
+        const name = NAMES[kind][id];
+        return name === undefined ? `<span class="bad">${esc(id)} — no such ${kind}</span>`
+                                  : `${esc(id)} ${esc(name)}`;
+      }).join(' · ')
+    : `<span>type IDs separated by commas, or pick a ${kind} by name</span>`;
+}
+
+function idsOf(text) {
+  return String(text).split(',').map(t => t.trim()).filter(Boolean);
+}
+
+function editorText() {
+  const field = editorEl().querySelector('textarea, input');
+  if (!field) return null;
+  // "Haran · #527" picked from the list is an ID being ADDED, not a cell being
+  // replaced by a name -- so the name collapses to its id in place.
+  return field.value.replace(/([^,]*?)·\s*#(\d+)/g, '$2');
+}
+
+function closeEditor() {
+  editing = false;
+  const box = editorEl();
+  box.style.display = 'none';
+  box.innerHTML = '';
+}
+
+async function commitEdit(move = [1, 0]) {
+  if (!editing || !sel) return;
+  const { row, col } = sel;
+  const column = cur.file.columns[col];
+  const value = editorText();
+  const before = rowOf(row).cells[col] ?? '';
+  closeEditor();
+  if (value === null || value === before) { moveSelection(...move); return; }
+
+  const td = cellAt(row, col);
+  if (td) td.classList.add('saving');
+  await send(`/api/biblemap/sources/${encodeURIComponent(cur.file.key)}/rows/${row}`,
+             { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+               body: JSON.stringify({ changes: { [column]: value } }) },
+             row);
+  moveSelection(...move);
+}
+
+// Every write goes through here: reload this window of rows so the grid, the ID
+// links and the counts agree again -- or say what the change would have broken
+// and leave everything as it was.
+async function send(url, opts, keepRow) {
+  let d = null;
+  try {
+    const r = await fetch(url, opts);
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      banner = problemBanner(body.detail ?? `${r.status} ${r.statusText}`);
+    } else {
+      d = body;
+      const w = d.written || {};
+      banner = `<div class="banner ok">Saved. The map now has
+        ${(w.events || 0).toLocaleString()} events · ${(w.places || 0).toLocaleString()} places ·
+        ${(w.people || 0).toLocaleString()} people.
+        <a href="/biblemap" target="_blank">Open the map</a> (refresh it to see the change).</div>`;
+      await refreshNames();
+    }
+  } catch (err) {
+    banner = `<div class="banner bad">${esc(err.message)}</div>`;
   }
-  const { file } = cur;
-  const used = new Set(file.used);
-  const kind = MAP_LINK[file.key];
-  $('#detail').innerHTML = `
-    <h2>${esc(LABEL[file.key])} · row ${r.row}</h2>
-    <div class="sub">${esc(file.filename)}</div>
-    ${r.id != null
-      ? `<p><a class="btn soft" href="/biblemap#${kind}=${r.id}" target="_blank">Open on the map</a>
-           <span class="sub">${kind} ${r.id}</span></p>`
-      : '<p class="sub">This row was not loaded onto the map (blank, or no ID).</p>'}
-    <div class="kv">${file.columns.map((c, i) => {
-      const v = r.cells[i] ?? '';
-      return `<div class="k ${used.has(c) ? 'used' : ''}">${esc(c)}</div>
-              <div class="v ${v === '' ? 'nil' : ''}">${v === '' ? '(empty)' : cellHtml(file, c, v, true)}</div>`;
-    }).join('')}</div>`;
+  await open(cur.file.key, { row: (d && d.row) || keepRow, q: cur.q, keepScroll: true });
+  return d;
 }
 
-// -------------------------------------------------------------- wiring --
+// The refusal carries every problem, not a sentence.
+function problemBanner(detail) {
+  if (!detail || !detail.problems) return `<div class="banner bad">${esc(String(detail))}</div>`;
+  const shown = detail.problems.slice(0, 8);
+  return `<div class="banner bad">${esc(detail.message)}
+    <ul>${shown.map(p => `<li>${esc(p)}</li>`).join('')}</ul>
+    ${detail.problems.length > shown.length
+      ? `<div class="sub">…and ${detail.problems.length - shown.length} more</div>` : ''}</div>`;
+}
 
-document.addEventListener('click', ev => {
-  // An ID link navigates by its href; it must not also select the row it sits in.
-  if (ev.target.closest('a.idlink')) return;
+// A new or renamed place has to appear in the ID links and the pickers without
+// a page reload, and `names` is the only part of /sources that can change.
+async function refreshNames() {
+  try {
+    const d = await fetchJSON('/api/biblemap/sources', {}, 15000);
+    NAMES = d.names;
+    FILES = d.files;
+  } catch (err) { /* the row reload reports anything real */ }
+}
+
+// ---------------------------------------------------------------- wiring --
+
+document.addEventListener('click', async ev => {
+  if (ev.target.closest('#editor')) return;
+  // An ID link navigates by its href rather than opening its cell to edit.
+  if (ev.target.closest('a.idlink')) { if (editing) await commitEdit([0, 0]); return; }
+
   const tab = ev.target.closest('[data-file]');
-  if (tab) return open(tab.dataset.file);
+  if (tab) { if (editing) await commitEdit([0, 0]); sel = null; return open(tab.dataset.file); }
   if (ev.target.closest('#pprev')) return open(cur.file.key, { offset: Math.max(cur.offset - LIMIT, 0), q: cur.q });
   if (ev.target.closest('#pnext')) return open(cur.file.key, { offset: cur.offset + LIMIT, q: cur.q });
-  const tr = ev.target.closest('#grid tr[data-row]');
-  if (tr) select(+tr.dataset.row);
+
+  const insert = ev.target.closest('[data-insert]');
+  if (insert) {
+    const row = +insert.dataset.insert;
+    banner = '';
+    return send(`/api/biblemap/sources/${encodeURIComponent(cur.file.key)}/rows`,
+                { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ after_row: row }) }, row);
+  }
+  const del = ev.target.closest('[data-delete]');
+  if (del) {
+    const row = +del.dataset.delete;
+    const what = (rowOf(row).cells.find(Boolean) || '(blank)').slice(0, 60);
+    if (!confirm(`Delete row ${row} — ${what}? This cannot be undone.`)) return;
+    return send(`/api/biblemap/sources/${encodeURIComponent(cur.file.key)}/rows/${row}`,
+                { method: 'DELETE' }, Math.max(row - 1, 2));
+  }
+
+  const td = ev.target.closest('#grid td[data-col]');
+  if (td) {
+    if (editing) await commitEdit([0, 0]);
+    startEdit(+td.dataset.row, +td.dataset.col);
+  }
+});
+
+// Enter and Tab commit and move on; Escape cancels. With a cell merely
+// selected, typing starts an edit with what was typed, as a spreadsheet does.
+document.addEventListener('keydown', ev => {
+  if (editing) {
+    const textarea = ev.target.tagName === 'TEXTAREA';
+    if (ev.key === 'Escape') { ev.preventDefault(); closeEditor(); paintSelection(); return; }
+    if (ev.key === 'Enter' && (!textarea || ev.metaKey || ev.ctrlKey)) {
+      ev.preventDefault(); commitEdit(ev.shiftKey ? [-1, 0] : [1, 0]); return;
+    }
+    if (ev.key === 'Tab') { ev.preventDefault(); commitEdit(ev.shiftKey ? [0, -1] : [0, 1]); }
+    return;
+  }
+  if (!sel || ev.target.matches('input, textarea')) return;
+  const moves = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1],
+                  Tab: [0, ev.shiftKey ? -1 : 1] };
+  if (moves[ev.key]) { ev.preventDefault(); return moveSelection(...moves[ev.key]); }
+  if (ev.key === 'Enter' || ev.key === 'F2') { ev.preventDefault(); return startEdit(sel.row, sel.col); }
+  if (ev.key === 'Backspace' || ev.key === 'Delete') { ev.preventDefault(); return startEdit(sel.row, sel.col, ''); }
+  if (ev.key.length === 1 && !ev.metaKey && !ev.ctrlKey) {
+    ev.preventDefault();
+    startEdit(sel.row, sel.col, ev.key);
+  }
+});
+
+// Clicking away saves what is open, the way leaving a cell does.
+document.addEventListener('mousedown', ev => {
+  if (editing && !ev.target.closest('#editor') && !ev.target.closest('#grid')) commitEdit([0, 0]);
 });
 
 $('#sf').onsubmit = ev => {
   ev.preventDefault();
-  if (cur) open(cur.file.key, { q: $('#sq').value.trim() });
+  if (cur) { sel = null; open(cur.file.key, { q: $('#sq').value.trim() }); }
 };
 
 // Addresses: #file=events&row=41 opens that row; #event=40, #place=354 and
@@ -289,13 +514,12 @@ async function fromHash() {
       await open(hit.key, { row: hit.row });
     } catch (err) {
       $('#grid').innerHTML = `<div class="failnote">${esc(err.message)}</div>`;
-      return true;  // the message IS the answer; do not cover it with another file
     }
     return true;
   }
   return false;
 }
-window.addEventListener('hashchange', () => { if (FILES.length) fromHash(); });
+window.addEventListener('hashchange', () => { if (FILES.length && !editing) fromHash(); });
 
 boot();
 </script>

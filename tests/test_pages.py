@@ -150,6 +150,20 @@ BIBLEMAP_ROUTES = ["/biblemap", "/api/biblemap/data", "/biblemap/source",
                    "/api/biblemap/locate?kind=event&id=1"]
 
 
+def _map_loaded(conn):
+    """The smallest map there can be: one place, one person, one event."""
+    from library_rag import biblemap
+    sources = [
+        biblemap.Source("events", "events.xlsx",
+                        ["Passage (Logos Data)", "Title", "PlaceID", "resolved_people_ids"],
+                        [(2, 1, ["Ge 1:1", "The Creation Week", "1", "7"])]),
+        biblemap.Source("places", "places.csv", ["PlaceID", "PlaceName", "Lat", "Lng"],
+                        [(2, 1, ["1", "Eden", "31.0", "47.4"])]),
+        biblemap.Source("people", "people.csv", ["PersonID", "Name"], [(2, 7, ["7", "Adam"])]),
+    ]
+    biblemap.load(conn, biblemap.dataset_from_sources(sources))
+
+
 @pytest.fixture
 def biblemap_on(monkeypatch):
     monkeypatch.setattr(api.config, "BIBLEMAP_ENABLED", True)
@@ -199,6 +213,60 @@ def test_the_flag_opens_the_source_viewer(client, biblemap_on):
     r = client.get("/biblemap/source")
     assert r.status_code == 200
     assert (STATIC / "biblemap_source.html").read_text()[:200] in r.text
+
+
+# ------------------------------------------------- editing the source rows --
+#
+# The rows are the data and the map is derived from them, so the API's job is to
+# save a change or to refuse it in terms someone can act on -- never to leave
+# the two disagreeing.
+
+def test_an_edit_changes_what_the_map_serves(client, conn, biblemap_on):
+    _map_loaded(conn)
+    r = client.patch("/api/biblemap/sources/places/rows/2",
+                     json={"changes": {"PlaceName": "Eden (edited)"}})
+    assert r.status_code == 200, r.text
+    assert client.get("/api/biblemap/data").json()["places"][0]["name"] == "Eden (edited)"
+
+
+def test_an_edit_that_would_break_the_map_is_refused_with_its_problems(client, conn,
+                                                                      biblemap_on):
+    _map_loaded(conn)
+    r = client.patch("/api/biblemap/sources/events/rows/2",
+                     json={"changes": {"PlaceID": "999"}})
+    assert r.status_code == 400
+    assert "unknown place ID 999" in r.json()["detail"]["problems"][0]
+    # ...and the map is exactly as it was.
+    assert client.get("/api/biblemap/data").json()["events"][0]["places"] == [1]
+
+
+def test_a_row_can_be_added_below_another_and_removed_again(client, conn, biblemap_on):
+    _map_loaded(conn)
+    r = client.post("/api/biblemap/sources/places/rows", json={"after_row": 2})
+    assert r.status_code == 200 and r.json()["row"] == 3
+    assert r.json()["cells"][0] == "10001", "a new place arrives with a free ID"
+
+    rows = client.get("/api/biblemap/sources/places").json()["rows"]
+    assert [row["row"] for row in rows] == [2, 3]
+    assert rows[1]["origin"] == "app"
+
+    assert client.delete("/api/biblemap/sources/places/rows/3").status_code == 200
+    assert [row["row"] for row in
+            client.get("/api/biblemap/sources/places").json()["rows"]] == [2]
+
+
+def test_editing_a_column_the_file_does_not_have_is_a_404(client, conn, biblemap_on):
+    _map_loaded(conn)
+    assert client.patch("/api/biblemap/sources/places/rows/2",
+                        json={"changes": {"Nonsense": "x"}}).status_code == 404
+
+
+def test_the_editing_routes_are_behind_the_flag(client):
+    assert client.patch("/api/biblemap/sources/places/rows/2",
+                        json={"changes": {"PlaceName": "x"}}).status_code == 404
+    assert client.post("/api/biblemap/sources/places/rows",
+                       json={"after_row": 2}).status_code == 404
+    assert client.delete("/api/biblemap/sources/places/rows/2").status_code == 404
 
 
 @pytest.mark.parametrize("page", ["biblemap.html", "biblemap_source.html"])

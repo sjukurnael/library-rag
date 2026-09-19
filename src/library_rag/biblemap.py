@@ -212,12 +212,14 @@ def read_people(source: Source) -> tuple:
     return rows, skipped
 
 
-def read_events(path: Path, ds: Dataset) -> Source:
-    """The events workbook -> ds.events and the three link tables.
+def read_events_source(path: Path) -> Source:
+    """The events workbook, verbatim: every row as the text in its cells.
 
-    event_id is the row's position among non-empty rows, which is Bible order.
-    Imported here rather than at the top so the web app, which never reads a
-    spreadsheet, does not need openpyxl importable.
+    record_id is left unset here and assigned by parse_events, which is the one
+    place that decides what an event's id is.
+
+    openpyxl is imported here rather than at the top so the web app, which never
+    reads a spreadsheet, does not need it importable.
     """
     import openpyxl
 
@@ -230,49 +232,87 @@ def read_events(path: Path, ds: Dataset) -> Source:
         wb.close()
 
     source = Source("events", path.name, columns)
-    event_id = 0
     for row_num, cells in enumerate(raw, start=2):
-        cells = (cells + [""] * len(columns))[:len(columns)]
-        r = dict(zip(columns, cells))
-        passage, title = _text(r.get("Passage (Logos Data)")), _text(r.get("Title"))
-        if not passage and not title:
-            source.rows.append((row_num, None, cells))  # a blank row, not an event
+        source.rows.append((row_num, None, (cells + [""] * len(columns))[:len(columns)]))
+    return source
+
+
+def is_event_row(columns, cells) -> bool:
+    """Whether a row of the events file is an event at all. A row with neither a
+    passage nor a title is a blank separator, not an event with things missing."""
+    r = dict(zip(columns, cells))
+    return bool(_text(r.get("Passage (Logos Data)")) or _text(r.get("Title")))
+
+
+def parse_events(source: Source, ds: Dataset) -> None:
+    """The events rows -> ds.events and the three link tables.
+
+    Each row keeps whatever id it already carries (record_id), so an event's id
+    survives rows being inserted above it; a row that has none -- every row on
+    first import, and any row added since -- takes the next free number. `seq`
+    is the row's position among event rows, and that is what the timeline reads.
+
+    Writes the assigned ids back into source.rows, so the caller can store them.
+    """
+    taken = {rid for _, rid, _ in source.rows if rid is not None}
+    next_id = max(taken, default=0) + 1
+    assigned, seq = [], 0
+    for row_num, record_id, cells in source.rows:
+        if not is_event_row(source.columns, cells):
+            assigned.append((row_num, None, cells))
             continue
-        event_id += 1
-        source.rows.append((row_num, event_id, cells))
+        if record_id is None:
+            record_id, next_id = next_id, next_id + 1
+        assigned.append((row_num, record_id, cells))
+        seq += 1
+        r = dict(zip(source.columns, cells))
         ds.events.append((
-            event_id, passage, title, _text(r.get("Description")), _text(r.get("Icon")),
+            record_id, seq, _text(r.get("Passage (Logos Data)")), _text(r.get("Title")),
+            _text(r.get("Description")), _text(r.get("Icon")),
         ))
         try:
             places = _ids(r.get("PlaceID"))
             route = _ids(r.get("RoutePlaceID"))
             people = _ids(r.get("resolved_people_ids"))
         except ValueError as err:
+            passage = _text(r.get("Passage (Logos Data)")) or _text(r.get("Title"))
             raise ValueError(f"events row {row_num} ({passage}): {err}") from None
         # dict.fromkeys: de-duplicate, keeping first-seen order.
         for pos, pid in enumerate(dict.fromkeys(places)):
-            ds.event_places.append((event_id, pid, pos))
+            ds.event_places.append((record_id, pid, pos))
         for pos, pid in enumerate(route):
-            ds.event_route.append((event_id, pos, pid))
+            ds.event_route.append((record_id, pos, pid))
         for pos, pid in enumerate(dict.fromkeys(people)):
-            ds.event_people.append((event_id, pid, pos))
-    return source
+            ds.event_people.append((record_id, pid, pos))
+    source.rows = assigned
+
+
+def dataset_from_sources(sources) -> Dataset:
+    """Source files -> the tables the map is built from. No files, no database.
+
+    The one parse path: the loader reads spreadsheets into Sources and calls
+    this, and an edit reads Sources back out of Postgres and calls this. Editing
+    a cell therefore does exactly what editing the spreadsheet would have done.
+    """
+    by_key = {s.key: s for s in sources}
+    ds = Dataset(sources=list(sources))
+    places = [by_key[k] for k in ("places", "new_places") if k in by_key]
+    ds.places, ds.skipped["places"] = read_places(places)
+    ds.people, ds.skipped["people"] = read_people(by_key["people"])
+    parse_events(by_key["events"], ds)
+    return ds
 
 
 def read_sources(source_dir) -> Dataset:
     """Every source file in `source_dir` -> one Dataset. Touches no database."""
     source_dir = Path(source_dir)
-    ds = Dataset()
-    places = [read_csv_source("places", _one(source_dir, PLACES_GLOB), "PlaceID")]
+    sources = [read_events_source(source_dir / EVENTS_FILE),
+               read_csv_source("places", _one(source_dir, PLACES_GLOB), "PlaceID")]
     if (source_dir / NEW_PLACES_FILE).exists():
-        places.append(read_csv_source("new_places", source_dir / NEW_PLACES_FILE, "PlaceID"))
-    people = read_csv_source("people", _one(source_dir, PEOPLE_GLOB), "PersonID")
-
-    ds.places, ds.skipped["places"] = read_places(places)
-    ds.people, ds.skipped["people"] = read_people(people)
-    events = read_events(source_dir / EVENTS_FILE, ds)
-    ds.sources = [events, *places, people]
-    return ds
+        sources.append(
+            read_csv_source("new_places", source_dir / NEW_PLACES_FILE, "PlaceID"))
+    sources.append(read_csv_source("people", _one(source_dir, PEOPLE_GLOB), "PersonID"))
+    return dataset_from_sources(sources)
 
 
 # --------------------------------------------------------------- validation --
@@ -294,7 +334,7 @@ def validate(ds: Dataset) -> list:
 
     place_ids = {r[0] for r in ds.places}
     person_ids = {r[0] for r in ds.people}
-    passage = {r[0]: r[1] for r in ds.events}
+    passage = {r[0]: r[2] for r in ds.events}
     checks = (
         ("place", ds.event_places, 1, place_ids),
         ("route place", ds.event_route, 2, place_ids),
@@ -313,42 +353,337 @@ def validate(ds: Dataset) -> list:
 
 # --------------------------------------------------------------------- load --
 
+class Invalid(Exception):
+    """A change that would leave the map inconsistent. Carries every problem."""
+
+    def __init__(self, problems):
+        super().__init__("; ".join(problems[:5]))
+        self.problems = problems
+
+
+def _copy(conn, table: str, columns: str, rows) -> None:
+    with conn.cursor() as cur:
+        with cur.copy(f"COPY biblemap.{table} ({columns}) FROM STDIN") as copy:
+            for row in rows:
+                copy.write_row(row)
+
+
+DERIVED = (
+    ("places", "place_id, name, alt_names, lat, lng, comments, verses"),
+    ("people", "person_id, name, alt_name, descriptor, subject_type, gender, verses"),
+    ("events", "event_id, seq, passage, title, description, icon"),
+    ("event_places", "event_id, place_id, position"),
+    ("event_route", "event_id, position, place_id"),
+    ("event_people", "event_id, person_id, position"),
+)
+
+
+def load_derived(conn, ds: Dataset) -> dict:
+    """Replace the map's tables with what `ds` parsed to. Does not commit.
+
+    TRUNCATE-and-COPY rather than a diff: the parse is a pure function of the
+    source rows, so rewriting the result is trivially correct where reconciling
+    it against whatever was there before is a second implementation to get wrong.
+    """
+    conn.execute(
+        "TRUNCATE biblemap.event_places, biblemap.event_route, biblemap.event_people, "
+        "biblemap.events, biblemap.people, biblemap.places"
+    )
+    written = {}
+    for table, columns in DERIVED:
+        rows = getattr(ds, table)
+        _copy(conn, table, columns, rows)
+        written[table] = len(rows)
+    return written
+
+
+def load_sources(conn, ds: Dataset) -> dict:
+    """Replace the verbatim copy of the source files. Does not commit."""
+    conn.execute("TRUNCATE biblemap.source_rows, biblemap.source_files")
+    _copy(conn, "source_files", "file_key, filename, columns, row_count",
+          [(s.key, s.filename, json.dumps(s.columns), len(s.rows)) for s in ds.sources])
+    rows = [(s.key, row_num, record_id, json.dumps(cells))
+            for s in ds.sources for row_num, record_id, cells in s.rows]
+    _copy(conn, "source_rows", "file_key, row_num, record_id, cells", rows)
+    return {"source_files": len(ds.sources), "source_rows": len(rows)}
+
+
 def load(conn, ds: Dataset) -> dict:
     """Replace everything in the biblemap schema with `ds`. Returns row counts.
 
     Same shape as bible.load, for the same reasons: TRUNCATE-and-reload because
-    the spreadsheets are the source of truth, COPY because the database may be
-    across the network, one transaction so a failure leaves the old map intact.
-    The verbatim source copy is replaced in the same transaction, so the viewer
-    can never show a file other than the one the map was built from.
+    a freshly read set of files is the whole truth, COPY because the database
+    may be across the network, one transaction so a failure leaves the old map
+    intact. The verbatim source copy is replaced in the same transaction, so the
+    viewer can never show a file other than the one the map was built from.
     """
-    conn.execute(
-        "TRUNCATE biblemap.event_places, biblemap.event_route, biblemap.event_people, "
-        "biblemap.events, biblemap.people, biblemap.places, "
-        "biblemap.source_rows, biblemap.source_files"
-    )
-    source_files = [(s.key, s.filename, json.dumps(s.columns), len(s.rows))
-                    for s in ds.sources]
-    source_rows = [(s.key, row_num, record_id, json.dumps(cells))
-                   for s in ds.sources for row_num, record_id, cells in s.rows]
-    tables = (
-        ("places", "place_id, name, alt_names, lat, lng, comments, verses", ds.places),
-        ("people", "person_id, name, alt_name, descriptor, subject_type, gender, verses",
-         ds.people),
-        ("events", "event_id, passage, title, description, icon", ds.events),
-        ("event_places", "event_id, place_id, position", ds.event_places),
-        ("event_route", "event_id, position, place_id", ds.event_route),
-        ("event_people", "event_id, person_id, position", ds.event_people),
-        ("source_files", "file_key, filename, columns, row_count", source_files),
-        ("source_rows", "file_key, row_num, record_id, cells", source_rows),
-    )
-    with conn.cursor() as cur:
-        for table, columns, rows in tables:
-            with cur.copy(f"COPY biblemap.{table} ({columns}) FROM STDIN") as copy:
-                for row in rows:
-                    copy.write_row(row)
+    written = {**load_derived(conn, ds), **load_sources(conn, ds)}
     conn.commit()
-    return {table: len(rows) for table, _, rows in tables}
+    return written
+
+
+# ------------------------------------------------------------------ editing --
+# The source rows are the truth and the map is derived from them, so every edit
+# is the same three steps: change a row, re-parse every row, replace the derived
+# tables -- in ONE transaction, so an edit that would break the map leaves
+# nothing behind. See migrations/0020_biblemap_editing.sql.
+
+
+def sources_from_db(conn) -> list:
+    """The stored source files, as the same Source objects the readers produce."""
+    files = conn.execute(
+        "SELECT file_key, filename, columns FROM biblemap.source_files"
+    ).fetchall()
+    sources = []
+    for key, filename, columns in files:
+        rows = conn.execute(
+            "SELECT row_num, record_id, cells FROM biblemap.source_rows "
+            "WHERE file_key = %s ORDER BY row_num",
+            (key,),
+        ).fetchall()
+        sources.append(Source(key, filename, columns, [tuple(r) for r in rows]))
+    return sources
+
+
+def rebuild(conn) -> dict:
+    """Re-derive the map from the stored source rows. Does not commit.
+
+    Raises Invalid, having written nothing, when the rows do not make a
+    consistent map -- an event pointing at a place that is not there, a
+    duplicated ID. The caller rolls back.
+    """
+    sources = sources_from_db(conn)
+    ds = dataset_from_sources(sources)
+    problems = validate(ds)
+    if problems:
+        raise Invalid(problems)
+    written = load_derived(conn, ds)
+    # parse_events may have given new rows their ids; store them, or the next
+    # rebuild would hand the same event a different id.
+    events = next(s for s in ds.sources if s.key == "events")
+    for row_num, record_id, _ in events.rows:
+        conn.execute(
+            "UPDATE biblemap.source_rows SET record_id = %s "
+            "WHERE file_key = 'events' AND row_num = %s AND record_id IS DISTINCT FROM %s",
+            (record_id, row_num, record_id),
+        )
+    return written
+
+
+def _row(conn, key: str, row_num: int):
+    row = conn.execute(
+        "SELECT row_num, record_id, cells FROM biblemap.source_rows "
+        "WHERE file_key = %s AND row_num = %s",
+        (key, row_num),
+    ).fetchone()
+    if row is None:
+        raise KeyError(f"{key} has no row {row_num}")
+    return row
+
+
+def _columns(conn, key: str) -> list:
+    row = conn.execute(
+        "SELECT columns FROM biblemap.source_files WHERE file_key = %s", (key,)
+    ).fetchone()
+    if row is None:
+        raise KeyError(f"no source file {key!r}")
+    return row[0]
+
+
+def _log(conn, key, row_num, action, editor, column=None, old=None, new=None,
+         snapshot=None):
+    conn.execute(
+        "INSERT INTO biblemap.source_edits "
+        "(editor, file_key, row_num, action, column_name, old_value, new_value, "
+        " row_snapshot) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        (editor, key, row_num, action, column, old, new,
+         json.dumps(snapshot) if snapshot is not None else None),
+    )
+
+
+def _touch(conn, key, row_num, editor):
+    conn.execute(
+        "UPDATE biblemap.source_rows SET edited_at = now(), editor = %s "
+        "WHERE file_key = %s AND row_num = %s",
+        (editor, key, row_num),
+    )
+
+
+def update_row(conn, key: str, row_num: int, changes: dict, editor=None) -> dict:
+    """Change cells in one row, then re-derive the map. Commits, or rolls back.
+
+    `changes` is {column: text}; a column the file does not have is an error
+    rather than a silently ignored key.
+    """
+    try:
+        columns = _columns(conn, key)
+        _, _, cells = _row(conn, key, row_num)
+        cells = list(cells)
+        for column, value in changes.items():
+            if column not in columns:
+                raise KeyError(f"{key} has no column {column!r}")
+            i = columns.index(column)
+            old, cells[i] = cells[i], str(value)
+            if old != cells[i]:
+                _log(conn, key, row_num, "update", editor, column, old, cells[i])
+        conn.execute(
+            "UPDATE biblemap.source_rows SET cells = %s WHERE file_key = %s AND row_num = %s",
+            (json.dumps(cells), key, row_num),
+        )
+        _touch(conn, key, row_num, editor)
+        written = rebuild(conn)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return {"row": row_num, "cells": cells, "written": written}
+
+
+def next_id(conn, key: str) -> int:
+    """The next free ID for a new place or person row.
+
+    Places and people added in the app continue the 10000+ range the resolution
+    file already uses, so an ID says at a glance whether it came from the
+    original data.
+    """
+    column = "PersonID" if key == "people" else "PlaceID"
+    keys = ("people",) if key == "people" else ("places", "new_places")
+    used = {10000}
+    for k in keys:
+        try:
+            columns = _columns(conn, k)
+        except KeyError:
+            continue  # new_places is optional
+        if column not in columns:
+            continue
+        at = columns.index(column)
+        for (cells,) in conn.execute(
+            "SELECT cells FROM biblemap.source_rows WHERE file_key = %s", (k,)
+        ).fetchall():
+            value = _int(cells[at]) if at < len(cells) else None
+            if value is not None:
+                used.add(value)
+    return max(used) + 1
+
+
+def insert_row(conn, key: str, after_row: int, editor=None) -> dict:
+    """Add a blank row directly after `after_row`, then re-derive the map.
+
+    Row numbers stay the spreadsheet's: everything below shifts down by one, in
+    one statement, which is why 0020 made the primary key deferrable.
+    """
+    try:
+        columns = _columns(conn, key)
+        _row(conn, key, after_row)  # refuse to insert after a row that is not there
+        conn.execute("SET CONSTRAINTS biblemap.source_rows_pkey DEFERRED")
+        conn.execute(
+            "UPDATE biblemap.source_rows SET row_num = row_num + 1 "
+            "WHERE file_key = %s AND row_num > %s",
+            (key, after_row),
+        )
+        cells = [""] * len(columns)
+        # A new place or person is nothing without an ID, and asking someone to
+        # invent a free one is asking them to check 1,285 rows first.
+        if key in ("places", "new_places", "people"):
+            id_column = "PersonID" if key == "people" else "PlaceID"
+            if id_column in columns:
+                cells[columns.index(id_column)] = str(next_id(conn, key))
+        row_num = after_row + 1
+        conn.execute(
+            "INSERT INTO biblemap.source_rows "
+            "(file_key, row_num, record_id, cells, origin, edited_at, editor) "
+            "VALUES (%s, %s, NULL, %s, 'app', now(), %s)",
+            (key, row_num, json.dumps(cells), editor),
+        )
+        conn.execute(
+            "UPDATE biblemap.source_files SET row_count = row_count + 1 WHERE file_key = %s",
+            (key,),
+        )
+        _log(conn, key, row_num, "insert", editor, snapshot=cells)
+        # A blank events row parses as a separator rather than an event, and a
+        # blank place row has an ID and no name -- both are consistent, so the
+        # map can be rebuilt now and the row filled in afterwards.
+        written = rebuild(conn)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return {"row": row_num, "cells": cells, "written": written}
+
+
+def delete_row(conn, key: str, row_num: int, editor=None) -> dict:
+    try:
+        _, _, cells = _row(conn, key, row_num)
+        conn.execute(
+            "DELETE FROM biblemap.source_rows WHERE file_key = %s AND row_num = %s",
+            (key, row_num),
+        )
+        conn.execute("SET CONSTRAINTS biblemap.source_rows_pkey DEFERRED")
+        conn.execute(
+            "UPDATE biblemap.source_rows SET row_num = row_num - 1 "
+            "WHERE file_key = %s AND row_num > %s",
+            (key, row_num),
+        )
+        conn.execute(
+            "UPDATE biblemap.source_files SET row_count = row_count - 1 WHERE file_key = %s",
+            (key,),
+        )
+        _log(conn, key, row_num, "delete", editor, snapshot=list(cells))
+        written = rebuild(conn)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return {"row": row_num, "written": written}
+
+
+def edit_count(conn) -> int:
+    """How many stored rows the app has changed -- what makes a re-import from
+    the spreadsheets destructive."""
+    return conn.execute(
+        "SELECT count(*) FROM biblemap.source_rows "
+        "WHERE origin = 'app' OR edited_at IS NOT NULL"
+    ).fetchone()[0]
+
+
+def export(conn, out_dir) -> list:
+    """Write the stored rows back out as spreadsheets. Returns the paths.
+
+    The round trip that keeps biblemap_project meaningful once the app holds the
+    truth: export, replace the files, and a fresh --load reproduces exactly what
+    the app has.
+    """
+    import openpyxl
+
+    out_dir = Path(out_dir)
+    written = []
+    for key, filename, columns in conn.execute(
+        "SELECT file_key, filename, columns FROM biblemap.source_files ORDER BY file_key"
+    ).fetchall():
+        rows = conn.execute(
+            "SELECT cells FROM biblemap.source_rows WHERE file_key = %s ORDER BY row_num",
+            (key,),
+        ).fetchall()
+        # Back into the layout read_sources expects, so an export can be dropped
+        # straight over biblemap_project and re-loaded.
+        folder = {"places": "Places-Data", "new_places": "Places-Data",
+                  "people": "People Data"}.get(key, "")
+        path = out_dir / folder / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.suffix == ".xlsx":
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.append(columns)
+            for (cells,) in rows:
+                ws.append(cells)
+            wb.save(path)
+        else:
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(columns)
+                w.writerows(cells for (cells,) in rows)
+        written.append(path)
+    return written
 
 
 # ------------------------------------------------------------------ reading --
@@ -391,7 +726,7 @@ def data(conn) -> dict:
                COALESCE((SELECT array_agg(person_id ORDER BY position)
                          FROM biblemap.event_people p WHERE p.event_id = e.event_id), '{}')
         FROM biblemap.events e
-        ORDER BY e.event_id
+        ORDER BY e.seq
         """
     ).fetchall()
     places = conn.execute(
@@ -483,7 +818,8 @@ def source_page(conn, key: str, offset: int, limit: int, q: str = "") -> tuple:
     ).fetchone()[0]
     rows = conn.execute(
         f"""
-        SELECT row_num, record_id, cells FROM biblemap.source_rows
+        SELECT row_num, record_id, cells, origin, edited_at, editor
+        FROM biblemap.source_rows
         WHERE {where} ORDER BY row_num OFFSET %s LIMIT %s
         """,
         [*params, offset, limit],
